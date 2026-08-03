@@ -29,6 +29,77 @@ LM_HEAD_CHUNK_ROWS = 4096
 LAYER_KEY = re.compile(r"^model\.layers\.(\d+)\.")
 
 
+def _layout_name(weight):
+    layout = getattr(weight, "_layout_cls", "")
+    return layout if isinstance(layout, str) else getattr(layout, "__name__", "")
+
+
+def _int8_scale_chunk(scale, start: int, end: int, row_count: int):
+    """Return a scalar or row-broadcastable scale for an INT8 head chunk."""
+
+    if not isinstance(scale, torch.Tensor):
+        raise ValueError("The generation-tail LM-head INT8 scale is not a tensor.")
+    if scale.numel() == 1:
+        return scale
+    if scale.shape[0] != row_count:
+        raise ValueError(
+            "The generation-tail LM-head INT8 scale must be scalar or have "
+            f"one value per vocabulary row; got shape {tuple(scale.shape)} for "
+            f"{row_count} rows."
+        )
+    chunk = scale[start:end]
+    if chunk.ndim == 1:
+        chunk = chunk.unsqueeze(-1)
+    if chunk.ndim != 2 or chunk.shape[1] != 1:
+        raise ValueError(
+            "The generation-tail LM-head only supports tensor-wise or per-row "
+            f"INT8 scales; got shape {tuple(scale.shape)}."
+        )
+    return chunk
+
+
+def _validate_int8_head(weight, qdata, scale):
+    """Reject quantized layouts that cannot use the explicit chunked head path."""
+
+    layout = _layout_name(weight)
+    if layout != "TensorWiseINT8Layout":
+        raise ValueError(
+            "The generation-tail LM head must use ComfyUI int8_tensorwise "
+            "quantization; unsupported layout "
+            f"{layout or '<unknown>'}. Select the published INT8 ConvRot tail."
+        )
+    if not isinstance(qdata, torch.Tensor) or qdata.ndim != 2:
+        raise ValueError(
+            "The generation-tail LM-head INT8 data must be a two-dimensional "
+            "[vocabulary, hidden_size] tensor."
+        )
+    if qdata.dtype != torch.int8:
+        raise ValueError(
+            "The generation-tail LM-head int8_tensorwise data must have torch.int8 "
+            f"storage, got {qdata.dtype}."
+        )
+    _int8_scale_chunk(scale, 0, min(1, qdata.shape[0]), qdata.shape[0])
+
+    params = getattr(weight, "_params", None)
+    if getattr(params, "convrot", False):
+        group_size = int(getattr(params, "convrot_groupsize", 0))
+        factor = group_size
+        while factor > 1 and factor % 4 == 0:
+            factor //= 4
+        if group_size < 4 or factor != 1:
+            raise ValueError(
+                "The generation-tail ConvRot group size must be a positive power "
+                f"of four; got {group_size}."
+            )
+        # _hadamard below additionally verifies a power of four. This early
+        # divisibility check provides a clearer artifact-compatibility error.
+        if qdata.shape[1] % group_size:
+            raise ValueError(
+                f"The LM-head hidden size {qdata.shape[1]} is not divisible by "
+                f"its ConvRot group size {group_size}."
+            )
+
+
 def _hadamard(size, device, dtype=torch.float32):
     h4 = torch.tensor(
         [[1, 1, 1, -1], [1, 1, -1, 1],
@@ -112,8 +183,15 @@ class Qwen3VL32BGenerationTail(torch.nn.Module):
         qdata = getattr(weight, "_qdata", None)
         params = getattr(weight, "_params", None)
         scale = getattr(params, "scale", None)
-        if qdata is None or scale is None:
+        if qdata is None and scale is None:
             return self.model.lm_head(hidden[:, -1:])
+        if qdata is None or scale is None:
+            raise ValueError(
+                "The generation-tail LM head has an incomplete quantized layout: "
+                "both INT8 data and scale are required."
+            )
+
+        _validate_int8_head(weight, qdata, scale)
 
         input_token = hidden[:, -1:].float()
         if getattr(params, "convrot", False):
@@ -128,8 +206,11 @@ class Qwen3VL32BGenerationTail(torch.nn.Module):
                 device=input_token.device, non_blocking=True
             )
             weight_chunk = q_chunk.to(dtype=torch.float32)
+            scale_chunk = _int8_scale_chunk(
+                scale, start, end, qdata.shape[0]
+            )
             weight_chunk.mul_(
-                scale[start:end].to(
+                scale_chunk.to(
                     device=input_token.device,
                     dtype=torch.float32,
                     non_blocking=True,
