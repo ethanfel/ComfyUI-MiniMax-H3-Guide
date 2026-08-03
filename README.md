@@ -28,7 +28,8 @@ MiniMax H3 Prompt Guide
     h3_prompt ─────┐
     mode_report ───┼─> MiniMax H3 Prompt Enhancer ─> enhanced_prompt
 standard CLIPLoader ┤                              ├─> system_prompt
-optional IMAGE ────┤                              ├─> llm_prompt
+Visual Reference chain ─> reference_context       ├─> llm_prompt
+legacy optional IMAGE ┤
 Generation Tail Loader ─> clip_tail               └─> enhancer_report
 ```
 
@@ -41,7 +42,11 @@ It produces:
 
 The full base system prompt is visible in the node's editable `system_prompt` widget. If that widget is blank, the built-in default is restored. Sampling controls match the important controls from ComfyUI's Generate Text node: maximum generated tokens, deterministic or sampled decoding, temperature, top-k, top-p, min-p, repetition/presence penalties, seed, and thinking mode.
 
-The optional `image` is used only as visual context while Qwen rewrites the prompt. Only the first image in a batch is used. Its presence does not automatically turn the task into image-to-video or make it an H3 keyframe.
+The optional `image` remains as a compatibility route for one context image.
+For labeled pictures, multiple images, or video understanding, use the Visual
+Reference chain below. Visual context helps Qwen write the prompt; it never
+silently turns a picture into an endpoint frame or replaces the media inputs
+on the native H3 node.
 
 For a complete generative Qwen3-VL CLIP, leave the enhancer's optional
 `clip_tail` socket disconnected. The enhancer calls the connected CLIP's
@@ -65,6 +70,47 @@ Download the INT8 tail from
 and place it under `ComfyUI/models/text_encoders/MiniMax-H3/`.
 
 Connect `enhanced_prompt` to ComfyUI's official **MiniMax H3 Image to Video** or **MiniMax H3 Reference to Video** node. Those nodes encode the prompt and attach the correct AV latent plus any keyframe/reference VAE latents and media metadata. The enhancer deliberately does not emit a separate `CONDITIONING` output because it would duplicate the official node for T2VA and be incomplete for image/reference tasks.
+
+### Chaining visual references for enhancement
+
+Add one **MiniMax H3 Enhancer Visual Reference** node per picture or reference
+video. Connect each `reference_context` output to the next node's
+`previous_context`, then connect only the final context to the Prompt
+Enhancer:
+
+```text
+Picture node ──reference_context──> Video node ──reference_context──> Prompt Enhancer
+     │                                  │
+     └─ ref_image_0 ────────────────────┼────────────────────────────> native H3 ref_image_0
+                                        └─ ref_video_0 ──────────────> native H3 ref_video_0
+```
+
+Choose `Picture` for exactly one image or `Video frames` for an IMAGE batch
+from a video loader. The chain numbers each media type independently as
+`<Picture N>` and `<Video N>`. Its `h3_media` output is visually renamed to the
+matching native input (`ref_image_0`, `ref_video_0`, and so on), and the
+`routing_report` lists every connection.
+
+The two media paths deliberately use different sizes:
+
+- **H3 picture pass-through:** original image, unchanged. The native H3 node's
+  `ref_image_size=match` or `max` setting remains authoritative.
+- **H3 video pass-through:** full frame batch resampled to the 24 FPS expected
+  by H3. Set `source_fps` to the actual input batch rate. Reference videos must
+  be 2–15 seconds.
+- **Qwen analysis copy:** aspect-preserving and never enlarged. The default
+  long edge is 768px; use 1024px when identity details or small visible text
+  matter.
+- **Qwen video analysis:** 1 FPS by default, 2 FPS for faster motion, uniformly
+  capped across the complete clip with `max_analysis_frames` (16 by default).
+  H3 still receives the full 24 FPS pass-through.
+
+Pictures and videos can declare roles such as identity, style, scene,
+keyframe, motion, camera/cut rhythm, editing source, or continuation source.
+Optional notes tell Qwen exactly what to preserve, transfer, ignore, or change.
+A connected visual-reference chain is authoritative and makes the enhanced
+prompt Ref2VA even if an older/manual draft still contains a generic prompt
+family. Audio analysis is intentionally outside this chain for now.
 
 ### Planning multiple shots
 
@@ -147,8 +193,9 @@ git clone https://github.com/ethanfel/ComfyUI-MiniMax-H3-Guide
 ```
 
 Then add **MiniMax H3 Prompt Guide**, **MiniMax H3 Shot**, **MiniMax H3
-Generation Tail Loader**, and **MiniMax H3 Prompt Enhancer (Qwen3-VL)** from
-**MiniMax H3 → Prompting** as needed.
+Enhancer Visual Reference**, **MiniMax H3 Generation Tail Loader**, and
+**MiniMax H3 Prompt Enhancer (Qwen3-VL)** from **MiniMax H3 → Prompting** as
+needed.
 
 ## Practical notes
 

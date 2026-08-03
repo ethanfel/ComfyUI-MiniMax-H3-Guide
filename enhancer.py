@@ -5,6 +5,11 @@ from __future__ import annotations
 from collections import Counter
 import re
 
+try:
+    from .media_context import REFERENCE_CONTEXT_TYPE, reference_entries, reference_inventory
+except ImportError:
+    from media_context import REFERENCE_CONTEXT_TYPE, reference_entries, reference_inventory
+
 
 NO_TAIL = "[none — connected CLIP is already complete]"
 TAIL_TYPE = "MINIMAX_H3_GENERATION_TAIL"
@@ -40,14 +45,15 @@ DEFAULT_SYSTEM_PROMPT = """You are an expert prompt engineer for MiniMax H3 audi
 Follow these rules:
 - Preserve the user's requested subjects, identities, actions, dialogue, lyrics, visible text, reference roles, endpoint frames, timing, and audio intent. Never replace or contradict them.
 - Write in English except for dialogue and lyrics inside <d>[Language] ...</d> and text visibly present in the scene. Preserve their original wording and language.
-- Treat an attached image as optional visual evidence. Use its visible appearance, composition, and style only where the manual draft assigns that role. Do not silently turn it into a first or last frame.
+- Treat attached pictures and timestamped video samples as optional visual evidence. Use each reference only for its declared label and role. Do not silently turn a picture into a first/last frame, confuse sampled video frames with separate pictures, or change reference numbering.
+- When REFERENCE CONTEXT contains chained visual references, its labels and roles are authoritative and the target uses Ref2VA. Reconcile stale generic wording in the draft and return the six Ref2VA sections without changing the user's creative request.
 - Make the video chronological and physically observable. For every shot, establish composition, subject appearance and position, environment and lighting, action and state changes, camera behavior, and synchronized sound.
 - [Shot 1] has no timestamp. Later shots begin with [Shot N] At MM:SS.mmm and strictly increasing cut times inside the stated duration.
 - Describe camera movement naturally. Include movement type and meaningful speed or amplitude, but do not invent camera movement that conflicts with a static-camera request.
 - Give every actual vocal source a stable (S1), (S2), etc. Put only spoken or sung words inside <d>[Language] ...</d>. Put visible text in English double quotation marks.
 - Keep ambience, physical action sounds, and non-verbal human sounds in overall_soundscape. Put only audience-only score in non_diegetic_music. Use N/A when there is no such score.
 
-Choose the output structure from the supplied draft:
+Choose the output structure from the supplied draft, except that chained visual references always require Ref2VA:
 
 For T2VA, I2VA, FL2VA, or L2VA, preserve the applicable image-alignment instruction at the top, followed by one blank line when present. Then output exactly these fields:
 integrated_multimodal_description
@@ -67,21 +73,36 @@ In Ref2VA, keep <Subject N>, <Picture N>, <Video N>, and <Audio N> labels stable
 If the manual draft is already detailed and correctly formatted, make only useful corrections. Never wrap the result in Markdown or code fences."""
 
 
-def build_llm_user_prompt(manual_prompt: str, mode_report: str = "", has_image: bool = False) -> str:
+def build_llm_user_prompt(
+    manual_prompt: str,
+    mode_report: str = "",
+    has_image: bool = False,
+    reference_context: str = "",
+) -> str:
     """Build the user turn without mixing it into the editable system prompt."""
 
-    image_note = (
-        "One image is attached as optional visual context. Analyze it, but follow the role assigned "
-        "by the manual draft."
-        if has_image
-        else "No image is attached. Work only from the text and its declared reference roles."
-    )
+    if reference_context.strip():
+        image_note = (
+            "Chained pictures and/or timestamped video samples are attached as visual evidence. "
+            "Analyze them according to the exact labels, roles, and reference inventory below."
+        )
+    elif has_image:
+        image_note = (
+            "One legacy image is attached as optional visual context. Analyze it, but follow the "
+            "role assigned by the manual draft."
+        )
+    else:
+        image_note = "No visual media is attached. Work only from the text and declared reference roles."
     report = mode_report.strip() or "No separate mode report was supplied; infer the mode from the draft."
     draft = manual_prompt.strip() or "No manual prompt was supplied."
+    context = reference_context.strip() or "No chained reference context was supplied."
     return f"""Enhance the following MiniMax H3 prompt draft.
 
-IMAGE CONTEXT
+VISUAL CONTEXT
 {image_note}
+
+REFERENCE CONTEXT
+{context}
 
 MODE REPORT
 {report}
@@ -98,17 +119,60 @@ def _is_minimax_h3_tokenizer(clip) -> bool:
     )
 
 
-def format_chat_prompt(system_prompt: str, user_prompt: str, has_image: bool, minimax_clip: bool) -> str:
+def format_chat_prompt(
+    system_prompt: str,
+    user_prompt: str,
+    has_image: bool,
+    minimax_clip: bool,
+    visual_count: int | None = None,
+) -> str:
     """Format a Qwen chat while accommodating H3's raw multimodal tokenizer."""
 
     image_block = ""
-    if has_image and not minimax_clip:
-        image_block = "<|vision_start|><|image_pad|><|vision_end|>\n"
+    count = int(has_image) if visual_count is None else max(0, int(visual_count))
+    if count and not minimax_clip:
+        image_block = "<|vision_start|><|image_pad|><|vision_end|>" * count + "\n"
     return (
         f"<|im_start|>system\n{system_prompt.strip()}<|im_end|>\n"
         f"<|im_start|>user\n{image_block}{user_prompt.strip()}<|im_end|>\n"
         "<|im_start|>assistant\n"
     )
+
+
+def _prepare_reference_visuals(entries: list[dict], minimax_clip: bool):
+    """Build tokenizer payloads and an explicit visual-order map."""
+
+    generic_images = []
+    minimax_items = []
+    visual_map = []
+    # Native H3 presents all pictures first, then reference videos. Preserve
+    # order within each media type even when the UI chain interleaves them.
+    ordered_entries = sorted(entries, key=lambda entry: entry["kind"] == "video")
+    for entry in ordered_entries:
+        media = entry["analysis_media"]
+        if entry["kind"] == "image":
+            if minimax_clip:
+                minimax_items.append({"type": "image", "data": media[:1]})
+            else:
+                generic_images.append(media[:1])
+                visual_map.append(f"Visual input {len(generic_images)} is {entry['label']}.")
+            continue
+
+        timestamps = entry["timestamps"]
+        if minimax_clip:
+            minimax_items.append(
+                {"type": "video", "data": media, "timestamps": timestamps}
+            )
+        else:
+            start = len(generic_images) + 1
+            generic_images.extend(media[index : index + 1] for index in range(media.shape[0]))
+            end = len(generic_images)
+            formatted_times = ", ".join(f"{timestamp:.3f}s" for timestamp in timestamps)
+            visual_map.append(
+                f"Visual inputs {start}-{end} are chronological samples from {entry['label']} "
+                f"at {formatted_times}."
+            )
+    return generic_images, minimax_items, "\n".join(visual_map)
 
 
 def clean_generated_prompt(text: str, fallback: str) -> str:
@@ -289,7 +353,7 @@ class MiniMaxH3PromptEnhancer:
     DESCRIPTION = (
         "Second step after MiniMax H3 Prompt Guide. Connect h3_prompt, mode_report, and a Qwen3-VL CLIP. "
         "A complete generative CLIP needs no tail; MiniMax H3's 50-layer conditioning CLIP uses the optional 50-63 tail. "
-        "The node optionally analyzes one image and rewrites the draft with an editable system prompt. "
+        "The node can analyze a chained set of role-labeled pictures and video samples, or one legacy image. "
         "Connect enhanced_prompt to ComfyUI's official H3 conditioning node."
     )
 
@@ -461,12 +525,24 @@ class MiniMaxH3PromptEnhancer:
                         )
                     },
                 ),
+                "reference_context": (
+                    REFERENCE_CONTEXT_TYPE,
+                    {
+                        "tooltip": (
+                            "Recommended visual-input route: connect the final reference_context from a "
+                            "MiniMax H3 Enhancer Visual Reference chain. Qwen receives role-labeled pictures "
+                            "and timestamped video samples; the original media still routes separately to "
+                            "the native H3 Reference to Video node."
+                        )
+                    },
+                ),
                 "image": (
                     "IMAGE",
                     {
                         "tooltip": (
-                            "Optional image for Qwen to inspect while rewriting. Only the first image in the batch is used. This image is LLM context only: it is not automatically an H3 first frame, last frame, or Ref2VA latent. "
-                            "Assign its role in MiniMax H3 Prompt Guide, then separately connect the actual image to the official H3 Image/Reference node for generation."
+                            "Legacy compatibility input for one Qwen context image. Use a Visual Reference "
+                            "chain for multiple pictures, explicit roles, correct H3 routing, or video. "
+                            "Do not connect image and reference_context simultaneously."
                         ),
                     },
                 )
@@ -490,20 +566,40 @@ class MiniMaxH3PromptEnhancer:
         seed: int,
         thinking: bool,
         clip_tail=None,
+        reference_context=None,
         image=None,
     ):
         if clip is None:
             raise RuntimeError("A generation-capable CLIP input is required.")
+        if reference_context is not None and image is not None:
+            raise ValueError(
+                "Use either reference_context or the legacy image input, not both. The chain is "
+                "required when visual labels and H3 routing must remain unambiguous."
+            )
 
         resolved_system_prompt = system_prompt.strip() or DEFAULT_SYSTEM_PROMPT
-        has_image = image is not None
-        user_prompt = build_llm_user_prompt(manual_prompt, mode_report, has_image)
         minimax_clip = _is_minimax_h3_tokenizer(clip)
+        entries = reference_entries(reference_context) if reference_context is not None else []
+        generic_images, minimax_items, visual_map = _prepare_reference_visuals(
+            entries, minimax_clip
+        )
+        inventory = reference_inventory(entries) if entries else ""
+        if visual_map:
+            inventory = f"{inventory}\n\nGENERIC QWEN VISUAL ORDER\n{visual_map}"
+        has_visual = bool(entries) or image is not None
+        user_prompt = build_llm_user_prompt(
+            manual_prompt,
+            mode_report,
+            has_image=has_visual,
+            reference_context=inventory,
+        )
+        visual_count = len(generic_images) if entries and not minimax_clip else int(image is not None)
         llm_prompt = format_chat_prompt(
             resolved_system_prompt,
             user_prompt,
-            has_image=has_image,
+            has_image=has_visual,
             minimax_clip=minimax_clip,
+            visual_count=visual_count,
         )
         if not thinking:
             llm_prompt += "<think>\n\n</think>\n\n"
@@ -523,7 +619,11 @@ class MiniMaxH3PromptEnhancer:
             "min_length": 1,
             "thinking": thinking,
         }
-        if has_image:
+        if entries and minimax_clip:
+            tokenize_options["minimax_ref_items"] = minimax_items
+        elif entries:
+            tokenize_options["images"] = generic_images
+        elif image is not None:
             first_image = image[:1]
             tokenize_options["image"] = first_image
             tokenize_options["images"] = [first_image]
@@ -544,7 +644,7 @@ class MiniMaxH3PromptEnhancer:
                 clip,
                 tokens,
                 generation_options,
-                use_minimax_image_path=minimax_clip and has_image,
+                use_minimax_image_path=minimax_clip and has_visual,
             )
         else:
             generated_ids = _generate_with_tail(
@@ -560,12 +660,21 @@ class MiniMaxH3PromptEnhancer:
             )
             enhanced_prompt = manual_prompt.strip()
         else:
-            report = (
+            generation_report = (
                 "Enhancement completed successfully with the temporary MiniMax generation tail; "
                 "the connected conditioning CLIP was left unchanged."
                 if tail_name is not None
                 else "Enhancement completed successfully with the connected complete CLIP."
             )
+            if entries:
+                picture_count = sum(entry["kind"] == "image" for entry in entries)
+                video_count = sum(entry["kind"] == "video" for entry in entries)
+                report = (
+                    f"{generation_report} Qwen analyzed {picture_count} chained picture(s) and "
+                    f"{video_count} timestamped reference video(s)."
+                )
+            else:
+                report = generation_report
 
         return (enhanced_prompt, resolved_system_prompt, llm_prompt, report)
 

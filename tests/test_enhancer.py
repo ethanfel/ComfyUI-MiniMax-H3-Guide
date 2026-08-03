@@ -3,6 +3,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
+import torch
 
 from enhancer import (
     DEFAULT_SYSTEM_PROMPT,
@@ -16,6 +17,13 @@ from enhancer import (
     clean_generated_prompt,
     format_chat_prompt,
     generation_collapse_reason,
+)
+from media_context import (
+    IDENTITY_ROLE,
+    MOTION_ROLE,
+    PICTURE_MEDIA,
+    VIDEO_MEDIA,
+    MiniMaxH3EnhancerVisualReference,
 )
 
 
@@ -70,8 +78,13 @@ def enhancer_kwargs(**overrides):
 
 
 def test_user_prompt_reports_optional_image_state():
-    assert "No image is attached" in build_llm_user_prompt("draft", has_image=False)
-    assert "One image is attached" in build_llm_user_prompt("draft", has_image=True)
+    assert "No visual media is attached" in build_llm_user_prompt("draft", has_image=False)
+    assert "One legacy image is attached" in build_llm_user_prompt("draft", has_image=True)
+    chained = build_llm_user_prompt(
+        "draft", has_image=True, reference_context="<Picture 1>: identity"
+    )
+    assert "Chained pictures" in chained
+    assert "<Picture 1>: identity" in chained
 
 
 def test_generic_qwen_chat_places_visual_token_in_user_turn():
@@ -180,7 +193,8 @@ def test_enhancer_tooltips_explain_outputs_and_optional_image_scope():
     schema = MiniMaxH3PromptEnhancer.INPUT_TYPES()
     assert "clip_tail" not in schema["required"]
     assert schema["optional"]["clip_tail"][0] == TAIL_TYPE
-    assert "not automatically an H3 first frame" in schema["optional"]["image"][1]["tooltip"]
+    assert "Legacy compatibility" in schema["optional"]["image"][1]["tooltip"]
+    assert "reference_context" in schema["optional"]
     assert "1000-1400" in schema["required"]["max_new_tokens"][1]["tooltip"]
     assert MiniMaxH3PromptEnhancer.RETURN_NAMES == (
         "enhanced_prompt",
@@ -198,6 +212,83 @@ def test_generation_tail_loader_returns_lightweight_typed_descriptor():
     assert loader.RETURN_TYPES == (TAIL_TYPE,)
     with pytest.raises(RuntimeError, match="No compatible"):
         loader.select_tail(NO_TAIL)
+
+
+def test_enhancer_analyzes_chained_pictures_and_video_with_generic_qwen():
+    context_node = MiniMaxH3EnhancerVisualReference()
+    picture, _, _ = context_node.add_reference(
+        torch.zeros(1, 64, 64, 3),
+        PICTURE_MEDIA,
+        IDENTITY_ROLE,
+        "Preserve the coat",
+        24.0,
+        1.0,
+        16,
+        768,
+    )
+    context, _, _ = context_node.add_reference(
+        torch.zeros(48, 64, 96, 3),
+        VIDEO_MEDIA,
+        MOTION_ROLE,
+        "Copy only the running motion",
+        24.0,
+        1.0,
+        16,
+        768,
+        picture,
+    )
+    clip = FakeClip("enhanced prompt")
+    _, _, llm_prompt, report = MiniMaxH3PromptEnhancer().enhance(
+        clip=clip, **enhancer_kwargs(reference_context=context)
+    )
+    tokenized = clip.tokenize_calls[0]
+    assert len(tokenized["kwargs"]["images"]) == 3
+    assert llm_prompt.count("<|image_pad|>") == 3
+    assert "<Picture 1>: role=Identity or appearance" in llm_prompt
+    assert "Visual inputs 2-3 are chronological samples from <Video 1>" in llm_prompt
+    assert "1 chained picture(s) and 1 timestamped reference video(s)" in report
+
+
+def test_enhancer_uses_native_minimax_reference_payload_for_video_context():
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        torch.zeros(48, 64, 96, 3),
+        VIDEO_MEDIA,
+        MOTION_ROLE,
+        "Copy motion",
+        24.0,
+        1.0,
+        16,
+        768,
+    )
+    clip = FakeClip("enhanced prompt", minimax=True)
+    _, _, llm_prompt, _ = MiniMaxH3PromptEnhancer().enhance(
+        clip=clip, **enhancer_kwargs(reference_context=context)
+    )
+    tokenized = clip.tokenize_calls[0]
+    items = tokenized["kwargs"]["minimax_ref_items"]
+    assert len(items) == 1
+    assert items[0]["type"] == "video"
+    assert items[0]["data"].shape[0] == 2
+    assert items[0]["timestamps"] == [0.0, 1.0]
+    assert "<|image_pad|>" not in llm_prompt
+
+
+def test_enhancer_rejects_legacy_image_and_reference_chain_together():
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        torch.zeros(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        IDENTITY_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+    )
+    with pytest.raises(ValueError, match="either reference_context or the legacy image"):
+        MiniMaxH3PromptEnhancer().enhance(
+            clip=FakeClip("unused"),
+            **enhancer_kwargs(reference_context=context, image=torch.zeros(1, 32, 32, 3)),
+        )
 
 
 def test_comma_collapse_returns_manual_prompt_with_report():
