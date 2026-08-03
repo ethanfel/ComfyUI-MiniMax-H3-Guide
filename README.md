@@ -28,8 +28,8 @@ MiniMax H3 Prompt Guide
     h3_prompt ─────┐
     mode_report ───┼─> MiniMax H3 Prompt Enhancer ─> enhanced_prompt
 standard CLIPLoader ┤                              ├─> system_prompt
-optional clip_tail ┤                              ├─> llm_prompt
-optional IMAGE ────┘                              └─> enhancer_report
+optional IMAGE ────┤                              ├─> llm_prompt
+Generation Tail Loader ─> clip_tail               └─> enhancer_report
 ```
 
 It produces:
@@ -43,18 +43,21 @@ The full base system prompt is visible in the node's editable `system_prompt` wi
 
 The optional `image` is used only as visual context while Qwen rewrites the prompt. Only the first image in a batch is used. Its presence does not automatically turn the task into image-to-video or make it an H3 keyframe.
 
-For a complete generative Qwen3-VL CLIP, leave `clip_tail` at
-`[none — connected CLIP is already complete]`. The enhancer calls the
-connected CLIP's normal `generate()` path, so this mode does not require or
-load the MiniMax tail.
+For a complete generative Qwen3-VL CLIP, leave the enhancer's optional
+`clip_tail` socket disconnected. The enhancer calls the connected CLIP's
+normal `generate()` path, so this mode does not require or load the MiniMax
+tail.
 
-For MiniMax H3's bundled conditioning CLIP, select
+For MiniMax H3's bundled conditioning CLIP, add **MiniMax H3 Generation Tail
+Loader**, select
 `qwen3vl_32b_minimax_h3_generation_tail_50_63_int8_convrot.safetensors` in
-`clip_tail`. The enhancer reuses the connected embedding, vision tower, and
+the loader, and connect its `clip_tail` output to the enhancer. The loader
+passes a lightweight descriptor and consumes no VRAM by itself. During
+enhancement, the enhancer reuses the connected embedding, vision tower, and
 language layers 0–49, loads only layers 50–63 plus the final norm and LM head,
 then unloads that tail when generation finishes. The connected 50-layer CLIP
-is never merged or modified and remains suitable for official H3
-conditioning. If the truncated CLIP is connected with no tail, enhancement is
+is never merged or modified and remains suitable for official H3 conditioning.
+If the truncated CLIP is connected without the side loader, enhancement is
 safely skipped and the manual prompt is returned unchanged.
 
 Download the INT8 tail from
@@ -65,15 +68,27 @@ Connect `enhanced_prompt` to ComfyUI's official **MiniMax H3 Image to Video** or
 
 ### Planning multiple shots
 
-Use `shot_and_timing_plan` for cuts. Write a human-readable plan; the enhancer converts it to H3 syntax:
+Add one **MiniMax H3 Shot** node per shot. Connect each `shot_plan` output to
+the next node's `previous_shots` input, then connect only the last node to the
+Prompt Guide's optional `shot_plan` input:
 
 ```text
-Shot 1, 00:00-00:02.500: medium shot establishing the room.
-Shot 2, cut at 00:02.500: close-up of the letter being opened.
-Shot 3, cut at 00:04.250: wide ending shot held through 00:06.000.
+MiniMax H3 Shot (0.000–2.500)
+    shot_plan ─> MiniMax H3 Shot (2.500–4.250)
+                    shot_plan ─> MiniMax H3 Shot (4.250–6.000)
+                                    shot_plan ─> Prompt Guide.shot_plan
 ```
 
-The enhanced prompt uses `[Shot 1]` without a timestamp, followed by `[Shot 2] At 00:02.500, ...` and `[Shot 3] At 00:04.250, ...`. Cut times must strictly increase and remain inside `duration_seconds`.
+Each node has float `start_time` and `end_time` controls with millisecond
+steps, a shot description, per-shot camera direction, and transition. The
+chain rejects gaps, overlaps, reversed ranges, a first shot that does not start
+at zero, and times above 15 seconds. Its final `end_time` becomes the prompt's
+duration. The generated draft uses `[Shot 1]` without a timestamp, followed by
+`[Shot 2] At 00:02.500, ...` and later exact cut markers.
+
+The Prompt Guide's `shot_and_timing_plan` text widget remains available under
+advanced controls for old workflows or a quick manual plan. A connected shot
+chain takes priority.
 
 ## Choosing the right route
 
@@ -131,7 +146,9 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/ethanfel/ComfyUI-MiniMax-H3-Guide
 ```
 
-Then add **MiniMax H3 Prompt Guide** and **MiniMax H3 Prompt Enhancer (Qwen3-VL)** from **MiniMax H3 → Prompting**.
+Then add **MiniMax H3 Prompt Guide**, **MiniMax H3 Shot**, **MiniMax H3
+Generation Tail Loader**, and **MiniMax H3 Prompt Enhancer (Qwen3-VL)** from
+**MiniMax H3 → Prompting** as needed.
 
 ## Practical notes
 
@@ -141,7 +158,7 @@ Then add **MiniMax H3 Prompt Guide** and **MiniMax H3 Prompt Enhancer (Qwen3-VL)
 - Reference audio cannot be the sole media input; it must be accompanied by an image or video.
 - The Prompt Guide node prepares text and labels only. Connect the actual media to the H3 generation nodes used by your workflow in the same label order.
 - For a polished generation prompt, send `rewrite_request` to your preferred LLM node and use its response as the final H3 prompt.
-- The included enhancer can use the same MiniMax H3 CLIP as conditioning when the optional generation tail is selected. The 32B model is large, so prompt enhancement can require substantial VRAM and time.
+- The included enhancer can use the same MiniMax H3 CLIP as conditioning when the Generation Tail Loader is connected. The 32B model is large, so prompt enhancement can require substantial VRAM and time.
 
 ## Test
 

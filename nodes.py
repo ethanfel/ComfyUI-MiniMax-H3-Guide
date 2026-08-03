@@ -8,6 +8,7 @@ NODE_CLASS_MAPPINGS interface.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import re
 from typing import Iterable
 
@@ -96,6 +97,9 @@ FIDELITIES = [
     WEAK_FIDELITY,
 ]
 
+SHOT_PLAN_TYPE = "MINIMAX_H3_SHOT_PLAN"
+SHOT_TRANSITIONS = ["Direct cut", "Cross-dissolve", "Fade", "Wipe"]
+
 _ASSET_RE = re.compile(
     r"^\s*<?(Subject|Picture|Video|Audio)\s*(\d+)>?\s*(?::|=|\s-\s)\s*(.+?)\s*$",
     re.IGNORECASE,
@@ -138,6 +142,99 @@ def _sentence(text: str, fallback: str = "") -> str:
     if value and value[-1] not in ".!?":
         value += "."
     return value
+
+
+def _format_timestamp(seconds: float) -> str:
+    """Format a float second value as the timestamp syntax used by H3."""
+
+    total_milliseconds = round(float(seconds) * 1000)
+    minutes, remainder = divmod(total_milliseconds, 60_000)
+    whole_seconds, milliseconds = divmod(remainder, 1000)
+    return f"{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
+
+
+def _shots_from_plan(shot_plan) -> list[dict]:
+    """Validate and copy the serializable shot-chain payload."""
+
+    if shot_plan is None:
+        return []
+    if not isinstance(shot_plan, dict) or not isinstance(shot_plan.get("shots"), (list, tuple)):
+        raise ValueError("shot_plan must come from a MiniMax H3 Shot node.")
+
+    shots: list[dict] = []
+    previous_end = 0.0
+    for index, raw_shot in enumerate(shot_plan["shots"], start=1):
+        if not isinstance(raw_shot, dict):
+            raise ValueError("shot_plan contains an invalid shot entry.")
+        try:
+            start = float(raw_shot["start_time"])
+            end = float(raw_shot["end_time"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("Every shot needs numeric start_time and end_time values.") from error
+        if not math.isfinite(start) or not math.isfinite(end):
+            raise ValueError("Shot times must be finite numbers.")
+        if index == 1 and not math.isclose(start, 0.0, abs_tol=0.0005):
+            raise ValueError("Shot 1 must start at 0.000 seconds.")
+        if index > 1 and not math.isclose(start, previous_end, abs_tol=0.0005):
+            raise ValueError(
+                f"Shot {index} must start at {_format_timestamp(previous_end)}, exactly when "
+                f"Shot {index - 1} ends; its current start is {_format_timestamp(start)}."
+            )
+        if end <= start:
+            raise ValueError(f"Shot {index} end_time must be greater than its start_time.")
+        if start < 0.0 or end > 15.0:
+            raise ValueError(f"Shot {index} must stay within the H3 range of 0 to 15 seconds.")
+        description = _clean(str(raw_shot.get("description", "")))
+        if not description:
+            raise ValueError(f"Shot {index} needs a visible action or composition description.")
+        shots.append(
+            {
+                "start_time": start,
+                "end_time": end,
+                "description": description,
+                "camera_direction": _clean(str(raw_shot.get("camera_direction", ""))),
+                "transition": str(raw_shot.get("transition", SHOT_TRANSITIONS[0])),
+            }
+        )
+        previous_end = end
+    if not shots:
+        raise ValueError("shot_plan contains no shots.")
+    return shots
+
+
+def _shot_body(shot: dict) -> str:
+    parts = [_sentence(shot["description"])]
+    if shot["camera_direction"]:
+        parts.append(_sentence(f"Camera direction: {shot['camera_direction']}"))
+    return " ".join(parts)
+
+
+def _render_structured_shots(shots: list[dict], first_context: str = "") -> str:
+    first_parts = [part for part in (first_context.strip(), _shot_body(shots[0])) if part]
+    lines = [f"[Shot 1] {' '.join(first_parts)}"]
+    transitions = {
+        "Direct cut": "the video cuts directly to the next composition",
+        "Cross-dissolve": "the previous composition cross-dissolves into the next",
+        "Fade": "the previous composition fades into the next",
+        "Wipe": "a wipe reveals the next composition",
+    }
+    for number, shot in enumerate(shots[1:], start=2):
+        transition = transitions.get(shot["transition"], transitions["Direct cut"])
+        lines.append(
+            f"[Shot {number}] At {_format_timestamp(shot['start_time'])}, {transition}. "
+            f"{_shot_body(shot)}"
+        )
+    return "\n".join(lines)
+
+
+def _shot_plan_preview(shots: list[dict]) -> str:
+    lines = []
+    for number, shot in enumerate(shots, start=1):
+        lines.append(
+            f"Shot {number} | {_format_timestamp(shot['start_time'])}–"
+            f"{_format_timestamp(shot['end_time'])} | {shot['description']}"
+        )
+    return "\n".join(lines)
 
 
 def parse_assets(reference_assets: str) -> tuple[list[Asset], list[str]]:
@@ -519,6 +616,7 @@ def _base_prompt(
     soundscape: str,
     music: str,
     reference_notes: list[str],
+    structured_shots: list[dict] | None = None,
 ) -> str:
     duration_text = f"{duration:.2f}"
     if mode == "I2VA":
@@ -547,17 +645,22 @@ def _base_prompt(
     body = _detail_body(
         target_description,
         visual_style,
-        shot_plan,
+        "" if structured_shots else shot_plan,
         camera_direction,
         dialogue_and_text,
         anchor,
         reference_notes,
     )
     style = _clean(visual_style, "Cinematic")
+    timeline = (
+        _render_structured_shots(structured_shots, f"{style}. {body}")
+        if structured_shots
+        else f"[Shot 1] {style}. {body}"
+    )
     sound = _section_sentence(soundscape, "Use coherent ambience and synchronized physical sounds")
     score = _section_sentence(music, "N/A")
     return (
-        f"{instruction}integrated_multimodal_description: [Shot 1] {style}. {body}\n\n"
+        f"{instruction}integrated_multimodal_description: {timeline}\n\n"
         f"overall_soundscape: {sound}\n\n"
         f"non_diegetic_music: {score}"
     )
@@ -579,6 +682,7 @@ def _reference_prompt(
     video_use: str,
     audio_use: str,
     reference_notes: list[str],
+    structured_shots: list[dict] | None = None,
 ) -> str:
     definitions = "\n".join(_definition_line(item) for item in items)
     types = " + ".join(_task_types(goal, image_use, video_use, audio_use))
@@ -600,13 +704,18 @@ def _reference_prompt(
     detail = _detail_body(
         target_description,
         visual_style,
-        shot_plan,
+        "" if structured_shots else shot_plan,
         camera_direction,
         dialogue_and_text,
         role_sentences,
         reference_notes,
     )
     style = _clean(visual_style, "cinematic audiovisual")
+    timeline = (
+        _render_structured_shots(structured_shots, detail)
+        if structured_shots
+        else f"[Shot 1] {detail}"
+    )
     sound = _section_sentence(soundscape, "Use coherent ambience and synchronized physical sounds")
     score = _section_sentence(music, "N/A")
 
@@ -616,7 +725,7 @@ def _reference_prompt(
         f"retention_analysis:\n{retention}\n\n"
         "detailed_description:\n"
         f"The target video uses a {style} style and lasts {duration:.2f} seconds.\n"
-        f"[Shot 1] {detail}\n\n"
+        f"{timeline}\n\n"
         f"overall_soundscape:\n{sound}\n\n"
         f"non_diegetic_music:\n{score}"
     )
@@ -751,6 +860,121 @@ Write camera motion naturally as motion type plus meaningful amplitude and speed
 
 STRUCTURED DRAFT TO EXPAND
 {draft}"""
+
+
+class MiniMaxH3Shot:
+    """Build one validated shot and optionally append it to an earlier shot chain."""
+
+    CATEGORY = "MiniMax H3/Prompting"
+    FUNCTION = "append_shot"
+    RETURN_TYPES = (SHOT_PLAN_TYPE, "STRING")
+    RETURN_NAMES = ("shot_plan", "shot_plan_preview")
+    OUTPUT_TOOLTIPS = (
+        "Connect to the next MiniMax H3 Shot.previous_shots input, or connect the last shot to Prompt Guide.shot_plan.",
+        "Readable list of the accumulated float ranges and descriptions. Connect to a text viewer to inspect the complete chain.",
+    )
+    DESCRIPTION = (
+        "Defines one H3 shot with an exact float time range. Chain nodes in playback order, then "
+        "connect the final shot_plan output to MiniMax H3 Prompt Guide."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "start_time": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 15.0,
+                        "step": 0.001,
+                        "tooltip": (
+                            "Start time in seconds. Shot 1 must start at 0.000. Every later shot must "
+                            "start exactly when the previous connected shot ends; this becomes its H3 cut timestamp."
+                        ),
+                    },
+                ),
+                "end_time": (
+                    "FLOAT",
+                    {
+                        "default": 6.0,
+                        "min": 0.001,
+                        "max": 15.0,
+                        "step": 0.001,
+                        "tooltip": (
+                            "End time in seconds; it must be greater than start_time. The final node's "
+                            "end_time becomes the target video duration when connected to Prompt Guide."
+                        ),
+                    },
+                ),
+                "description": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "dynamicPrompts": False,
+                        "default": "",
+                        "placeholder": "Example: A medium shot establishes the woman entering the rainy market.",
+                        "tooltip": (
+                            "Describe what is visible and what changes during only this time range: "
+                            "composition, subject action, setting, lighting, and ending state."
+                        ),
+                    },
+                ),
+                "camera_direction": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "placeholder": "Example: Slow, small-amplitude tracking move from the left.",
+                        "tooltip": (
+                            "Optional camera behavior for this shot. State motion type, meaningful "
+                            "speed/amplitude, or 'static camera'. It overrides no other shot."
+                        ),
+                    },
+                ),
+                "transition": (
+                    SHOT_TRANSITIONS,
+                    {
+                        "default": SHOT_TRANSITIONS[0],
+                        "tooltip": (
+                            "How this shot begins when it follows another shot. Shot 1 ignores this setting. "
+                            "A direct cut is the clearest default; use dissolves/fades/wipes only when intended."
+                        ),
+                    },
+                ),
+            },
+            "optional": {
+                "previous_shots": (
+                    SHOT_PLAN_TYPE,
+                    {
+                        "tooltip": (
+                            "Connect shot_plan from the preceding MiniMax H3 Shot. Leave disconnected "
+                            "only for Shot 1. Chains are validated to prevent gaps, overlaps, or reversed ranges."
+                        )
+                    },
+                )
+            },
+        }
+
+    def append_shot(
+        self,
+        start_time: float,
+        end_time: float,
+        description: str,
+        camera_direction: str,
+        transition: str,
+        previous_shots=None,
+    ):
+        shots = _shots_from_plan(previous_shots) if previous_shots is not None else []
+        candidate = {
+            "start_time": float(start_time),
+            "end_time": float(end_time),
+            "description": description,
+            "camera_direction": camera_direction,
+            "transition": transition,
+        }
+        validated = _shots_from_plan({"shots": [*shots, candidate]})
+        return ({"version": 1, "shots": validated}, _shot_plan_preview(validated))
 
 
 class MiniMaxH3PromptGuide:
@@ -889,11 +1113,12 @@ class MiniMaxH3PromptGuide:
                         "default": "",
                         "placeholder": "Shot 1, 00:00-00:02.500: establish the room.\nShot 2, cut at 00:02.500: close-up of the letter.\nShot 3, cut at 00:04.250: wide ending shot.",
                         "tooltip": (
-                            "Optional multi-shot plan in playback order. Give Shot 1's content but no H3 cut timestamp; for later shots provide the exact cut time. "
+                            "Advanced legacy fallback when no MiniMax H3 Shot chain is connected. Give Shot 1's content but no H3 cut timestamp; for later shots provide the exact cut time. "
                             "Example: 'Shot 1, 00:00-00:02.500: medium entrance. Shot 2, cut at 00:02.500: close-up. "
                             "Shot 3, cut at 00:04.250: wide ending.' The enhancer converts later cuts to '[Shot 2] At 00:02.500, ...'. "
-                            "Times must strictly increase and remain inside the duration."
+                            "Times must strictly increase and remain inside the duration. A connected shot_plan takes priority."
                         ),
+                        "advanced": True,
                     },
                 ),
                 "camera_direction": (
@@ -943,7 +1168,19 @@ class MiniMaxH3PromptGuide:
                         ),
                     },
                 ),
-            }
+            },
+            "optional": {
+                "shot_plan": (
+                    SHOT_PLAN_TYPE,
+                    {
+                        "tooltip": (
+                            "Recommended for multiple shots: connect the final MiniMax H3 Shot node. "
+                            "The guide writes real [Shot N] markers, validates contiguous float ranges, "
+                            "and uses the last end_time as the target duration. This overrides the manual shot field."
+                        )
+                    },
+                )
+            },
         }
 
     def build(
@@ -962,7 +1199,15 @@ class MiniMaxH3PromptGuide:
         dialogue_lyrics_and_visible_text: str,
         overall_soundscape: str,
         non_diegetic_music: str,
+        shot_plan=None,
     ):
+        structured_shots = _shots_from_plan(shot_plan) if shot_plan is not None else []
+        effective_duration = structured_shots[-1]["end_time"] if structured_shots else duration_seconds
+        if structured_shots and effective_duration < 4.0:
+            raise ValueError(
+                "The connected shot chain ends before H3's 4-second minimum. Extend the final shot "
+                "so its end_time is at least 4.000 seconds."
+            )
         parsed_assets, notes = parse_assets(reference_assets)
         effective_image_use, effective_video_use = _resolve_roles(
             what_do_you_want,
@@ -1008,6 +1253,13 @@ class MiniMaxH3PromptGuide:
             assets,
             warnings,
         )
+        if structured_shots:
+            report += (
+                f"\nShot chain: {len(structured_shots)} shot(s), 00:00.000–"
+                f"{_format_timestamp(effective_duration)}; final end_time overrides duration_seconds."
+            )
+            if shot_and_timing_plan.strip():
+                report += "\nManual shot fallback: ignored because shot_plan is connected."
 
         if decision.mode == "Ref2VA":
             items = _build_reference_items(
@@ -1027,7 +1279,7 @@ class MiniMaxH3PromptGuide:
                 ]
             draft = _reference_prompt(
                 what_do_you_want,
-                duration_seconds,
+                effective_duration,
                 items,
                 target_description,
                 visual_style,
@@ -1041,11 +1293,12 @@ class MiniMaxH3PromptGuide:
                 effective_video_use,
                 effective_audio_use,
                 notes,
+                structured_shots,
             )
         else:
             draft = _base_prompt(
                 decision.mode,
-                duration_seconds,
+                effective_duration,
                 target_description,
                 visual_style,
                 shot_and_timing_plan,
@@ -1054,6 +1307,7 @@ class MiniMaxH3PromptGuide:
                 overall_soundscape,
                 non_diegetic_music,
                 notes,
+                structured_shots,
             )
 
         rewrite = _rewrite_request(
@@ -1066,5 +1320,11 @@ class MiniMaxH3PromptGuide:
         return (draft, rewrite, report)
 
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3PromptGuide": MiniMaxH3PromptGuide}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3PromptGuide": "MiniMax H3 Prompt Guide"}
+NODE_CLASS_MAPPINGS = {
+    "MiniMaxH3PromptGuide": MiniMaxH3PromptGuide,
+    "MiniMaxH3Shot": MiniMaxH3Shot,
+}
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "MiniMaxH3PromptGuide": "MiniMax H3 Prompt Guide",
+    "MiniMaxH3Shot": "MiniMax H3 Shot",
+}

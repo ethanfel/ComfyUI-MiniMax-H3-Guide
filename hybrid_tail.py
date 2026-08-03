@@ -218,7 +218,7 @@ def _get_minimax_base(clip):
         raise ValueError(
             "clip_tail requires the normal 50-layer MiniMax H3 Qwen3-VL-32B "
             "CLIP loaded with ComfyUI's standard CLIPLoader. A complete "
-            "generative CLIP must use clip_tail = none."
+            "generative CLIP must leave the enhancer's clip_tail input disconnected."
         )
     return wrapper, base
 

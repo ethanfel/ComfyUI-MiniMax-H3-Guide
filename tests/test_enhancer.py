@@ -2,9 +2,13 @@ from contextlib import nullcontext
 import sys
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 from enhancer import (
     DEFAULT_SYSTEM_PROMPT,
     NO_TAIL,
+    TAIL_TYPE,
+    MiniMaxH3GenerationTailLoader,
     MiniMaxH3PromptEnhancer,
     _generate_with_clip,
     build_llm_user_prompt,
@@ -174,7 +178,8 @@ def test_minimax_image_generation_forwards_qwen_visual_metadata(monkeypatch):
 
 def test_enhancer_tooltips_explain_outputs_and_optional_image_scope():
     schema = MiniMaxH3PromptEnhancer.INPUT_TYPES()
-    assert schema["required"]["clip_tail"][0][0] == NO_TAIL
+    assert "clip_tail" not in schema["required"]
+    assert schema["optional"]["clip_tail"][0] == TAIL_TYPE
     assert "not automatically an H3 first frame" in schema["optional"]["image"][1]["tooltip"]
     assert "1000-1400" in schema["required"]["max_new_tokens"][1]["tooltip"]
     assert MiniMaxH3PromptEnhancer.RETURN_NAMES == (
@@ -183,6 +188,16 @@ def test_enhancer_tooltips_explain_outputs_and_optional_image_scope():
         "llm_prompt",
         "enhancer_report",
     )
+
+
+def test_generation_tail_loader_returns_lightweight_typed_descriptor():
+    loader = MiniMaxH3GenerationTailLoader()
+    tail_name = "MiniMax-H3/generation_tail_50_63_int8.safetensors"
+    (descriptor,) = loader.select_tail(tail_name)
+    assert descriptor == {"tail_name": tail_name}
+    assert loader.RETURN_TYPES == (TAIL_TYPE,)
+    with pytest.raises(RuntimeError, match="No compatible"):
+        loader.select_tail(NO_TAIL)
 
 
 def test_comma_collapse_returns_manual_prompt_with_report():
@@ -242,7 +257,11 @@ def test_truncated_h3_clip_uses_selected_tail(monkeypatch):
     monkeypatch.setattr("enhancer._generate_with_tail", fake_tail)
     enhanced, _, _, report = MiniMaxH3PromptEnhancer().enhance(
         clip=clip,
-        **enhancer_kwargs(clip_tail="MiniMax-H3/generation_tail_50_63_int8.safetensors"),
+        **enhancer_kwargs(
+            clip_tail={
+                "tail_name": "MiniMax-H3/generation_tail_50_63_int8.safetensors"
+            }
+        ),
     )
     assert enhanced.endswith("Tail result.")
     assert calls[0][0] is clip

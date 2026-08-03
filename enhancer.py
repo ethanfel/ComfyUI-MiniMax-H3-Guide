@@ -7,6 +7,7 @@ import re
 
 
 NO_TAIL = "[none — connected CLIP is already complete]"
+TAIL_TYPE = "MINIMAX_H3_GENERATION_TAIL"
 
 
 def _tail_choices() -> list[str]:
@@ -163,11 +164,28 @@ def clip_generation_issue(clip) -> str | None:
             "Enhancement skipped: the connected MiniMax H3 CLIP is the conditioning-only "
             "Qwen3-VL-32B checkpoint truncated to 50 layers, without a final normalization or "
             "language-model head. It can condition H3 but cannot reliably generate instructions. "
-            "Select the compatible layers 50-63 generation tail in clip_tail, connect a complete "
-            "instruction-tuned Qwen3-VL model with clip_tail set to none, or send llm_prompt to "
+            "Connect a MiniMax H3 Generation Tail Loader to clip_tail, connect a complete "
+            "instruction-tuned Qwen3-VL model, or send llm_prompt to "
             "another LLM node. manual_prompt was returned unchanged."
         )
     return None
+
+
+def _resolve_tail_name(clip_tail) -> str | None:
+    """Resolve the lightweight loader output, accepting old string inputs too."""
+
+    if clip_tail is None or clip_tail == NO_TAIL:
+        return None
+    if isinstance(clip_tail, str):
+        return clip_tail
+    if isinstance(clip_tail, dict):
+        tail_name = clip_tail.get("tail_name")
+        if isinstance(tail_name, str) and tail_name and tail_name != NO_TAIL:
+            return tail_name
+    raise ValueError(
+        "clip_tail must come from MiniMax H3 Generation Tail Loader, or be left disconnected "
+        "when the connected CLIP is already generation-capable."
+    )
 
 
 def _generate_with_clip(
@@ -212,6 +230,49 @@ def _generate_with_clip(
         )
 
 
+class MiniMaxH3GenerationTailLoader:
+    """Select a compatible H3 generation tail without loading it persistently."""
+
+    CATEGORY = "MiniMax H3/Prompting"
+    FUNCTION = "select_tail"
+    RETURN_TYPES = (TAIL_TYPE,)
+    RETURN_NAMES = ("clip_tail",)
+    OUTPUT_TOOLTIPS = (
+        "Connect this to Prompt Enhancer.clip_tail. This lightweight descriptor lets the enhancer "
+        "temporarily load layers 50-63, final norm, and LM head only while it writes the prompt.",
+    )
+    DESCRIPTION = (
+        "Side loader for MiniMax H3's optional Qwen3-VL generation tail. Use it only with the "
+        "bundled 50-layer conditioning CLIP; a complete generative Qwen3-VL CLIP needs no tail."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "tail_file": (
+                    _tail_choices(),
+                    {
+                        "tooltip": (
+                            "Select the layers 50-63 generation-tail safetensors stored under "
+                            "ComfyUI/models/text_encoders. If only the 'none' entry is shown, install "
+                            "the compatible MiniMax H3 tail and refresh ComfyUI. The weights are loaded "
+                            "temporarily by the enhancer, then unloaded; this node itself uses no VRAM."
+                        )
+                    },
+                )
+            }
+        }
+
+    def select_tail(self, tail_file: str):
+        if tail_file == NO_TAIL:
+            raise RuntimeError(
+                "No compatible MiniMax H3 generation tail was selected. Install a file whose name "
+                "contains 'generation_tail_50_63' under models/text_encoders, then refresh ComfyUI."
+            )
+        return ({"tail_name": tail_file},)
+
+
 class MiniMaxH3PromptEnhancer:
     """Generate an enhanced H3 prompt with ComfyUI's loaded Qwen3-VL CLIP."""
 
@@ -242,17 +303,8 @@ class MiniMaxH3PromptEnhancer:
                     {
                         "tooltip": (
                             "Connect either a complete instruction-tuned Qwen3-VL model or MiniMax H3's normal 50-layer conditioning CLIP. "
-                            "For the 50-layer MiniMax CLIP, select the matching generation tail below. "
+                            "For the 50-layer MiniMax CLIP, connect MiniMax H3 Generation Tail Loader to the optional clip_tail input. "
                             "This input means an LLM-capable ComfyUI CLIP, not an OpenAI CLIP vision model."
-                        )
-                    },
-                ),
-                "clip_tail": (
-                    _tail_choices(),
-                    {
-                        "tooltip": (
-                            "Leave at none when the connected CLIP already generates text. When the standard MiniMax H3 CLIP is connected, select the INT8 layers 50-63 generation-tail safetensors. "
-                            "The enhancer temporarily runs the connected layers 0-49 plus this tail, unloads the tail afterward, and never changes the conditioning CLIP."
                         )
                     },
                 ),
@@ -399,6 +451,16 @@ class MiniMaxH3PromptEnhancer:
                 ),
             },
             "optional": {
+                "clip_tail": (
+                    TAIL_TYPE,
+                    {
+                        "tooltip": (
+                            "Connect MiniMax H3 Generation Tail Loader only when clip is H3's bundled "
+                            "50-layer conditioning encoder. Leave disconnected for a complete "
+                            "generation-capable Qwen3-VL CLIP. The tail is temporary and does not alter clip."
+                        )
+                    },
+                ),
                 "image": (
                     "IMAGE",
                     {
@@ -427,7 +489,7 @@ class MiniMaxH3PromptEnhancer:
         presence_penalty: float,
         seed: int,
         thinking: bool,
-        clip_tail: str = NO_TAIL,
+        clip_tail=None,
         image=None,
     ):
         if clip is None:
@@ -446,7 +508,8 @@ class MiniMaxH3PromptEnhancer:
         if not thinking:
             llm_prompt += "<think>\n\n</think>\n\n"
 
-        compatibility_issue = clip_generation_issue(clip) if clip_tail == NO_TAIL else None
+        tail_name = _resolve_tail_name(clip_tail)
+        compatibility_issue = clip_generation_issue(clip) if tail_name is None else None
         if compatibility_issue:
             return (
                 manual_prompt.strip(),
@@ -476,7 +539,7 @@ class MiniMaxH3PromptEnhancer:
             "presence_penalty": presence_penalty,
             "seed": seed,
         }
-        if clip_tail == NO_TAIL:
+        if tail_name is None:
             generated_ids = _generate_with_clip(
                 clip,
                 tokens,
@@ -485,7 +548,7 @@ class MiniMaxH3PromptEnhancer:
             )
         else:
             generated_ids = _generate_with_tail(
-                clip, clip_tail, tokens, generation_options
+                clip, tail_name, tokens, generation_options
             )
         enhanced_prompt = clean_generated_prompt(clip.decode(generated_ids), manual_prompt)
         collapse = generation_collapse_reason(enhanced_prompt)
@@ -500,12 +563,18 @@ class MiniMaxH3PromptEnhancer:
             report = (
                 "Enhancement completed successfully with the temporary MiniMax generation tail; "
                 "the connected conditioning CLIP was left unchanged."
-                if clip_tail != NO_TAIL
+                if tail_name is not None
                 else "Enhancement completed successfully with the connected complete CLIP."
             )
 
         return (enhanced_prompt, resolved_system_prompt, llm_prompt, report)
 
 
-NODE_CLASS_MAPPINGS = {"MiniMaxH3PromptEnhancer": MiniMaxH3PromptEnhancer}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3PromptEnhancer": "MiniMax H3 Prompt Enhancer (Qwen3-VL)"}
+NODE_CLASS_MAPPINGS = {
+    "MiniMaxH3GenerationTailLoader": MiniMaxH3GenerationTailLoader,
+    "MiniMaxH3PromptEnhancer": MiniMaxH3PromptEnhancer,
+}
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "MiniMaxH3GenerationTailLoader": "MiniMax H3 Generation Tail Loader",
+    "MiniMaxH3PromptEnhancer": "MiniMax H3 Prompt Enhancer (Qwen3-VL)",
+}
