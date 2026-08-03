@@ -399,19 +399,6 @@ def _build_reference_items(
     videos = [asset for asset in assets if asset.kind == "Video" and video_use != NO_VIDEO]
     audios = [asset for asset in assets if asset.kind == "Audio" and audio_use != NO_AUDIO]
 
-    if video_use in {EDIT_VIDEO, CONTINUE_VIDEO} and not items and videos:
-        source_role = "edited" if video_use == EDIT_VIDEO else "continued"
-        item_role = "edited visible content" if video_use == EDIT_VIDEO else "visible content"
-        items.append(
-            ReferenceItem(
-                "<Subject 1>",
-                "Subject",
-                item_role,
-                f"the principal visible subject or scene from {videos[0].label} that is {source_role} "
-                "while remaining identifiable",
-            )
-        )
-
     if image_use in {APPEARANCE_IMAGE, MOTION_TARGET_IMAGE}:
         for picture in pictures:
             number = _next_subject_number(items)
@@ -694,10 +681,8 @@ def _reference_prompt(
         summary_start = "The target video continues from the ending state of <Video 1>."
     else:
         summary_start = "The target video is generated from the defined reference relationships."
-    summary = (
-        f"[{types}] {summary_start} {_sentence(target_description)} "
-        f"The reference roles use {labels}."
-    )
+    reference_clause = f" The reference roles use {labels}." if labels else ""
+    summary = f"[{types}] {summary_start} {_sentence(target_description)}{reference_clause}"
 
     retention = "\n".join(_retention_line(item, fidelity, audio_use) for item in items)
     role_sentences = _role_sentences(items, video_use)
@@ -718,11 +703,13 @@ def _reference_prompt(
     )
     sound = _section_sentence(soundscape, "Use coherent ambience and synchronized physical sounds")
     score = _section_sentence(music, "N/A")
+    definitions_block = f"{definitions}\n" if definitions else ""
+    retention_block = f"{retention}\n" if retention else ""
 
     return (
-        f"subject_definitions:\n{definitions}\n\n"
+        f"subject_definitions:\n{definitions_block}\n"
         f"summary:\n{summary}\n\n"
-        f"retention_analysis:\n{retention}\n\n"
+        f"retention_analysis:\n{retention_block}\n"
         "detailed_description:\n"
         f"The target video uses a {style} style and lasts {duration:.2f} seconds.\n"
         f"{timeline}\n\n"
@@ -1268,15 +1255,6 @@ class MiniMaxH3PromptGuide:
                 effective_video_use,
                 effective_audio_use,
             )
-            if not items:
-                items = [
-                    ReferenceItem(
-                        "<Subject 1>",
-                        "Subject",
-                        "visible content",
-                        "the main target subject described in the user brief",
-                    )
-                ]
             draft = _reference_prompt(
                 what_do_you_want,
                 effective_duration,

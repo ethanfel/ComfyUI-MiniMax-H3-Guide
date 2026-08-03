@@ -4,6 +4,7 @@ import torch
 from media_context import (
     EDIT_ROLE,
     IDENTITY_ROLE,
+    ITEM_ROLE,
     MOTION_ROLE,
     PICTURE_MEDIA,
     REFERENCE_CONTEXT_TYPE,
@@ -33,6 +34,23 @@ def test_picture_reference_preserves_h3_media_and_resizes_only_analysis_copy():
     assert entry["h3_input"] == "ref_image_0"
     assert "ref_image_0" in report
     assert MiniMaxH3EnhancerVisualReference.RETURN_TYPES[0] == REFERENCE_CONTEXT_TYPE
+
+
+def test_object_role_is_available_and_explains_h3_subject_semantics():
+    node = MiniMaxH3EnhancerVisualReference()
+    assert ITEM_ROLE in node.INPUT_TYPES()["required"]["reference_role"][0]
+    context, _, _ = node.add_reference(
+        torch.zeros(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        ITEM_ROLE,
+        "Use only the wristwatch",
+        24.0,
+        1.0,
+        16,
+        768,
+    )
+    entry = reference_entries(context)[0]
+    assert entry["role"] == ITEM_ROLE
 
 
 def test_mixed_chain_numbers_each_media_type_for_native_h3_inputs():

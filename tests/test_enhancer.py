@@ -238,14 +238,16 @@ def test_enhancer_analyzes_chained_pictures_and_video_with_generic_qwen():
         picture,
     )
     clip = FakeClip("enhanced prompt")
-    _, _, llm_prompt, report = MiniMaxH3PromptEnhancer().enhance(
+    _, system_prompt, llm_prompt, report = MiniMaxH3PromptEnhancer().enhance(
         clip=clip, **enhancer_kwargs(reference_context=context)
     )
     tokenized = clip.tokenize_calls[0]
     assert len(tokenized["kwargs"]["images"]) == 3
     assert llm_prompt.count("<|image_pad|>") == 3
     assert "<Picture 1>: role=Identity or appearance" in llm_prompt
+    assert "H3 label policy=derive only the reusable visible content" in llm_prompt
     assert "Visual inputs 2-3 are chronological samples from <Video 1>" in llm_prompt
+    assert "not a requirement to invent a <Subject N>" in system_prompt
     assert "1 chained picture(s) and 1 timestamped reference video(s)" in report
 
 

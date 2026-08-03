@@ -105,12 +105,22 @@ The two media paths deliberately use different sizes:
   capped across the complete clip with `max_analysis_frames` (16 by default).
   H3 still receives the full 24 FPS pass-through.
 
-Pictures and videos can declare roles such as identity, style, scene,
-keyframe, motion, camera/cut rhythm, editing source, or continuation source.
+Pictures and videos can declare roles such as identity, object/prop/clothing,
+style, scene, keyframe, motion, camera/cut rhythm, editing source, or continuation source.
 Optional notes tell Qwen exactly what to preserve, transfer, ignore, or change.
 A connected visual-reference chain is authoritative and makes the enhanced
 prompt Ref2VA even if an older/manual draft still contains a generic prompt
 family. Audio analysis is intentionally outside this chain for now.
+
+H3's `subject_definitions` name is broader than it sounds. `<Subject N>` can
+mean a person, object, prop, environment, visual style, action, expression, or
+pose—it is any reusable visible content, not necessarily a human subject. The
+enhancer does not create one automatically for every reference. A concrete
+frame/storyboard/composition anchor remains `<Picture N>`; an editing,
+continuation, or whole-video camera/cut/rhythm source remains `<Video N>`. If a
+picture or video only supplies reusable content, it is cited inside the
+corresponding `<Subject N>` definition and is not duplicated as a standalone
+definition.
 
 ### Planning multiple shots
 

@@ -12,6 +12,7 @@ VIDEO_MEDIA = "Video frames"
 MEDIA_TYPES = [PICTURE_MEDIA, VIDEO_MEDIA]
 
 IDENTITY_ROLE = "Identity or appearance"
+ITEM_ROLE = "Object, prop, clothing, interface, or effect"
 SCENE_ROLE = "Scene or environment"
 STYLE_ROLE = "Visual style"
 KEYFRAME_ROLE = "Storyboard or keyframe"
@@ -21,6 +22,7 @@ EDIT_ROLE = "Source video to edit"
 CONTINUE_ROLE = "Source video to continue"
 REFERENCE_ROLES = [
     IDENTITY_ROLE,
+    ITEM_ROLE,
     SCENE_ROLE,
     STYLE_ROLE,
     KEYFRAME_ROLE,
@@ -31,6 +33,28 @@ REFERENCE_ROLES = [
 ]
 
 H3_VIDEO_FPS = 24.0
+
+
+def _label_policy(entry: dict) -> str:
+    """Explain which H3 semantic label the declared asset role normally needs."""
+
+    role = entry["role"]
+    label = entry["label"]
+    if role in {IDENTITY_ROLE, ITEM_ROLE, SCENE_ROLE, STYLE_ROLE, MOTION_ROLE}:
+        return (
+            f"derive only the reusable visible content as one or more <Subject N> items citing "
+            f"{label} as their source; do not also define {label} unless the asset has a separate "
+            "frame or whole-video role"
+        )
+    if entry["kind"] == "image":
+        return (
+            f"track {label} directly as a concrete frame, storyboard, or composition anchor; "
+            "do not invent a <Subject N> unless reusable visible content is separately requested"
+        )
+    return (
+        f"track {label} directly as a whole-video editing, continuation, or temporal-structure "
+        "reference; do not invent a <Subject N> unless reusable visible content is separately requested"
+    )
 
 
 def reference_entries(reference_context) -> list[dict]:
@@ -70,6 +94,7 @@ def reference_inventory(entries: list[dict]) -> str:
             )
         if entry.get("notes"):
             detail += f"; user notes={entry['notes']}"
+        detail += f"; H3 label policy={_label_policy(entry)}"
         lines.append(f"{entry['label']}: {detail}.")
     return "\n".join(lines)
 
@@ -187,7 +212,9 @@ class MiniMaxH3EnhancerVisualReference:
                         "default": IDENTITY_ROLE,
                         "tooltip": (
                             "Tell Qwen what it may learn from this reference. This role is evidence for "
-                            "rewriting the prompt; it does not silently turn a picture into a first/last frame."
+                            "rewriting the prompt; it does not silently turn a picture into a first/last frame. "
+                            "In H3 vocabulary, an object, prop, environment, style, or action reused as "
+                            "visible content is a <Subject N>; Subject does not mean person only."
                         ),
                     },
                 ),

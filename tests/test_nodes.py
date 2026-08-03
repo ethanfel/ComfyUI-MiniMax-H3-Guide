@@ -103,9 +103,17 @@ def test_video_edit_with_reused_audio_gets_combined_task_prefix():
 def test_explicit_edit_goal_infers_the_source_video_role():
     prompt, _, report = build(what_do_you_want=EDIT_GOAL)
     assert "<Video 1> is the source video for the target video edit" in prompt
-    assert "<Subject 1> is the principal visible subject or scene from <Video 1>" in prompt
+    assert "<Subject 1>" not in prompt
     assert "The target video is an edited version of <Video 1>." in prompt
     assert "Warnings: none." in report
+
+
+def test_reference_mode_without_declared_assets_does_not_invent_subject():
+    prompt, _, report = build(what_do_you_want=REFERENCE_GOAL)
+    assert prompt.startswith("subject_definitions:\n\nsummary:")
+    assert "<Subject 1>" not in prompt
+    assert "The reference roles use ." not in prompt
+    assert "Ref2VA is selected but no image, video, or audio reference is described" in report
 
 
 def test_audio_only_reference_warns_about_required_visual_input():
