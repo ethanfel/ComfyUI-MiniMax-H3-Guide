@@ -2,7 +2,36 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import re
+
+
+NO_TAIL = "[none — connected CLIP is already complete]"
+
+
+def _tail_choices() -> list[str]:
+    """List only compatible generation-tail files when ComfyUI is available."""
+
+    try:
+        import folder_paths
+    except ImportError:
+        return [NO_TAIL]
+    tails = [
+        name
+        for name in folder_paths.get_filename_list("text_encoders")
+        if "generation_tail_50_63" in name.casefold()
+    ]
+    return [NO_TAIL, *sorted(tails, key=str.casefold)]
+
+
+def _generate_with_tail(clip, tail_name: str, tokens, generation_options: dict):
+    """Lazy import keeps this node pack importable outside ComfyUI for tests."""
+
+    try:
+        from .hybrid_tail import generate_with_tail
+    except ImportError:
+        from hybrid_tail import generate_with_tail
+    return generate_with_tail(clip, tail_name, tokens, generation_options)
 
 
 DEFAULT_SYSTEM_PROMPT = """You are an expert prompt engineer for MiniMax H3 audiovisual generation. Rewrite the supplied manual H3 draft into a production-ready prompt. Do not discuss the task, explain your choices, or add a preface. Return only the finished H3 prompt.
@@ -93,6 +122,54 @@ def clean_generated_prompt(text: str, fallback: str) -> str:
     return value or fallback.strip()
 
 
+def generation_collapse_reason(text: str) -> str | None:
+    """Recognize common LLM decoding collapse without rejecting short valid prompts."""
+
+    value = (text or "").strip()
+    if not value:
+        return "the model returned no text"
+    if len(value) < 40:
+        return None
+
+    non_space = [char for char in value if not char.isspace()]
+    alphanumeric = sum(char.isalnum() for char in non_space)
+    if non_space and alphanumeric / len(non_space) < 0.05:
+        return "the output collapsed into punctuation"
+
+    tokens = re.findall(r"[\w<>/.-]+|[^\w\s]", value.casefold())
+    if len(tokens) >= 20:
+        _, repeated_count = Counter(tokens).most_common(1)[0]
+        if repeated_count / len(tokens) >= 0.75:
+            return "the output repeated one token almost exclusively"
+    return None
+
+
+def clip_generation_issue(clip) -> str | None:
+    """Explain why MiniMax's truncated conditioning encoder should not generate text."""
+
+    if not _is_minimax_h3_tokenizer(clip):
+        return None
+    stage = getattr(clip, "cond_stage_model", None)
+    if stage is None or not hasattr(stage, "clip"):
+        return None
+    inner_clip = getattr(stage, stage.clip, None)
+    transformer = getattr(inner_clip, "transformer", None)
+    config = getattr(getattr(transformer, "model", None), "config", None)
+    layers = getattr(config, "num_hidden_layers", getattr(transformer, "num_layers", None))
+    has_lm_head = getattr(config, "lm_head", None)
+    has_final_norm = getattr(config, "final_norm", None)
+    if layers == 50 and has_lm_head is False and has_final_norm is False:
+        return (
+            "Enhancement skipped: the connected MiniMax H3 CLIP is the conditioning-only "
+            "Qwen3-VL-32B checkpoint truncated to 50 layers, without a final normalization or "
+            "language-model head. It can condition H3 but cannot reliably generate instructions. "
+            "Select the compatible layers 50-63 generation tail in clip_tail, connect a complete "
+            "instruction-tuned Qwen3-VL model with clip_tail set to none, or send llm_prompt to "
+            "another LLM node. manual_prompt was returned unchanged."
+        )
+    return None
+
+
 def _generate_with_clip(
     clip,
     tokens,
@@ -136,21 +213,23 @@ def _generate_with_clip(
 
 
 class MiniMaxH3PromptEnhancer:
-    """Generate an enhanced H3 prompt and immediately encode its text conditioning."""
+    """Generate an enhanced H3 prompt with ComfyUI's loaded Qwen3-VL CLIP."""
 
     CATEGORY = "MiniMax H3/Prompting"
     FUNCTION = "enhance"
-    RETURN_TYPES = ("STRING", "CONDITIONING", "STRING", "STRING")
-    RETURN_NAMES = ("enhanced_prompt", "conditioning", "system_prompt", "llm_prompt")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("enhanced_prompt", "system_prompt", "llm_prompt", "enhancer_report")
     OUTPUT_TOOLTIPS = (
         "Final text produced by Qwen after cleanup. For all H3 modes, this is the prompt to save or connect to an official MiniMax H3 conditioning node.",
-        "Text-only conditioning encoded from enhanced_prompt. Connect it directly only for T2VA. For I2VA/FL2VA/L2VA/Ref2VA, use enhanced_prompt with the official H3 node so keyframe/reference VAE latents are attached.",
         "Exact resolved system instructions used for enhancement. Connect to a text viewer to inspect/copy them; edit the system_prompt widget to customize behavior.",
         "Complete Qwen chat input, including system and user turns. Use this for debugging what the LLM received; do not send it to H3 as the video prompt.",
+        "Generation status. It explains whether enhancement succeeded, was skipped because the CLIP is conditioning-only, or fell back after repetitive/punctuation output.",
     )
     DESCRIPTION = (
-        "Second step after MiniMax H3 Prompt Guide. Connect h3_prompt, mode_report, and a generation-capable Qwen3-VL CLIP. "
-        "The node optionally analyzes one image, rewrites the draft with an editable system prompt, and returns both final text and text-only conditioning."
+        "Second step after MiniMax H3 Prompt Guide. Connect h3_prompt, mode_report, and a Qwen3-VL CLIP. "
+        "A complete generative CLIP needs no tail; MiniMax H3's 50-layer conditioning CLIP uses the optional 50-63 tail. "
+        "The node optionally analyzes one image and rewrites the draft with an editable system prompt. "
+        "Connect enhanced_prompt to ComfyUI's official H3 conditioning node."
     )
 
     @classmethod
@@ -162,8 +241,18 @@ class MiniMaxH3PromptEnhancer:
                     "CLIP",
                     {
                         "tooltip": (
-                            "Connect a generation-capable Qwen3-VL CLIP, normally the Qwen3-VL-32B text encoder loaded for MiniMax H3. "
-                            "This is an LLM-capable ComfyUI CLIP, not an OpenAI CLIP vision model. The node uses the same tokenize/generate/decode interface as Generate Text, then reuses it to encode the result."
+                            "Connect either a complete instruction-tuned Qwen3-VL model or MiniMax H3's normal 50-layer conditioning CLIP. "
+                            "For the 50-layer MiniMax CLIP, select the matching generation tail below. "
+                            "This input means an LLM-capable ComfyUI CLIP, not an OpenAI CLIP vision model."
+                        )
+                    },
+                ),
+                "clip_tail": (
+                    _tail_choices(),
+                    {
+                        "tooltip": (
+                            "Leave at none when the connected CLIP already generates text. When the standard MiniMax H3 CLIP is connected, select the INT8 layers 50-63 generation-tail safetensors. "
+                            "The enhancer temporarily runs the connected layers 0-49 plus this tail, unloads the tail afterward, and never changes the conditioning CLIP."
                         )
                     },
                 ),
@@ -338,6 +427,7 @@ class MiniMaxH3PromptEnhancer:
         presence_penalty: float,
         seed: int,
         thinking: bool,
+        clip_tail: str = NO_TAIL,
         image=None,
     ):
         if clip is None:
@@ -355,6 +445,15 @@ class MiniMaxH3PromptEnhancer:
         )
         if not thinking:
             llm_prompt += "<think>\n\n</think>\n\n"
+
+        compatibility_issue = clip_generation_issue(clip) if clip_tail == NO_TAIL else None
+        if compatibility_issue:
+            return (
+                manual_prompt.strip(),
+                resolved_system_prompt,
+                llm_prompt,
+                compatibility_issue,
+            )
 
         tokenize_options = {
             "skip_template": True,
@@ -377,17 +476,35 @@ class MiniMaxH3PromptEnhancer:
             "presence_penalty": presence_penalty,
             "seed": seed,
         }
-        generated_ids = _generate_with_clip(
-            clip,
-            tokens,
-            generation_options,
-            use_minimax_image_path=minimax_clip and has_image,
-        )
+        if clip_tail == NO_TAIL:
+            generated_ids = _generate_with_clip(
+                clip,
+                tokens,
+                generation_options,
+                use_minimax_image_path=minimax_clip and has_image,
+            )
+        else:
+            generated_ids = _generate_with_tail(
+                clip, clip_tail, tokens, generation_options
+            )
         enhanced_prompt = clean_generated_prompt(clip.decode(generated_ids), manual_prompt)
+        collapse = generation_collapse_reason(enhanced_prompt)
+        if collapse:
+            report = (
+                f"Enhancement fallback: {collapse}. manual_prompt was returned unchanged. "
+                "Try deterministic sampling, lower temperature, or a complete instruction-tuned "
+                "Qwen3-VL model."
+            )
+            enhanced_prompt = manual_prompt.strip()
+        else:
+            report = (
+                "Enhancement completed successfully with the temporary MiniMax generation tail; "
+                "the connected conditioning CLIP was left unchanged."
+                if clip_tail != NO_TAIL
+                else "Enhancement completed successfully with the connected complete CLIP."
+            )
 
-        conditioning_tokens = clip.tokenize(enhanced_prompt)
-        conditioning = clip.encode_from_tokens_scheduled(conditioning_tokens)
-        return (enhanced_prompt, conditioning, resolved_system_prompt, llm_prompt)
+        return (enhanced_prompt, resolved_system_prompt, llm_prompt, report)
 
 
 NODE_CLASS_MAPPINGS = {"MiniMaxH3PromptEnhancer": MiniMaxH3PromptEnhancer}

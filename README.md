@@ -1,6 +1,6 @@
 # ComfyUI MiniMax H3 Prompt Guide
 
-A dependency-free ComfyUI node pack that turns a rough video idea into the prompt structure expected by MiniMax H3. It asks how each image, video, and audio asset is meant to be used, selects the appropriate H3 mode, and can use ComfyUI's loaded Qwen3-VL CLIP to enhance and encode the result.
+A dependency-free ComfyUI node pack that turns a rough video idea into the prompt structure expected by MiniMax H3. It asks how each image, video, and audio asset is meant to be used, selects the appropriate H3 mode, and can use ComfyUI's loaded Qwen3-VL CLIP to enhance the result.
 
 The node is based on MiniMax's official [base prompt guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md), [full-reference prompt guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md), and [H3 model card](https://huggingface.co/MiniMaxAI/MiniMax-H3).
 
@@ -18,28 +18,50 @@ No model, API key, or Python dependency is required.
 
 ### MiniMax H3 Prompt Enhancer (Qwen3-VL)
 
-This node follows ComfyUI's native **Generate Text** execution model. Connect a generation-capable Qwen3-VL `CLIP`, then connect `h3_prompt` and optionally `mode_report` from the guide node:
+This node follows ComfyUI's native **Generate Text** execution model. Connect
+`h3_prompt` and optionally `mode_report` from the guide node. Its `CLIP` input
+accepts either a complete generation-capable Qwen3-VL model or MiniMax H3's
+normal 50-layer conditioning CLIP plus the optional 50–63 generation tail:
 
 ```text
 MiniMax H3 Prompt Guide
     h3_prompt ─────┐
     mode_report ───┼─> MiniMax H3 Prompt Enhancer ─> enhanced_prompt
-Qwen3-VL CLIP ─────┤                              └─> conditioning
-optional IMAGE ────┘
+standard CLIPLoader ┤                              ├─> system_prompt
+optional clip_tail ┤                              ├─> llm_prompt
+optional IMAGE ────┘                              └─> enhancer_report
 ```
 
 It produces:
 
 1. `enhanced_prompt` — Qwen's cleaned and properly formatted H3 prompt.
-2. `conditioning` — the enhanced text encoded with the connected CLIP.
-3. `system_prompt` — the resolved base enhancer instructions, exposed so they can be reused, inspected, or edited.
-4. `llm_prompt` — the complete Qwen chat text used for generation.
+2. `system_prompt` — the resolved base enhancer instructions, exposed so they can be reused, inspected, or edited.
+3. `llm_prompt` — the complete Qwen chat text used for generation.
+4. `enhancer_report` — success, compatibility, or generation-collapse status.
 
 The full base system prompt is visible in the node's editable `system_prompt` widget. If that widget is blank, the built-in default is restored. Sampling controls match the important controls from ComfyUI's Generate Text node: maximum generated tokens, deterministic or sampled decoding, temperature, top-k, top-p, min-p, repetition/presence penalties, seed, and thinking mode.
 
 The optional `image` is used only as visual context while Qwen rewrites the prompt. Only the first image in a batch is used. Its presence does not automatically turn the task into image-to-video or make it an H3 keyframe.
 
-For text-only T2VA, `conditioning` can be connected directly to a MiniMax H3 sampling workflow. For I2VA, FL2VA, L2VA, and Ref2VA, connect `enhanced_prompt` to ComfyUI's official **MiniMax H3 Image to Video** or **MiniMax H3 Reference to Video** node. Those nodes attach the required keyframe/reference VAE latents and media metadata; plain text conditioning cannot contain them.
+For a complete generative Qwen3-VL CLIP, leave `clip_tail` at
+`[none — connected CLIP is already complete]`. The enhancer calls the
+connected CLIP's normal `generate()` path, so this mode does not require or
+load the MiniMax tail.
+
+For MiniMax H3's bundled conditioning CLIP, select
+`qwen3vl_32b_minimax_h3_generation_tail_50_63_int8_convrot.safetensors` in
+`clip_tail`. The enhancer reuses the connected embedding, vision tower, and
+language layers 0–49, loads only layers 50–63 plus the final norm and LM head,
+then unloads that tail when generation finishes. The connected 50-layer CLIP
+is never merged or modified and remains suitable for official H3
+conditioning. If the truncated CLIP is connected with no tail, enhancement is
+safely skipped and the manual prompt is returned unchanged.
+
+Download the INT8 tail from
+[`ethanfel/Qwen3-VL-32B-Ultra-Heretic-MiniMax-H3-ComfyUI-INT8-ConvRot`](https://huggingface.co/ethanfel/Qwen3-VL-32B-Ultra-Heretic-MiniMax-H3-ComfyUI-INT8-ConvRot)
+and place it under `ComfyUI/models/text_encoders/MiniMax-H3/`.
+
+Connect `enhanced_prompt` to ComfyUI's official **MiniMax H3 Image to Video** or **MiniMax H3 Reference to Video** node. Those nodes encode the prompt and attach the correct AV latent plus any keyframe/reference VAE latents and media metadata. The enhancer deliberately does not emit a separate `CONDITIONING` output because it would duplicate the official node for T2VA and be incomplete for image/reference tasks.
 
 ### Planning multiple shots
 
@@ -106,7 +128,7 @@ Clone or copy this folder into `ComfyUI/custom_nodes/` and restart ComfyUI:
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone <repository-url> ComfyUI-MiniMax-H3-Guide
+git clone https://github.com/ethanfel/ComfyUI-MiniMax-H3-Guide
 ```
 
 Then add **MiniMax H3 Prompt Guide** and **MiniMax H3 Prompt Enhancer (Qwen3-VL)** from **MiniMax H3 → Prompting**.
@@ -119,7 +141,7 @@ Then add **MiniMax H3 Prompt Guide** and **MiniMax H3 Prompt Enhancer (Qwen3-VL)
 - Reference audio cannot be the sole media input; it must be accompanied by an image or video.
 - The Prompt Guide node prepares text and labels only. Connect the actual media to the H3 generation nodes used by your workflow in the same label order.
 - For a polished generation prompt, send `rewrite_request` to your preferred LLM node and use its response as the final H3 prompt.
-- Alternatively, use the included Qwen3-VL enhancer with the MiniMax H3 CLIP. The 32B text encoder is large, so prompt enhancement can require substantial VRAM and time.
+- The included enhancer can use the same MiniMax H3 CLIP as conditioning when the optional generation tail is selected. The 32B model is large, so prompt enhancement can require substantial VRAM and time.
 
 ## Test
 

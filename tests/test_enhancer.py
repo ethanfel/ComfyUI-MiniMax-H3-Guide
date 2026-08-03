@@ -4,11 +4,14 @@ from types import ModuleType, SimpleNamespace
 
 from enhancer import (
     DEFAULT_SYSTEM_PROMPT,
+    NO_TAIL,
     MiniMaxH3PromptEnhancer,
     _generate_with_clip,
     build_llm_user_prompt,
+    clip_generation_issue,
     clean_generated_prompt,
     format_chat_prompt,
+    generation_collapse_reason,
 )
 
 
@@ -39,9 +42,6 @@ class FakeClip:
     def decode(self, token_ids):
         assert token_ids == [10, 20, 30]
         return self.decoded
-
-    def encode_from_tokens_scheduled(self, tokens):
-        return [["conditioning", {"source": tokens["text"]}]]
 
 
 def enhancer_kwargs(**overrides):
@@ -86,17 +86,17 @@ def test_clean_generated_prompt_removes_thinking_and_fences():
     assert clean_generated_prompt(text, "fallback") == "summary:\nDone."
 
 
-def test_enhancer_generates_then_encodes_the_clean_text():
+def test_enhancer_generates_and_returns_clean_text_artifacts():
     clip = FakeClip("```text\nintegrated_multimodal_description: [Shot 1] Enhanced fox.\n```")
-    enhanced, conditioning, system, llm_prompt = MiniMaxH3PromptEnhancer().enhance(
+    enhanced, system, llm_prompt, report = MiniMaxH3PromptEnhancer().enhance(
         clip=clip, **enhancer_kwargs()
     )
     assert enhanced == "integrated_multimodal_description: [Shot 1] Enhanced fox."
-    assert conditioning[0][1]["source"] == enhanced
     assert system == DEFAULT_SYSTEM_PROMPT
     assert "Recommended mode: T2VA" in llm_prompt
     assert clip.generate_call["max_length"] == 1400
     assert clip.generate_call["do_sample"] is True
+    assert report == "Enhancement completed successfully with the connected complete CLIP."
 
 
 def test_enhancer_passes_optional_image_to_qwen_tokenizer():
@@ -111,7 +111,7 @@ def test_enhancer_passes_optional_image_to_qwen_tokenizer():
 
 def test_blank_system_prompt_restores_editable_default():
     clip = FakeClip("enhanced")
-    _, _, system, _ = MiniMaxH3PromptEnhancer().enhance(
+    _, system, _, _ = MiniMaxH3PromptEnhancer().enhance(
         clip=clip, **enhancer_kwargs(system_prompt="")
     )
     assert system == DEFAULT_SYSTEM_PROMPT
@@ -172,8 +172,80 @@ def test_minimax_image_generation_forwards_qwen_visual_metadata(monkeypatch):
     assert result == [99]
 
 
-def test_enhancer_tooltips_explain_conditioning_and_optional_image_scope():
+def test_enhancer_tooltips_explain_outputs_and_optional_image_scope():
     schema = MiniMaxH3PromptEnhancer.INPUT_TYPES()
+    assert schema["required"]["clip_tail"][0][0] == NO_TAIL
     assert "not automatically an H3 first frame" in schema["optional"]["image"][1]["tooltip"]
     assert "1000-1400" in schema["required"]["max_new_tokens"][1]["tooltip"]
-    assert "Connect it directly only for T2VA" in MiniMaxH3PromptEnhancer.OUTPUT_TOOLTIPS[1]
+    assert MiniMaxH3PromptEnhancer.RETURN_NAMES == (
+        "enhanced_prompt",
+        "system_prompt",
+        "llm_prompt",
+        "enhancer_report",
+    )
+
+
+def test_comma_collapse_returns_manual_prompt_with_report():
+    clip = FakeClip("," * 500)
+    manual = "integrated_multimodal_description: [Shot 1] Keep this draft."
+    enhanced, _, _, report = MiniMaxH3PromptEnhancer().enhance(
+        clip=clip, **enhancer_kwargs(manual_prompt=manual)
+    )
+    assert enhanced == manual
+    assert "collapsed into punctuation" in report
+
+
+def test_generation_collapse_detection_keeps_normal_text():
+    assert generation_collapse_reason("," * 100) == "the output collapsed into punctuation"
+    assert generation_collapse_reason("A coherent prompt with varied words and useful punctuation.") is None
+
+
+def test_truncated_h3_conditioning_clip_is_rejected_before_generation():
+    class Config:
+        num_hidden_layers = 50
+        lm_head = False
+        final_norm = False
+
+    transformer = SimpleNamespace(model=SimpleNamespace(config=Config()))
+    inner = SimpleNamespace(transformer=transformer)
+    stage = SimpleNamespace(clip="qwen", qwen=inner)
+    clip = FakeClip("should never decode", minimax=True)
+    clip.cond_stage_model = stage
+
+    issue = clip_generation_issue(clip)
+    assert "conditioning-only" in issue
+    enhanced, _, _, report = MiniMaxH3PromptEnhancer().enhance(
+        clip=clip, **enhancer_kwargs()
+    )
+    assert enhanced == enhancer_kwargs()["manual_prompt"]
+    assert clip.generate_call is None
+    assert report == issue
+
+
+def test_truncated_h3_clip_uses_selected_tail(monkeypatch):
+    class Config:
+        num_hidden_layers = 50
+        lm_head = False
+        final_norm = False
+
+    transformer = SimpleNamespace(model=SimpleNamespace(config=Config()))
+    inner = SimpleNamespace(transformer=transformer)
+    stage = SimpleNamespace(clip="qwen", qwen=inner)
+    clip = FakeClip("integrated_multimodal_description: [Shot 1] Tail result.", minimax=True)
+    clip.cond_stage_model = stage
+    calls = []
+
+    def fake_tail(connected_clip, tail_name, tokens, generation_options):
+        calls.append((connected_clip, tail_name, tokens, generation_options))
+        return [10, 20, 30]
+
+    monkeypatch.setattr("enhancer._generate_with_tail", fake_tail)
+    enhanced, _, _, report = MiniMaxH3PromptEnhancer().enhance(
+        clip=clip,
+        **enhancer_kwargs(clip_tail="MiniMax-H3/generation_tail_50_63_int8.safetensors"),
+    )
+    assert enhanced.endswith("Tail result.")
+    assert calls[0][0] is clip
+    assert calls[0][1].endswith("generation_tail_50_63_int8.safetensors")
+    assert clip.generate_call is None
+    assert "temporary MiniMax generation tail" in report
