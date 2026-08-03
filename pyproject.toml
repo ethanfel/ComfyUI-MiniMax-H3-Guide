@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-minimax-h3-guide"
-version = "0.6.1"
+version = "0.7.0"
 description = "A guided MiniMax H3 prompt preparation node for ComfyUI"
 requires-python = ">=3.10"
 dependencies = []
