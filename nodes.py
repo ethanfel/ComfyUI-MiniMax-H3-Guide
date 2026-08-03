@@ -857,6 +857,7 @@ def _detail_body(
     dialogue_and_text: str,
     role_sentences: str,
     reference_notes: list[str],
+    complete_audio_label: str = "",
 ) -> str:
     parts = [_sentence(target_description, "Create a coherent audiovisual scene from the supplied intent")]
     if role_sentences:
@@ -866,11 +867,18 @@ def _detail_body(
     if camera_direction.strip():
         parts.append(_sentence(camera_direction))
     if dialogue_and_text.strip():
+        audio_constraint = (
+            f" Any spoken or sung wording must already exist in the unchanged {complete_audio_label} "
+            "track; do not synthesize, replace, or remix audio."
+            if complete_audio_label
+            else ""
+        )
         parts.append(
             _sentence(
                 "Dialogue and visible-text requirements: "
                 f"{dialogue_and_text} Preserve exact wording and language; put spoken words inside "
                 "<d>[Language] ...</d> and visible text in double quotation marks"
+                + audio_constraint
             )
         )
     if reference_notes:
@@ -1071,6 +1079,10 @@ def _reference_prompt(
         for item in items
     )
     role_sentences = _role_sentences(items, video_use)
+    complete_audio_label = next(
+        (item.label for item in items if item.role == "complete synchronized audio reuse"),
+        "",
+    )
     detail = _detail_body(
         target_description,
         visual_style,
@@ -1079,6 +1091,7 @@ def _reference_prompt(
         dialogue_and_text,
         role_sentences,
         reference_notes,
+        complete_audio_label,
     )
     style_sentence = _reference_style_sentence(visual_style)
     timeline = (
@@ -1112,6 +1125,7 @@ def _warnings(
     target_description: str,
     reference_fidelity: str,
     shot_count: int,
+    dialogue_and_text: str,
 ) -> list[str]:
     warnings = _asset_label_warnings(assets)
     if not target_description.strip():
@@ -1153,6 +1167,12 @@ def _warnings(
         warnings.append(
             "Complete 1:1 audio reuse requires exactly one Audio label; use partial reuse when "
             "mixing multiple source signals."
+        )
+    if audio_use == COPY_ALL_AUDIO and dialogue_and_text.strip():
+        warnings.append(
+            "Complete audio reuse cannot create a new spoken or sung signal. Treat dialogue/lyrics "
+            "in the combined text field as a transcription of the unchanged copied Audio track "
+            "(new visible text is still allowed), or choose partial reuse/audio reference."
         )
 
     if audio_use != NO_AUDIO and active_picture_count == 0 and active_video_count == 0:
@@ -1276,7 +1296,7 @@ def _rewrite_request(
     if decision.mode == "Ref2VA":
         format_rules = """Return exactly these six English sections in order:
 subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music.
-Use stable <Subject N>, <Picture N>, <Video N>, and <Audio N> labels. In summary, use only applicable fixed task types: keyframe completion, reference generation, video editing, video continuation, audio reuse, audio reference. In retention_analysis, use only fully_preserved, partially_preserved, attribute_transfer, or weak_reference for visual references, and fully_copy, partially_copy, reference, or weak_reference for audio. Make detailed_description explicit and chronological, normally 350-500 English words for generation tasks. Establish style before [Shot 1]."""
+Use stable <Subject N>, <Picture N>, <Video N>, and <Audio N> labels. In summary, use only applicable fixed task types: keyframe completion, reference generation, video editing, video continuation, audio reuse, audio reference. In retention_analysis, use only fully_preserved, partially_preserved, attribute_transfer, or weak_reference for visual references, and fully_copy, partially_copy, reference, or weak_reference for audio. A fully_copy source is the complete final track: do not add, replace, remix, or synthesize any dialogue, lyrics, ambience, effects, or music, and cite it in every applicable audio section. Make detailed_description explicit and chronological, normally 350-500 English words for generation tasks. Establish style before [Shot 1]."""
     else:
         format_rules = """Return the applicable image-alignment instruction first when this is I2VA, FL2VA, or L2VA, followed by one blank line. Then return exactly these three fields: integrated_multimodal_description, overall_soundscape, non_diegetic_music. Start the body with [Shot 1]. Put no timestamp on Shot 1; later cuts use [Shot N] At MM:SS.mmm with strictly increasing times inside the duration."""
 
@@ -1695,7 +1715,22 @@ class MiniMaxH3PromptGuide:
             target_description,
             reference_fidelity,
             len(structured_shots) or 1,
+            dialogue_lyrics_and_visible_text,
         )
+        declared_asset_keys = {(asset.kind, asset.number) for asset in parsed_assets}
+        placeholder_labels = [
+            asset.label
+            for asset in assets
+            if asset.kind in {"Picture", "Video", "Audio"}
+            and (asset.kind, asset.number) not in declared_asset_keys
+        ]
+        if placeholder_labels:
+            warnings.append(
+                "The selected roles required draft placeholder label(s) "
+                + ", ".join(placeholder_labels)
+                + ". A placeholder is not an attached file; connect real media to every corresponding "
+                "native H3 input."
+            )
         report = _mode_report(
             decision,
             what_do_you_want,

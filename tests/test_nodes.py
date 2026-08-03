@@ -118,7 +118,8 @@ def test_explicit_edit_goal_infers_the_source_video_role():
     assert "<Video 1> is the source video for the target video edit" in prompt
     assert "<Subject 1>" not in prompt
     assert "The target video is an edited version of <Video 1>." in prompt
-    assert "Warnings: none." in report
+    assert "required draft placeholder label(s) <Video 1>" in report
+    assert "placeholder is not an attached file" in report
 
 
 def test_reference_mode_without_declared_assets_does_not_invent_subject():
@@ -154,13 +155,14 @@ def test_auto_does_not_invent_roles_from_bare_inventory():
 
 
 def test_first_last_reference_adds_a_missing_second_picture():
-    prompt, _, _, _ = build(
+    prompt, _, report, _ = build(
         what_do_you_want=REFERENCE_GOAL,
         how_images_are_used=FIRST_LAST_IMAGES,
         reference_assets="Picture 1: opening composition",
     )
     assert "<Picture 1> is the first frame" in prompt
     assert "<Picture 2> is the final frame of [Shot 1]" in prompt
+    assert "required draft placeholder label(s) <Picture 2>" in report
 
 
 def test_choose_mode_returns_expected_checkpoint():
@@ -488,10 +490,11 @@ def test_global_transfer_fidelity_without_a_pair_never_emits_attribute_transfer(
 
 
 def test_complete_audio_copy_cites_the_track_and_does_not_add_a_new_mix():
-    prompt, _, _, _ = build(
+    prompt, rewrite, report, _ = build(
         how_images_are_used=APPEARANCE_IMAGE,
         how_audio_is_used=COPY_ALL_AUDIO,
         reference_assets="Picture 1: woman\nAudio 1: complete synchronized soundtrack",
+        dialogue_lyrics_and_visible_text="The copied speaker says: Keep moving.",
         overall_soundscape="Rain already present in the copied track.",
         non_diegetic_music="Strings already present in the copied track.",
     )
@@ -499,6 +502,9 @@ def test_complete_audio_copy_cites_the_track_and_does_not_add_a_new_mix():
     assert "with no added, removed, or replaced sound layers" in prompt
     assert "no new score is added" in prompt
     assert "Use coherent ambience" not in prompt
+    assert "must already exist in the unchanged <Audio 1> track" in prompt
+    assert "Complete audio reuse cannot create a new spoken or sung signal" in report
+    assert "A fully_copy source is the complete final track" in rewrite
 
 
 @pytest.mark.parametrize(
