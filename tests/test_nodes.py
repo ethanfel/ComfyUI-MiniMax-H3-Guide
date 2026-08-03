@@ -145,3 +145,16 @@ def test_choose_mode_returns_expected_checkpoint():
 def test_na_is_not_changed():
     prompt, _, _ = build()
     assert prompt.endswith("non_diegetic_music: N/A")
+
+
+def test_guide_tooltips_explain_real_input_and_multishot_syntax():
+    required = MiniMaxH3PromptGuide.INPUT_TYPES()["required"]
+    assert required["target_description"][1]["default"] == ""
+    assert "actual creative request" in required["target_description"][1]["tooltip"]
+    assert "[Shot 2] At 00:02.500" in required["shot_and_timing_plan"][1]["tooltip"]
+    assert "copies the whole signal 1:1" in required["how_audio_is_used"][1]["tooltip"]
+
+
+def test_empty_target_description_produces_actionable_warning():
+    _, _, report = build(target_description="")
+    assert "Target description is empty" in report

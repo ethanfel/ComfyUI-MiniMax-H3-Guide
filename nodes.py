@@ -629,8 +629,13 @@ def _warnings(
     video_use: str,
     audio_use: str,
     assets: list[Asset],
+    target_description: str,
 ) -> list[str]:
     warnings: list[str] = []
+    if not target_description.strip():
+        warnings.append(
+            "Target description is empty. Describe the actual subject, action or edit, setting, and ending before enhancement."
+        )
     counts = {kind: sum(asset.kind == kind for asset in assets) for kind in ("Picture", "Video", "Audio")}
     if counts["Picture"] > 9:
         warnings.append("Ref2VA accepts at most 9 reference images.")
@@ -756,13 +761,14 @@ class MiniMaxH3PromptGuide:
     RETURN_TYPES = ("STRING", "STRING", "STRING")
     RETURN_NAMES = ("h3_prompt", "rewrite_request", "mode_report")
     OUTPUT_TOOLTIPS = (
-        "A valid structured draft that can be sent to H3 or edited further.",
-        "A self-contained request for an LLM or H3 Context-IR-style rewrite step.",
-        "The selected mode, checkpoint, reasoning, limits, and warnings.",
+        "Pre-LLM H3 draft. Use it directly when your inputs are already detailed, or connect it to MiniMax H3 Prompt Enhancer.manual_prompt for a polished rewrite.",
+        "Self-contained instructions for a different LLM node. It includes the selected H3 format, fixed labels, rules, and this structured draft.",
+        "Read this first when results look wrong. It shows the chosen H3 mode/checkpoint, resolved media roles, task prefix, input limits, and conflicts to fix.",
     )
     DESCRIPTION = (
-        "Answers the key H3 workflow questions, selects T2VA/I2VA/FL2VA/L2VA/Ref2VA, "
-        "and prepares a guide-compliant prompt draft plus an optional LLM rewrite request."
+        "Start here: describe the intended video and explain what each supplied image, video, or audio file does. "
+        "The node selects T2VA/I2VA/FL2VA/L2VA/Ref2VA, prepares the correct prompt structure, "
+        "and reports mismatched choices before generation. Hover each field for examples."
     )
 
     @classmethod
@@ -772,31 +778,72 @@ class MiniMaxH3PromptGuide:
             "required": {
                 "what_do_you_want": (
                     GOALS,
-                    {"default": AUTO_GOAL, "tooltip": "Start here. Auto resolves the mode from the three media-role questions."},
+                    {
+                        "default": AUTO_GOAL,
+                        "tooltip": (
+                            "Start here. Auto is recommended: it chooses the H3 mode from the image/video/audio roles below. "
+                            "Use Text only for no media; Animate/Reach/Connect when images are exact endpoint frames; "
+                            "Generate from references for appearance/style guidance; Edit only when changing an existing video; "
+                            "Continue when adding new footage after it; Transfer motion when one subject must perform another asset's action."
+                        ),
+                    },
                 ),
                 "target_description": (
                     "STRING",
                     {
                         **multiline,
-                        "default": "Describe the target video, its subjects, actions, setting, and ending.",
-                        "tooltip": "Your rough creative brief. Exact dialogue can be entered separately below.",
+                        "default": "",
+                        "placeholder": "Example: Replace the blue car in the source video with a red vintage coupe while preserving the road, camera movement, and lighting.",
+                        "tooltip": (
+                            "Write the actual creative request, not an instruction such as 'describe the video.' Include the target subject, "
+                            "visible action, setting, requested edit, and final state. Example: 'Replace the blue car with a red vintage coupe; "
+                            "keep the original road, lighting, and camera movement.' Put exact spoken words in the dialogue field."
+                        ),
                     },
                 ),
                 "how_images_are_used": (
                     IMAGE_USES,
-                    {"default": NO_IMAGE, "tooltip": "An endpoint frame uses FL2VA; appearance/style and motion targets use Ref2VA."},
+                    {
+                        "default": NO_IMAGE,
+                        "tooltip": (
+                            "Choose the image's job. First frame = exact image at 0.00s (I2VA). Last frame = exact final composition (L2VA). "
+                            "First + last = continuous path between two exact frames (FL2VA). Appearance/scene/style guides generation but is not an exact frame. "
+                            "Storyboard/keyframe anchors a concrete internal composition. Motion target is the subject that receives motion from a video."
+                        ),
+                    },
                 ),
                 "how_video_is_used": (
                     VIDEO_USES,
-                    {"default": NO_VIDEO, "tooltip": "Direct edits, continuations, motion transfer, and structural references use Ref2VA."},
+                    {
+                        "default": NO_VIDEO,
+                        "tooltip": (
+                            "Choose the video's job. Direct edit modifies its existing frames/content. Continue creates new footage after its ending. "
+                            "Transfer motion copies action, pose timing, or trajectory to another subject without editing the source clip. "
+                            "Camera/cuts/rhythm borrows only temporal structure. Subject/scene/style reuses visible reference content. All use Ref2VA."
+                        ),
+                    },
                 ),
                 "how_audio_is_used": (
                     AUDIO_USES,
-                    {"default": NO_AUDIO, "tooltip": "Audio reuse/reference uses Ref2VA and requires an accompanying image or video."},
+                    {
+                        "default": NO_AUDIO,
+                        "tooltip": (
+                            "Choose whether H3 copies or only imitates the audio. Complete reuse copies the whole signal 1:1. Partial reuse copies selected time/layers "
+                            "and permits a new mix. Reference regenerates voice timbre, music style, beat, dialogue content, or sound texture without copying samples. "
+                            "Broad mood is weak reference. Audio cannot be the only Ref2VA media input; add an image or video."
+                        ),
+                    },
                 ),
                 "reference_fidelity": (
                     FIDELITIES,
-                    {"default": AUTO_FIDELITY, "tooltip": "Controls the fixed retention marker used by full-reference prompts."},
+                    {
+                        "default": AUTO_FIDELITY,
+                        "tooltip": (
+                            "Controls Ref2VA retention markers. Auto chooses per role. Fully preserve keeps defined identity/composition. Partly preserve allows visible edits. "
+                            "Transfer applies attributes or motion to a different identifiable target. Weak inspiration keeps only broad style/category/atmosphere. "
+                            "Motion-source subjects always use attribute_transfer."
+                        ),
+                    },
                 ),
                 "reference_assets": (
                     "STRING",
@@ -804,36 +851,97 @@ class MiniMaxH3PromptGuide:
                         **multiline,
                         "default": "",
                         "placeholder": "Picture 1: target character appearance\nVideo 1: walking motion to transfer\nAudio 1: voice timbre",
-                        "tooltip": "One asset per line using Subject/Picture/Video/Audio N: description. Missing labels are supplied from the chosen roles.",
+                        "tooltip": (
+                            "Inventory the actual downstream media in label order, one per line: 'Picture 1: red ceramic robot', "
+                            "'Video 1: dancer performing a spin', 'Audio 1: calm voice timbre'. Angle brackets are optional. "
+                            "Use Subject N only when you already know the reusable visible unit. Unlabelled lines become extra notes. "
+                            "The text node does not load these files; connect the real media to the official H3 node in the same order."
+                        ),
                     },
                 ),
                 "duration_seconds": (
                     "FLOAT",
-                    {"default": 6.0, "min": 4.0, "max": 15.0, "step": 0.01, "tooltip": "H3 supports 4-15 seconds."},
+                    {
+                        "default": 6.0,
+                        "min": 4.0,
+                        "max": 15.0,
+                        "step": 0.01,
+                        "tooltip": (
+                            "Target playback duration, from 4 to 15 seconds. This becomes the exact landing time for last-frame tasks. "
+                            "Every later-shot cut time must be smaller than this value."
+                        ),
+                    },
                 ),
                 "visual_style": (
                     "STRING",
-                    {"default": "cinematic, live-action", "tooltip": "For keyframe tasks, match the supplied frame unless an intentional change is requested."},
+                    {
+                        "default": "cinematic, live-action",
+                        "tooltip": (
+                            "Overall visible medium and treatment, such as 'cinematic, live-action', '2D animation', '3D CG', 'claymation', or 'vintage film'. "
+                            "For an exact keyframe, normally match the image's existing style unless the target description explicitly requests a transition."
+                        ),
+                    },
                 ),
                 "shot_and_timing_plan": (
                     "STRING",
-                    {**multiline, "default": "", "tooltip": "Optional. Describe cuts and times; the rewrite request enforces H3 timestamp syntax."},
+                    {
+                        **multiline,
+                        "default": "",
+                        "placeholder": "Shot 1, 00:00-00:02.500: establish the room.\nShot 2, cut at 00:02.500: close-up of the letter.\nShot 3, cut at 00:04.250: wide ending shot.",
+                        "tooltip": (
+                            "Optional multi-shot plan in playback order. Give Shot 1's content but no H3 cut timestamp; for later shots provide the exact cut time. "
+                            "Example: 'Shot 1, 00:00-00:02.500: medium entrance. Shot 2, cut at 00:02.500: close-up. "
+                            "Shot 3, cut at 00:04.250: wide ending.' The enhancer converts later cuts to '[Shot 2] At 00:02.500, ...'. "
+                            "Times must strictly increase and remain inside the duration."
+                        ),
+                    },
                 ),
                 "camera_direction": (
                     "STRING",
-                    {"default": "", "tooltip": "Example: slowly push in with small amplitude toward the subject."},
+                    {
+                        "default": "",
+                        "placeholder": "Example: The camera pushes in with small amplitude at slow speed toward the letter.",
+                        "tooltip": (
+                            "Describe only intended camera behavior. Use movement type plus meaningful range/speed: static, push/pull, pan, truck, tilt, pedestal, arc, tracking, shake, POV, or roll. "
+                            "Example: 'pushes in with small amplitude at slow speed.' For different motion per shot, put each instruction in the shot plan instead."
+                        ),
+                    },
                 ),
                 "dialogue_lyrics_and_visible_text": (
                     "STRING",
-                    {**multiline, "default": "", "tooltip": "Exact words only. They remain in their original language."},
+                    {
+                        **multiline,
+                        "default": "",
+                        "placeholder": "S1, young woman, English: I get off at the next station.\nVisible sign: 营业中",
+                        "tooltip": (
+                            "Enter exact words and identify who says them, their language, voice, and shot when known. Example: 'Shot 2, S1, quiet young woman, French: Je reviens demain.' "
+                            "The enhancer converts speech to <d>[French] Je reviens demain.</d> and keeps S1 stable. List visible signs/subtitles separately; their original text is preserved in double quotes."
+                        ),
+                    },
                 ),
                 "overall_soundscape": (
                     "STRING",
-                    {**multiline, "default": "", "tooltip": "Ambience, physical sounds, and non-verbal human sounds; not dialogue or score."},
+                    {
+                        **multiline,
+                        "default": "",
+                        "placeholder": "Steady rain, low room tone, wet footsteps, paper rustle, and one window latch click.",
+                        "tooltip": (
+                            "Describe sounds that exist in the scene: ambience, footsteps, impacts, mechanisms, fabric, breathing, laughter, and other physical/non-verbal sounds. "
+                            "Do not repeat dialogue, singing, or audience-only score here. Use complete silence only when intentionally requested."
+                        ),
+                    },
                 ),
                 "non_diegetic_music": (
                     "STRING",
-                    {**multiline, "default": "N/A", "tooltip": "Audience-only score: instrumentation, tempo, rhythm, and dynamics. Use N/A for none."},
+                    {
+                        **multiline,
+                        "default": "N/A",
+                        "tooltip": (
+                            "Audience-only background score that characters cannot hear. Describe instrumentation, tempo/rhythm, and volume changes: "
+                            "'Sparse piano at a slow tempo, joined by sustained low strings, then fading.' Use N/A for no score. "
+                            "A radio, performer, phone, or instrument audible in the scene belongs in the shot description instead."
+                        ),
+                    },
                 ),
             }
         }
@@ -889,6 +997,7 @@ class MiniMaxH3PromptGuide:
             effective_video_use,
             effective_audio_use,
             assets,
+            target_description,
         )
         report = _mode_report(
             decision,
