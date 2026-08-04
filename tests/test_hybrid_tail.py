@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
+import weakref
 
 import pytest
 import torch
@@ -110,3 +111,164 @@ def test_chunked_head_rejects_invalid_convrot_layout(monkeypatch):
         tail_module._validate_int8_head(
             weight, weight._qdata, weight._params.scale
         )
+
+
+def test_tail_temporaries_finish_before_managed_unload(monkeypatch):
+    tail_module = _load_tail_module(monkeypatch)
+    events = []
+    wrapper = SimpleNamespace(execution_device="cpu")
+    base = object()
+    tail = object()
+    base_patcher = SimpleNamespace(load_device="cuda:0", offload_device="cpu")
+    tail_patcher = object()
+    clip = SimpleNamespace(patcher=base_patcher)
+
+    monkeypatch.setattr(tail_module, "_get_minimax_base", lambda _clip: (wrapper, base))
+    monkeypatch.setattr(
+        tail_module,
+        "_build_tail",
+        lambda _name, _load_device, _offload_device: (tail, tail_patcher),
+    )
+
+    def load_models(patchers, **kwargs):
+        events.append(("load", patchers, kwargs))
+
+    def generate(*args):
+        assert wrapper.execution_device == "cuda:0"
+        events.append(("generation_frame_returned", args))
+        return [7, 8]
+
+    def unload(patcher, **kwargs):
+        assert events[-1][0] == "generation_frame_returned"
+        events.append(("unload", patcher, kwargs))
+
+    tail_module.comfy.model_management.load_models_gpu = load_models
+    tail_module.comfy.model_management.unload_model_and_clones = unload
+    tail_module.comfy.model_management.soft_empty_cache = lambda **_kwargs: None
+    monkeypatch.setattr(tail_module, "_generate_tail_tokens", generate)
+
+    result = tail_module.generate_with_tail(clip, "tail.safetensors", {}, {})
+
+    assert result == [7, 8]
+    assert wrapper.execution_device == "cpu"
+    assert events[0] == (
+        "load",
+        [base_patcher, tail_patcher],
+        {"memory_required": tail_module.RUNTIME_HEADROOM},
+    )
+    assert events[-1] == (
+        "unload",
+        tail_patcher,
+        {"unload_additional_models": False, "all_devices": True},
+    )
+
+
+def test_tail_managed_unload_runs_after_generation_error(monkeypatch):
+    tail_module = _load_tail_module(monkeypatch)
+    wrapper = SimpleNamespace(execution_device="cpu")
+    base_patcher = SimpleNamespace(load_device="cuda:0", offload_device="cpu")
+    tail_patcher = object()
+    clip = SimpleNamespace(patcher=base_patcher)
+    unloaded = []
+
+    monkeypatch.setattr(
+        tail_module, "_get_minimax_base", lambda _clip: (wrapper, object())
+    )
+    monkeypatch.setattr(
+        tail_module,
+        "_build_tail",
+        lambda _name, _load_device, _offload_device: (object(), tail_patcher),
+    )
+    tail_module.comfy.model_management.load_models_gpu = lambda *_args, **_kwargs: None
+    tail_module.comfy.model_management.unload_model_and_clones = (
+        lambda patcher, **kwargs: unloaded.append((patcher, kwargs))
+    )
+    tail_module.comfy.model_management.soft_empty_cache = lambda **_kwargs: None
+
+    def fail(*_args):
+        raise RuntimeError("tail generation failed")
+
+    monkeypatch.setattr(tail_module, "_generate_tail_tokens", fail)
+    with pytest.raises(RuntimeError, match="tail generation failed"):
+        tail_module.generate_with_tail(clip, "tail.safetensors", {}, {})
+
+    assert wrapper.execution_device == "cpu"
+    assert unloaded == [
+        (
+            tail_patcher,
+            {"unload_additional_models": False, "all_devices": True},
+        )
+    ]
+
+
+def test_tail_interrupt_traceback_releases_tensor_before_unload(monkeypatch):
+    tail_module = _load_tail_module(monkeypatch)
+    wrapper = SimpleNamespace(execution_device="cpu")
+    base_patcher = SimpleNamespace(load_device="cuda:0", offload_device="cpu")
+    tail_patcher = object()
+    clip = SimpleNamespace(patcher=base_patcher)
+    tensor_ref = None
+
+    class TailInterrupt(BaseException):
+        pass
+
+    monkeypatch.setattr(
+        tail_module, "_get_minimax_base", lambda _clip: (wrapper, object())
+    )
+    monkeypatch.setattr(
+        tail_module,
+        "_build_tail",
+        lambda _name, _load_device, _offload_device: (object(), tail_patcher),
+    )
+    tail_module.comfy.model_management.load_models_gpu = lambda *_args, **_kwargs: None
+    tail_module.comfy.model_management.soft_empty_cache = lambda **_kwargs: None
+
+    def interrupt(*_args):
+        nonlocal tensor_ref
+        temporary = torch.ones(1)
+        tensor_ref = weakref.ref(temporary)
+        raise TailInterrupt("stop")
+
+    def unload(_patcher, **_kwargs):
+        assert tensor_ref is not None
+        assert tensor_ref() is None
+
+    monkeypatch.setattr(tail_module, "_generate_tail_tokens", interrupt)
+    tail_module.comfy.model_management.unload_model_and_clones = unload
+
+    with pytest.raises(TailInterrupt, match="stop"):
+        tail_module.generate_with_tail(clip, "tail.safetensors", {}, {})
+
+
+def test_tail_cleanup_failure_does_not_mask_generation_error(monkeypatch):
+    tail_module = _load_tail_module(monkeypatch)
+    wrapper = SimpleNamespace(execution_device="cpu")
+    base_patcher = SimpleNamespace(load_device="cuda:0", offload_device="cpu")
+    tail_patcher = object()
+    clip = SimpleNamespace(patcher=base_patcher)
+    cache_flushes = []
+
+    monkeypatch.setattr(
+        tail_module, "_get_minimax_base", lambda _clip: (wrapper, object())
+    )
+    monkeypatch.setattr(
+        tail_module,
+        "_build_tail",
+        lambda _name, _load_device, _offload_device: (object(), tail_patcher),
+    )
+    tail_module.comfy.model_management.load_models_gpu = lambda *_args, **_kwargs: None
+    tail_module.comfy.model_management.unload_model_and_clones = (
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("unload failed"))
+    )
+    tail_module.comfy.model_management.soft_empty_cache = (
+        lambda **kwargs: cache_flushes.append(kwargs)
+    )
+
+    def fail(*_args):
+        raise ValueError("primary generation failure")
+
+    monkeypatch.setattr(tail_module, "_generate_tail_tokens", fail)
+    with pytest.raises(ValueError, match="primary generation failure"):
+        tail_module.generate_with_tail(clip, "tail.safetensors", {}, {})
+
+    assert cache_flushes == [{"force": True}]

@@ -1,6 +1,6 @@
 # MiniMax H3 workflow audit
 
-Audit date: 2026-08-03
+Audit date: 2026-08-04
 Branch: `fix/deep-h3-audit`
 
 ## Sources and scope
@@ -61,6 +61,7 @@ tooltips, compatibility behavior, and regression coverage.
 | High | Full-copy audio could conflict with newly invented ambience/music. | Guide-generated audio sections state that a complete copy permits no additional audible layer and cite the copied track; the Guide warns when its dialogue/text field could imply a new signal. Enhancer instructions prohibit additions, and structural checks require applicable audio sections to cite the copied label and state exclusivity. Free-form target descriptions and custom system prompts still require review. Audio routing/analysis remains outside the visual chain. |
 | Medium | UI route labels failed through reroutes/bypassed reference nodes. | Frontend traversal follows reroutes and skips bypassed chain nodes. Backend `routing_report` is authoritative for the intended mapping, but the user must make and verify every native connection. |
 | Medium | The tail's chunked LM head assumed row-indexable INT8 scales and could mishandle tensor-wise scalar scales or other quantized layouts. | Scalar and per-row INT8 scales are handled explicitly. Unsupported storage/layout/ConvRot combinations fail before logits are calculated. |
+| Medium | The real generation tail produced text but appeared not to offload after completion. | The generation loop now owns KV caches, embeddings, hidden states, and logits in a short-lived frame that is cleared before managed unload, including interruption/error tracebacks. Tail unload targets every device, then forces a final CUDA cache flush. The enhancer defaults to explicitly offloading the connected base CLIP after decoding and reports when `--gpu-only` makes that impossible. |
 | Medium | `llm_prompt` was described as the complete model input although visual tensors are injected separately. | Its tooltip now calls it the serialized text portion, explains MiniMax's prepended Picture/Video blocks for endpoint and Ref2VA media, and warns that an external multimodal LLM needs the pixels in its own visual-token format. |
 
 ## Input limits and routing decisions
@@ -114,10 +115,13 @@ tooltips, compatibility behavior, and regression coverage.
 - Selected Guide roles may create placeholder media labels. They keep a draft
   structurally complete but do not represent attached files; every placeholder
   must be matched to a real native connection.
-- The optional 32B generation-tail path has deterministic unit coverage for its
-  split and INT8 head assumptions, but a real end-to-end smoke test still
-  requires the separately downloaded multi-gigabyte tail artifact and suitable
-  hardware.
+- The project owner has smoke-tested the real multi-gigabyte INT8 tail artifact
+  and confirmed successful text generation. This is user-reported hardware
+  validation rather than a reproducible CI fixture. ComfyUI DynamicVRAM and
+  legacy partial loading are designed to support sub-32-GB cards, but the full
+  artifact has not been verified on that hardware tier. Practical success and
+  speed still depend on the largest active layer, KV/vision working set, system
+  RAM, and startup flags; `--highvram` / `--gpu-only` can defeat offloading.
 - Visual-reference output labels in the canvas are convenience hints. When a
   role-binding chain makes the route ambiguous to the browser, use the backend
   `routing_report` as the source of truth for intended sockets, then verify the
@@ -132,9 +136,10 @@ The integrated fix branch passed:
 
 | Check | Command/result |
 | --- | --- |
-| Complete Python suite | `pytest -q -ra` — 108 passed |
+| Complete Python suite | `pytest -q -ra` — 116 passed |
 | Lint | `ruff check .` — passed |
 | Byte-code compilation | `python -m py_compile __init__.py nodes.py enhancer.py media_context.py hybrid_tail.py tests/test_nodes.py tests/test_enhancer.py tests/test_media_context.py tests/test_hybrid_tail.py` — passed |
 | Frontend syntax | `node --check web/visual_reference_routes.js` — passed |
 | Patch hygiene | `git diff --check` — passed |
 | Dynamic mapping/schema and representative workflow smoke | 6/6 public nodes imported; callable schemas matched; reversed FL2VA endpoints normalized; Ref2VA transfer/routes validated; 48 source frames became 39 native frames and four fixed-2-FPS samples; legacy manual cuts normalized — passed |
+| Real INT8 generation tail | Project-owner hardware smoke test — text generation passed; post-generation residency issue reproduced and cleanup corrected in this release |

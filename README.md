@@ -66,15 +66,36 @@ the loader, and connect its `clip_tail` output to the enhancer. The loader
 passes a lightweight descriptor and consumes no VRAM by itself. During
 enhancement, the enhancer reuses the connected embedding, vision tower, and
 language layers 0–49, loads only layers 50–63 plus the final norm and LM head,
-then unloads that tail when generation finishes. The connected 50-layer CLIP
-is never merged or modified and remains suitable for official H3 conditioning.
+then unloads that tail when generation finishes. Tail KV caches and embeddings
+are released before the managed unload and CUDA cache flush. The connected
+50-layer CLIP is never merged or modified and remains suitable for official H3
+conditioning. The enhancer's `offload_after_generation` option defaults to on
+and explicitly moves that connected CLIP to its configured ComfyUI offload
+device after decoding. Turn it off only when the same CLIP is consumed
+immediately downstream and avoiding a reload is more important than freeing
+VRAM.
 If the truncated CLIP is connected without the side loader, enhancement is
 safely skipped and the manual prompt is returned unchanged.
 
 The tail loader accepts only the published split layout. Its chunked LM head
 supports ComfyUI tensor-wise INT8 scalar/per-row scales and rejects other
-quantized layouts explicitly. A real tail run still requires the separate
-multi-gigabyte artifact and enough memory for the shared 32B model.
+quantized layouts explicitly. The complete model does not have to fit in VRAM:
+the base and tail are both registered with ComfyUI's managed patchers, so
+DynamicVRAM streams/caches weights on demand and legacy Normal VRAM can
+partially load them. This means a card below 32 GB may run the enhancer when it
+has enough VRAM for the largest active layer, KV cache, vision tensors, and
+runtime headroom, plus enough system RAM for offloaded weights; that full path
+has not yet been hardware-verified below 32 GB. It will be much slower because
+autoregressive generation revisits every language layer for each token.
+`--highvram` and especially `--gpu-only` defeat this low-VRAM behavior; with
+`--gpu-only`, the configured load and offload devices are identical.
+
+High `nvidia-smi` usage on a larger card does not itself mean full residency is
+required: ComfyUI opportunistically uses available VRAM and may retain allocator
+cache. The explicit post-generation cleanup is what returns the transient tail
+and, by default, the connected CLIP afterward. A real INT8 tail artifact has
+now been smoke-tested for successful text generation; available hardware still
+determines practical speed and maximum visual/prompt context.
 
 Download the INT8 tail from
 [`ethanfel/Qwen3-VL-32B-Ultra-Heretic-MiniMax-H3-ComfyUI-INT8-ConvRot`](https://huggingface.co/ethanfel/Qwen3-VL-32B-Ultra-Heretic-MiniMax-H3-ComfyUI-INT8-ConvRot)
@@ -333,7 +354,7 @@ MiniMax tokenizer are absent.
 - For an external/general LLM node, send `rewrite_request` and use its response
   as the candidate H3 prompt. The included Prompt Enhancer instead expects
   `h3_prompt` plus `mode_report`.
-- The included enhancer can use the same MiniMax H3 CLIP as conditioning when the Generation Tail Loader is connected. The 32B model is large, so prompt enhancement can require substantial VRAM and time.
+- The included enhancer can use the same MiniMax H3 CLIP as conditioning when the Generation Tail Loader is connected. Managed partial loading is designed to support sub-32-GB cards, but that hardware tier remains unverified and the 32B autoregressive pass can be substantially slower when weights stream from system RAM. Leave DynamicVRAM enabled and avoid `--highvram` / `--gpu-only` for that use case.
 - See [AUDIT_REPORT.md](AUDIT_REPORT.md) for the source-grounded findings,
   compatibility decisions, and remaining limitations.
 
