@@ -861,8 +861,12 @@ class MiniMaxH3VisualReferenceRole:
                     "STRING",
                     {
                         "default": "",
-                        "placeholder": "Example: all shots, Shot 2 only, Shots 1-3",
-                        "tooltip": "Optional shots where this binding applies. Empty means wherever relevant.",
+                        "placeholder": "Examples: 3, 3,4, 3-4, all",
+                        "tooltip": (
+                            "Optional Shot numbers where this binding applies. Use 3 for one Shot, "
+                            "3,4 for selected Shots, 3-4 for a range, or all. Empty means wherever "
+                            "relevant. Older forms such as 'Shot 3' remain supported."
+                        ),
                     },
                 ),
                 "notes": (

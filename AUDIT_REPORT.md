@@ -1,7 +1,7 @@
 # MiniMax H3 workflow audit
 
 Audit date: 2026-08-04
-Branch: `fix/deep-h3-audit`
+Branch: `main`
 
 ## Sources and scope
 
@@ -45,6 +45,7 @@ tooltips, compatibility behavior, and regression coverage.
 | Priority | Finding | Resolution |
 | --- | --- | --- |
 | Critical | Unassigned inventory files silently became appearance/content references and could create unsupported Subjects. | Bare Guide inventory remains descriptive. New Visual Reference nodes default to `Unassigned - choose a reference role` and require either an explicit compatibility role or a role-binding chain before execution. Once selected, that role intentionally supplies semantic evidence. |
+| Critical | Reusable reference collections had no safe persistence contract, so users had to rebuild media roles and descriptions in every workflow or rely on fragile absolute paths. | Versioned Reference Sheets copy image/audio assets into a self-contained ComfyUI user library, store relative paths and checksums, reject duplicate keys/path traversal, create without overwrite, and require explicit confirmation for atomic updates. Saved roles/groups are suggestions; workflow retention, transfer, Shot scope, H3 labels, and native sockets remain dynamic. |
 | Critical | A single asset role could not express multiple official relationships, and multiple assets could not jointly define one Subject. | Visual roles are repeatable bindings with a content group, retention relationship, optional shot scope, and notes. A shared group deterministically combines those assets into one Guide `<Subject N>`; separate groups remain separate Subjects. Direct keyframe/storyboard/edit/continuation/structure roles stay Picture/Video rows instead of becoming generic Subjects. The enhancer receives the same authoritative context for visual expansion, while user wiring controls native file order. |
 | Critical | Storyboards and concrete keyframes shared one ambiguous role. | They are separate roles. Concrete frames produce keyframe-completion semantics; storyboards produce reference-generation semantics. The old value remains readable for saved 0.6.x workflows. |
 | Critical | Endpoint images were forced through Ref2VA when chained for enhancement, preventing two-frame FL2VA analysis. | First-frame and last-frame bindings form a base endpoint context, preserve I2VA, L2VA, or FL2VA analysis, and report `first_frame` / `last_frame` as the intended native sockets. The user still makes those links. Base endpoint and Ref2VA roles cannot share one context. |
@@ -58,7 +59,7 @@ tooltips, compatibility behavior, and regression coverage.
 | High | Labels could be zero, gapped, duplicated, or inconsistent with native socket order. | Context labels are canonical. Guide inventory rejects zero, duplicates, and active gaps, and reports order mismatches. A selected role may intentionally synthesize a required placeholder label, including a partially missing endpoint; `mode_report` identifies every such placeholder as an expected native connection, not an attached file. |
 | High | The enhancer prompt omitted several official formatting rules and accepted malformed output without diagnostics. | The built-in instructions cover section order, style placement, first-use labels, one retention row per tracked item, endpoint alignment, speaker IDs, voiceover, `<scenetrans>`, `<cutoff>`, and audio continuity. Post-generation validation diagnoses missing or empty sections, section order, basic shot markers, style opening, task-type and retention-marker vocabulary, definition/retention row cardinality, supplied visual labels, full-copy audio-section guards, and endpoint-instruction presence. Other semantic rules remain review requirements. |
 | High | `Camera direction:` was emitted as a metadata label contrary to the base guide. | Camera movement is rendered as natural English inside each shot. |
-| High | Full-copy audio could conflict with newly invented ambience/music. | Guide-generated audio sections state that a complete copy permits no additional audible layer and cite the copied track; the Guide warns when its dialogue/text field could imply a new signal. Enhancer instructions prohibit additions, and structural checks require applicable audio sections to cite the copied label and state exclusivity. Free-form target descriptions and custom system prompts still require review. Audio routing/analysis remains outside the visual chain. |
+| High | Full-copy audio could conflict with newly invented ambience/music. | Guide-generated audio sections state that a complete copy permits no additional audible layer and cite the copied track; the Guide warns when its dialogue/text field could imply a new signal. Enhancer instructions prohibit additions, and structural checks require applicable audio sections to cite the copied label and state exclusivity. Reference Sheet audio now supplies validated labels, descriptions, duration, Shot scope, and standalone native routing; Qwen still does not inspect the waveform. |
 | Medium | UI route labels failed through reroutes/bypassed reference nodes. | Frontend traversal follows reroutes and skips bypassed chain nodes. Backend `routing_report` is authoritative for the intended mapping, but the user must make and verify every native connection. |
 | Medium | The tail's chunked LM head assumed row-indexable INT8 scales and could mishandle tensor-wise scalar scales or other quantized layouts. | Scalar and per-row INT8 scales are handled explicitly. Unsupported storage/layout/ConvRot combinations fail before logits are calculated. |
 | Medium | The real generation tail produced text but appeared not to offload after completion. | The generation loop now owns KV caches, embeddings, hidden states, and logits in a short-lived frame that is cleared before managed unload, including interruption/error tracebacks. Tail unload targets every device, then forces a final CUDA cache flush. The enhancer defaults to explicitly offloading the connected base CLIP after decoding and reports when `--gpu-only` makes that impossible. |
@@ -71,19 +72,19 @@ tooltips, compatibility behavior, and regression coverage.
   12 files total. Each video/audio item is 2-15 seconds and each media type
   totals at most 15 seconds. Native ComfyUI's executor is less strict.
 - The visual chain validates picture/video counts and source-video durations.
-  Because audio is separately wired, audio count/duration, the mixed 12-file
-  total, and actual audio-only routing cannot be verified from that chain.
-- H3 policy forbids audio as the sole Ref2VA input. The Guide can diagnose this
-  from its declared inventory, but cannot inspect native audio connections.
+  A connected Reference Sheet audio context validates standalone-audio count,
+  per-item duration, total duration, labels, and routes. The Guide diagnoses the
+  mixed 12-file count. Legacy manually wired audio remains outside those checks.
+- H3 policy forbids audio as the sole Ref2VA input. The Guide rejects a Reference
+  Sheet audio context unless a visual reference context is also connected.
 - Picture and video numbering is independent and follows chain order within
   each media category. The report recommends native sockets; actual wiring is
   user-controlled.
 - The native H3 node remains responsible for AV/keyframe/reference latent
   creation. This pack deliberately returns prompt text rather than incomplete
   `CONDITIONING`.
-- Audio is deferred: the visual-reference chain neither decodes nor analyzes it.
-  Native soundtrack/standalone-audio numbering is documented so a later audio
-  node can preserve the correct order.
+- Reference Sheet audio decodes and routes standalone `ref_audio_N` assets. It
+  does not analyze waveforms with Qwen or create video-paired soundtrack inputs.
 
 ## Backward compatibility
 
@@ -101,7 +102,13 @@ tooltips, compatibility behavior, and regression coverage.
 
 ## Remaining limitations
 
-- Audio inspection and audio-role chaining are not implemented in this release.
+- Reference Sheets currently store images and standalone audio, not video frame
+  batches or paired reference-video soundtracks. Sheet Audio Reference chains
+  require one shared audio relationship because the Guide's audio sections still
+  resolve one relationship family per workflow.
+- Qwen3-VL does not inspect saved audio waveforms. The sheet's written audio
+  description guides prompt enhancement while the actual `AUDIO` output goes to
+  native H3.
 - `enhanced_prompt` is a cleaned model candidate, not a guaranteed-valid prompt.
   Structural checks do not prove semantic first-use placement, speaker ordering,
   voice-over wording, dialogue continuity markers, audio continuity, reference
@@ -136,10 +143,10 @@ The integrated fix branch passed:
 
 | Check | Command/result |
 | --- | --- |
-| Complete Python suite | `pytest -q -ra` — 138 collected; 138 passed with CUDA available (137 passed and 1 CUDA-only skip on CPU-only runners) |
+| Complete Python suite | `pytest -q -ra` — 153 collected; 153 passed with CUDA available (152 passed and 1 CUDA-only skip on CPU-only runners) |
 | Lint | `ruff check .` — passed |
-| Byte-code compilation | `python -m py_compile __init__.py nodes.py enhancer.py media_context.py hybrid_tail.py tests/test_nodes.py tests/test_enhancer.py tests/test_media_context.py tests/test_hybrid_tail.py` — passed |
+| Byte-code compilation | `python -m compileall -q .` — passed |
 | Frontend syntax | `node --check web/visual_reference_routes.js` — passed |
 | Patch hygiene | `git diff --check` — passed |
-| Dynamic mapping/schema and representative workflow smoke | 7/7 public nodes imported; callable schemas matched; reversed FL2VA endpoints normalized; Ref2VA transfer/routes validated; 48 source frames became 39 native frames and four fixed-2-FPS samples; legacy manual cuts normalized — passed |
+| Dynamic mapping/schema and representative workflow smoke | 12/12 public nodes imported; callable schemas matched; Reference Sheet create/load/update, copied media, checksum rejection, visual/audio routing, reversed FL2VA endpoints, Ref2VA transfer/routes, 24-FPS alignment, and legacy manual cuts validated — passed |
 | Real INT8 generation tail | Project-owner hardware smoke test — text generation passed; post-generation residency issue reproduced and cleanup corrected in this release |

@@ -31,6 +31,11 @@ if __package__:
         reference_entries,
         reference_inventory,
     )
+    from .reference_sheet import (
+        AUDIO_REFERENCE_CONTEXT_TYPE,
+        audio_reference_entries,
+        audio_reference_inventory,
+    )
 else:  # Allows direct imports from the repository during tests.
     from media_context import (
         CAMERA_ROLE,
@@ -49,6 +54,11 @@ else:  # Allows direct imports from the repository during tests.
         TRANSFER_RELATION,
         reference_entries,
         reference_inventory,
+    )
+    from reference_sheet import (
+        AUDIO_REFERENCE_CONTEXT_TYPE,
+        audio_reference_entries,
+        audio_reference_inventory,
     )
 
 
@@ -889,7 +899,7 @@ def _context_binding_clause(entry: dict, binding: dict, description: str) -> str
     media_notes = _clean(entry.get("notes", "")).rstrip(".!?")
     if media_notes and media_notes != notes:
         clause += f"; media instruction: {media_notes}"
-    scope = _clean(binding.get("shot_scope", "")).rstrip(".!?")
+    scope = _display_shot_scope(binding.get("shot_scope", "")).rstrip(".!?")
     if scope:
         clause += f"; applies to {scope}"
     return clause
@@ -983,7 +993,7 @@ def _context_reference_items(entries: list[dict], parsed_assets: list[Asset]) ->
             )
         scopes = list(
             dict.fromkeys(
-                _clean(binding.get("shot_scope", ""))
+                _display_shot_scope(binding.get("shot_scope", ""))
                 for binding in bindings
                 if _clean(binding.get("shot_scope", ""))
             )
@@ -1035,7 +1045,7 @@ def _context_reference_items(entries: list[dict], parsed_assets: list[Asset]) ->
             definition += "; " + "; ".join(binding_notes)
         scopes = list(
             dict.fromkeys(
-                _clean(binding.get("shot_scope", ""))
+                _display_shot_scope(binding.get("shot_scope", ""))
                 for binding in bindings
                 if _clean(binding.get("shot_scope", ""))
             )
@@ -1062,6 +1072,44 @@ def _context_reference_items(entries: list[dict], parsed_assets: list[Asset]) ->
                     for binding in bindings
                 ),
                 definition=definition,
+                from_context=True,
+            )
+        )
+    return items
+
+
+def _audio_context_assets(entries: list[dict]) -> list[Asset]:
+    return [
+        Asset(
+            "Audio",
+            number,
+            _clean(entry.get("description"), "the saved reference audio"),
+        )
+        for number, entry in enumerate(entries, start=1)
+    ]
+
+
+def _audio_context_reference_items(entries: list[dict]) -> list[ReferenceItem]:
+    roles = {
+        COPY_ALL_AUDIO: "complete synchronized audio reuse",
+        COPY_PART_AUDIO: "partial audio or layer reuse",
+        REFERENCE_AUDIO: "voice, music, beat, or sound reference",
+        WEAK_AUDIO: "broad audio mood reference",
+    }
+    items = []
+    for entry in entries:
+        description = _clean(entry.get("description"), "the saved reference audio")
+        notes = _clean(entry.get("notes"))
+        if notes:
+            description += f"; workflow instruction: {notes}"
+        items.append(
+            ReferenceItem(
+                label=entry["label"],
+                kind="Audio",
+                role=roles[entry["use"]],
+                description=description,
+                retention=entry["retention"],
+                shot_scope=_display_shot_scope(entry.get("shot_scope", "")),
                 from_context=True,
             )
         )
@@ -1107,7 +1155,7 @@ def _shot_numbers_from_scope(scope: str, shot_count: int) -> list[int] | None:
     if value in {"all", "all shots", "every shot"}:
         return list(range(1, shot_count + 1))
     range_match = re.fullmatch(
-        r"shots?\s+(\d+)\s*(?:-|–|through|to)\s*(\d+)(?:\s+only)?",
+        r"(?:shots?\s+)?(\d+)\s*(?:-|–|through|to)\s*(\d+)(?:\s+only)?",
         value,
     )
     if range_match:
@@ -1115,7 +1163,7 @@ def _shot_numbers_from_scope(scope: str, shot_count: int) -> list[int] | None:
         if start <= end and 1 <= start and end <= shot_count:
             return list(range(start, end + 1))
         return None
-    if re.fullmatch(r"shots?\s+[\d,\s]+(?:\s+only)?", value):
+    if re.fullmatch(r"(?:shots?\s+)?[\d,\s]+(?:\s+only)?", value):
         numbers = [int(number) for number in re.findall(r"\d+", value)]
         if numbers and len(set(numbers)) == len(numbers) and all(
             1 <= number <= shot_count for number in numbers
@@ -1123,6 +1171,37 @@ def _shot_numbers_from_scope(scope: str, shot_count: int) -> list[int] | None:
             return numbers
         return None
     return None
+
+
+def _display_shot_scope(scope: str) -> str:
+    """Normalize compact scope input for readable generated prompt text."""
+
+    value = _clean(scope)
+    resolved_form = value.casefold()
+    if resolved_form in {"all", "all shots", "every shot"}:
+        return "all shots"
+    range_match = re.fullmatch(
+        r"(?:shots?\s+)?(\d+)\s*(?:-|–|through|to)\s*(\d+)(?:\s+only)?",
+        resolved_form,
+    )
+    if range_match:
+        return f"Shots {range_match.group(1)}-{range_match.group(2)}"
+    if re.fullmatch(r"(?:shots?\s+)?[\d,\s]+(?:\s+only)?", resolved_form):
+        numbers = re.findall(r"\d+", resolved_form)
+        if len(numbers) == 1:
+            return f"Shot {numbers[0]}"
+        return "Shots " + ", ".join(numbers)
+    return value
+
+
+def _looks_like_numbered_shot_scope(scope: str) -> bool:
+    value = _clean(scope).casefold()
+    return bool(
+        re.fullmatch(
+            r"(?:shots?\s+)?\d+(?:\s*(?:,|-|–|through|to)\s*\d+)*(?:\s+only)?",
+            value,
+        )
+    )
 
 
 def _context_item_directive(item: ReferenceItem, roles: tuple[str, ...]) -> str:
@@ -1157,6 +1236,17 @@ def _apply_context_shot_scopes(
     directives: dict[int, list[str]] = {}
     for item in items:
         if not item.from_context:
+            continue
+        if item.kind == "Audio":
+            numbers = (
+                _shot_numbers_from_scope(item.shot_scope, shot_count)
+                if item.shot_scope
+                else []
+            )
+            for number in numbers or []:
+                directives.setdefault(number, []).append(
+                    _context_item_directive(item, ())
+                )
             continue
         roles_by_shot: dict[int, list[str]] = {}
         role_scopes = item.role_scopes or tuple((role, item.shot_scope) for role in item.roles)
@@ -1277,7 +1367,8 @@ def _retention_line(
             "reference": "the signal guides the requested audio characteristics without being copied directly",
             "weak_reference": "only broad sonic category or atmosphere is retained",
         }[marker]
-        return _sentence(f"{item.label}: {marker} - {explanation}")
+        context = f" ({item.shot_scope})" if item.shot_scope else ""
+        return _sentence(f"{item.label}{context}: {marker} - {explanation}")
 
     marker = item.retention or _visual_marker(fidelity, item.role, allow_attribute_transfer)
     if marker == "attribute_transfer":
@@ -1991,18 +2082,19 @@ def _context_warnings(
             "A legacy combined storyboard/keyframe binding is treated as a concrete keyframe. "
             "Choose the dedicated storyboard role when the picture only plans shots."
         )
-    invalid_scopes = [
-        f"{entry['label']} ({binding['shot_scope']})"
+    invalid_scope_entries = [
+        (f"{entry['label']} ({binding['shot_scope']})", binding["shot_scope"])
         for entry in entries
         for binding in entry["bindings"]
         if binding.get("shot_scope")
         and _shot_numbers_from_scope(binding["shot_scope"], shot_count) is None
     ]
+    invalid_scopes = [display for display, _scope in invalid_scope_entries]
     if invalid_scopes:
         invalid_numbered_scopes = [
-            value
-            for value in invalid_scopes
-            if re.search(r"\bshots?\s+\d", value, re.IGNORECASE)
+            display
+            for display, scope in invalid_scope_entries
+            if _looks_like_numbered_shot_scope(scope)
         ]
         if invalid_numbered_scopes:
             raise ValueError(
@@ -2012,10 +2104,38 @@ def _context_warnings(
             )
         warnings.append(
             "These role shot_scope values cannot be mapped to the current Shot plan and remain "
-            "global constraints: " + ", ".join(invalid_scopes) + ". Use forms such as 'Shot 2', "
-            "'Shots 1-3', or 'all shots'."
+            "global constraints: " + ", ".join(invalid_scopes) + ". Use compact forms such as "
+            "'2', '1,3', '1-3', or 'all'."
         )
     return warnings
+
+
+def _audio_context_scope_warnings(entries: list[dict], shot_count: int) -> list[str]:
+    invalid = [
+        (f"{entry['label']} ({entry['shot_scope']})", entry["shot_scope"])
+        for entry in entries
+        if entry.get("shot_scope")
+        and _shot_numbers_from_scope(entry["shot_scope"], shot_count) is None
+    ]
+    numbered = [
+        display
+        for display, scope in invalid
+        if _looks_like_numbered_shot_scope(scope)
+    ]
+    if numbered:
+        raise ValueError(
+            "Audio shot_scope refers to a Shot that does not exist in the current plan: "
+            + ", ".join(numbered)
+            + ". Update the scope or connect the intended Shot chain."
+        )
+    if not invalid:
+        return []
+    return [
+        "These audio shot_scope values cannot be mapped to the current Shot plan and remain "
+        "global constraints: "
+        + ", ".join(display for display, _scope in invalid)
+        + ". Use compact forms such as '2', '1,3', '1-3', or 'all'."
+    ]
 
 
 def _context_mode_report(
@@ -2539,7 +2659,19 @@ class MiniMaxH3PromptGuide:
                             "Fan this same final context out to Prompt Enhancer.reference_context."
                         )
                     },
-                )
+                ),
+                "audio_context": (
+                    AUDIO_REFERENCE_CONTEXT_TYPE,
+                    {
+                        "tooltip": (
+                            "Connect the final MiniMax H3 Reference Sheet Audio Reference.audio_context. "
+                            "Its saved descriptions, actual audio relationships, labels, Shot scopes, and "
+                            "native ref_audio_N routes replace the legacy audio dropdown/inventory path. "
+                            "A visual reference_context is also required because H3 does not accept audio "
+                            "as the only Ref2VA media."
+                        )
+                    },
+                ),
             },
         }
 
@@ -2562,6 +2694,7 @@ class MiniMaxH3PromptGuide:
         shot_plan=None,
         timing_context=None,
         reference_context=None,
+        audio_context=None,
     ):
         timing_is_connected = timing_context is not None
         if timing_is_connected:
@@ -2585,7 +2718,17 @@ class MiniMaxH3PromptGuide:
         structured_shots = _extend_final_shot(planned_shots, effective_duration)
         final_shot_number = len(structured_shots) or 1
         parsed_assets, notes = parse_assets(reference_assets)
-        effective_audio_use = how_audio_is_used
+        sheet_audio_entries = (
+            audio_reference_entries(audio_context) if audio_context is not None else []
+        )
+        if sheet_audio_entries and reference_context is None:
+            raise ValueError(
+                "Reference Sheet audio_context also needs a visual reference_context because "
+                "MiniMax H3 does not accept standalone audio as the only Ref2VA media."
+            )
+        effective_audio_use = (
+            sheet_audio_entries[0]["use"] if sheet_audio_entries else how_audio_is_used
+        )
         context_entries = (
             reference_entries(reference_context) if reference_context is not None else []
         )
@@ -2594,7 +2737,10 @@ class MiniMaxH3PromptGuide:
             effective_image_use = NO_IMAGE
             effective_video_use = NO_VIDEO
             task_types = _context_task_types(context_entries, effective_audio_use)
-            audio_assets = [asset for asset in parsed_assets if asset.kind == "Audio"]
+            context_audio_assets = _audio_context_assets(sheet_audio_entries)
+            audio_assets = context_audio_assets or [
+                asset for asset in parsed_assets if asset.kind == "Audio"
+            ]
             assets = _assets_with_defaults(
                 audio_assets,
                 NO_IMAGE,
@@ -2602,6 +2748,8 @@ class MiniMaxH3PromptGuide:
                 effective_audio_use,
             )
             _validate_active_asset_labels(assets, NO_IMAGE, NO_VIDEO, effective_audio_use)
+            warning_assets = [asset for asset in parsed_assets if asset.kind != "Audio"]
+            warning_assets.extend(audio_assets)
             warnings = _context_warnings(
                 decision,
                 what_do_you_want,
@@ -2609,7 +2757,7 @@ class MiniMaxH3PromptGuide:
                 how_video_is_used,
                 effective_audio_use,
                 reference_fidelity,
-                parsed_assets,
+                warning_assets,
                 context_entries,
                 target_description,
                 len(structured_shots) or 1,
@@ -2617,20 +2765,38 @@ class MiniMaxH3PromptGuide:
                 h3_length,
                 timing_is_connected,
             )
+            warnings.extend(
+                _audio_context_scope_warnings(
+                    sheet_audio_entries,
+                    len(structured_shots) or 1,
+                )
+            )
+            if sheet_audio_entries and (
+                how_audio_is_used != NO_AUDIO
+                or any(asset.kind == "Audio" for asset in parsed_assets)
+            ):
+                warnings.append(
+                    "The legacy audio role dropdown and Audio inventory rows are ignored because "
+                    "audio_context is connected; edit the Reference Sheet Audio Reference nodes instead."
+                )
             context_notes = _context_reference_notes(context_entries, parsed_assets)
             if decision.mode != "Ref2VA":
                 notes = [*notes, *context_notes]
             rewrite_inventory = reference_inventory(context_entries)
+            if sheet_audio_entries:
+                rewrite_inventory += "\n\n" + audio_reference_inventory(sheet_audio_entries)
             context_labels = {entry["label"] for entry in context_entries}
             supplemental_inventory = [
                 f"{asset.label}: {asset.description}"
                 for asset in parsed_assets
-                if (
-                    asset.kind in {"Picture", "Video"}
-                    and asset.label in context_labels
-                )
-                or (asset.kind == "Audio" and effective_audio_use != NO_AUDIO)
+                if asset.kind in {"Picture", "Video"} and asset.label in context_labels
             ]
+            if not sheet_audio_entries:
+                supplemental_inventory.extend(
+                    f"{asset.label}: {asset.description}"
+                    for asset in parsed_assets
+                    if asset.kind == "Audio" and effective_audio_use != NO_AUDIO
+                )
             if supplemental_inventory:
                 rewrite_inventory += (
                     "\n\nUSER-SUPPLIED LABEL DESCRIPTIONS\n"
@@ -2676,6 +2842,9 @@ class MiniMaxH3PromptGuide:
             rewrite_inventory = reference_assets
 
         declared_asset_keys = {(asset.kind, asset.number) for asset in parsed_assets}
+        declared_asset_keys.update(
+            ("Audio", number) for number, _entry in enumerate(sheet_audio_entries, start=1)
+        )
         placeholder_labels = [
             asset.label
             for asset in assets
@@ -2697,6 +2866,8 @@ class MiniMaxH3PromptGuide:
                 task_types,
                 warnings,
             )
+            if sheet_audio_entries:
+                report += "\n" + audio_reference_inventory(sheet_audio_entries)
         else:
             report = _mode_report(
                 decision,
@@ -2757,11 +2928,15 @@ class MiniMaxH3PromptGuide:
         if decision.mode == "Ref2VA":
             if reference_context is not None:
                 visual_items = _context_reference_items(context_entries, parsed_assets)
-                audio_items = _build_reference_items(
-                    assets,
-                    NO_IMAGE,
-                    NO_VIDEO,
-                    effective_audio_use,
+                audio_items = (
+                    _audio_context_reference_items(sheet_audio_entries)
+                    if sheet_audio_entries
+                    else _build_reference_items(
+                        assets,
+                        NO_IMAGE,
+                        NO_VIDEO,
+                        effective_audio_use,
+                    )
                 )
                 items = [*visual_items, *audio_items]
             else:

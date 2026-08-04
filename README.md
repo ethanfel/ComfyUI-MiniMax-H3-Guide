@@ -1,6 +1,6 @@
 # ComfyUI MiniMax H3 Prompt Guide
 
-A dependency-free ComfyUI node pack that turns a rough video idea into the prompt structure expected by MiniMax H3. It separates endpoint frames from full-reference media, assigns explicit roles instead of guessing from file type, selects the H3 prompt family, and can use ComfyUI's loaded Qwen3-VL CLIP to analyze visual references and enhance the result.
+A dependency-free ComfyUI node pack that turns a rough video idea into the prompt structure expected by MiniMax H3. It separates endpoint frames from full-reference media, assigns explicit roles instead of guessing from file type, stores reusable image/audio Reference Sheets under ComfyUI user data, selects the H3 prompt family, and can use ComfyUI's loaded Qwen3-VL CLIP to analyze visual references and enhance the result.
 
 The node is based on MiniMax's official [base prompt guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md), [full-reference prompt guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md), and [H3 model card](https://huggingface.co/MiniMaxAI/MiniMax-H3).
 
@@ -51,6 +51,7 @@ MiniMax H3 Target Timing
 
 final Visual Reference.reference_context ─┬─> Prompt Guide.reference_context
                                           └─> Prompt Enhancer.reference_context
+final Reference Sheet Audio.audio_context ──> Prompt Guide.audio_context
 
 Prompt Guide.h3_prompt ────┐
 Prompt Guide.mode_report ──┼─> MiniMax H3 Prompt Enhancer ─> enhanced_prompt
@@ -127,6 +128,83 @@ and place it under `ComfyUI/models/text_encoders/MiniMax-H3/`.
 
 Connect `enhanced_prompt` to ComfyUI's official **MiniMax H3 Image to Video** or **MiniMax H3 Reference to Video** node. Those nodes encode the prompt and attach the correct AV latent plus any keyframe/reference VAE latents and media metadata. The enhancer deliberately does not emit a separate `CONDITIONING` output because it would duplicate the official node for T2VA and be incomplete for image/reference tasks.
 
+### Persistent Reference Sheets
+
+A **Reference Sheet** is a reusable media library entry rather than a
+character-only profile. One sheet can describe a person, object, outfit,
+location, style, voice, sound, or a mixed project collection. Saved sheets live
+outside the custom-node repository under:
+
+```text
+ComfyUI/user/default/minimax_h3/reference_sheets/
+└── <sheet-name>--<short-id>/
+    ├── manifest.json
+    ├── images/
+    └── audio/
+```
+
+Set `MINIMAX_H3_REFERENCE_SHEETS_DIR` before starting ComfyUI only when a
+different library root is required. Each manifest is versioned and contains a
+UUID, descriptions, tags, stable asset keys, suggested roles, relative media
+paths, and SHA-256 checksums. The original image/audio files are copied from
+`ComfyUI/input`, making the sheet independent of its creation workflow. Create
+never overwrites another sheet; Update requires `confirm_update` and replaces
+the selected sheet atomically.
+
+Build and save a sheet like this:
+
+```text
+Reference Sheet Image Asset.sheet_assets
+    └─> Reference Sheet Audio Asset.previous_assets
+            └─> chain additional Image/Audio Asset nodes as needed
+
+final sheet_assets ─> Reference Sheet Library.assets
+                      operation: Create new or Update existing
+                      └─ reference_sheet
+```
+
+The asset nodes contain their own input-directory loaders. Image assets expose
+ComfyUI's upload picker; audio assets list supported audio or audio-bearing
+files already present in `ComfyUI/input`. Chain any number of image/audio asset
+nodes. `asset_key` is the stable selection name, while `suggested_role` and
+`group_key` are reusable defaults. Do not put Shot numbers, H3 labels, native
+socket numbers, retention, or transfer targets in the saved sheet: those belong
+to the workflow that uses it.
+
+Use saved assets with the two workflow nodes:
+
+```text
+Reference Sheet Library.reference_sheet
+    ├─> Reference Sheet Visual Reference ─> reference_context / h3_media
+    └─> Reference Sheet Audio Reference  ─> audio_context / h3_audio
+
+final visual reference_context ─┬─> Prompt Guide.reference_context
+                                └─> Prompt Enhancer.reference_context
+final audio_context ───────────────> Prompt Guide.audio_context
+
+h3_media ─> native ref_image_N
+h3_audio ─> native standalone ref_audio_N
+```
+
+The visual-use node behaves like the ordinary Visual Reference node: it assigns
+the actual role, retention, content group, transfer target, notes, and compact
+`shot_scope` for this workflow, then can chain with other sheet or ordinary
+visual references. Blank `content_group` automatically uses a stable
+sheet/group-derived key for reusable Subject roles. Connect a normal Visual
+Reference Role chain to the sheet visual-use node when one saved image needs
+multiple simultaneous roles; that chain replaces the single-role widgets.
+
+The audio-use node validates the native 2–15-second per-clip limit, maximum of
+three clips, 15-second total, and exact zero-based `ref_audio_N` routing. Its
+final `audio_context` makes saved descriptions and audio relationships
+authoritative in the Guide.
+
+Qwen3-VL analyzes sheet images through the normal visual context. It does not
+analyze the audio waveform: the Enhancer receives the saved audio description
+as text, while native H3 receives the real `AUDIO` output. The first Reference
+Sheet release stores images and standalone audio; use the existing Visual
+Reference node for reference-video frame batches.
+
 ### Visual references, roles, and native routing
 
 Use one **MiniMax H3 Enhancer Visual Reference** node per picture or reference
@@ -165,7 +243,7 @@ The role fields mean:
 | `retention` | One official visible marker: `fully_preserved`, `partially_preserved`, `attribute_transfer`, or `weak_reference`. Auto chooses a role-safe non-transfer default. |
 | `content_group` | A stable user key for reusable visible content. Give bindings on different files the same key when the Guide should combine them as evidence for one `<Subject N>`. |
 | `transfer_target` | Required only for explicit `attribute_transfer`; names a different content group that receives the attribute or motion. |
-| `shot_scope` | Optional explicit location such as `Shot 2` or `Shots 1-3`. Leave blank when the location is not known instead of inventing Shot 1. |
+| `shot_scope` | Optional Shot numbers: `3`, `3,4`, `3-4`, or `all`. Older wording such as `Shot 3` remains supported. Leave blank when the location is not known instead of inventing Shot 1. |
 | `notes` | What to preserve, transfer, ignore, or change for this binding. |
 
 Two route families are intentionally exclusive:
@@ -214,8 +292,9 @@ standalone definition/retention row. Concrete frames remain `<Picture N>`;
 edit/continuation/whole-video temporal sources remain `<Video N>`. The enhancer
 can expand those definitions from visual evidence and checks the resulting
 structure, but the explicit bindings remain authoritative. Review
-`enhancer_report` and the candidate text before generation. Audio analysis is
-intentionally outside this visual chain for now.
+`enhancer_report` and the candidate text before generation. Reference Sheet
+audio uses a separate typed context because Qwen3-VL receives its saved text
+description rather than the waveform.
 
 ### Planning multiple shots
 
@@ -336,8 +415,10 @@ The Guide ignores its legacy image/video role dropdowns, derives Subject
 grouping, direct Picture/Video rows, retention, task prefix, and H3 family from
 the explicit bindings, and uses matching inventory lines only as descriptions.
 The enhancer analyzes and expands that already aligned draft instead of
-reconciling two conflicting role models. Audio still uses the Guide's audio
-dropdown and inventory because audio is outside the visual chain.
+reconciling two conflicting role models. Legacy audio still uses the Guide's
+dropdown and inventory. When a final Reference Sheet `audio_context` is
+connected, its saved descriptions and per-workflow audio relationship replace
+that legacy audio path and provide exact standalone native routes.
 
 ## Example: edit a video and keep its soundtrack
 
@@ -368,7 +449,9 @@ git clone https://github.com/ethanfel/ComfyUI-MiniMax-H3-Guide
 Then add **MiniMax H3 Prompt Guide**, **MiniMax H3 Shot**, **MiniMax H3 Target
 Timing**, **MiniMax H3 Visual Reference Role**, **MiniMax H3 Enhancer Visual
 Reference**, **MiniMax H3 Generation Tail Loader**, and **MiniMax H3 Prompt
-Enhancer (Qwen3-VL)** from **MiniMax H3 → Prompting** as needed.
+Enhancer (Qwen3-VL)** from **MiniMax H3 → Prompting** as needed. Reference Sheet
+Image Asset, Audio Asset, Library, Visual Reference, and Audio Reference appear
+under **MiniMax H3 → Reference Sheets**.
 
 This release expects a ComfyUI build containing native MiniMax H3 support
 (introduced by ComfyUI commit `57500fc5bc92`). Update ComfyUI if the official
@@ -381,19 +464,21 @@ MiniMax tokenizer are absent.
   `17k+5` frames, so the effective value shown in the prompt/report can be
   slightly longer (for example, 7.25 seconds becomes 175 frames / 7.292 seconds).
 - H3 Ref2VA policy allows up to 9 images, 3 videos, 3 audio clips, and 12 media
-  files in total. The visual chain validates its image/video portion, but cannot
-  inspect separately wired audio or enforce the mixed total against those audio
-  connections.
+  files in total. The visual chain validates its image/video portion. A connected
+  Reference Sheet `audio_context` validates its standalone-audio portion and lets
+  the Guide diagnose the mixed count; manually wired legacy audio remains outside
+  that verification.
 - H3 policy requires each reference video/audio clip to be 2–15 seconds and
   limits each media type to 15 seconds total. Video duration is validated by the
-  visual chain; audio duration remains the user's responsibility.
+  visual chain; Reference Sheet audio validates audio duration and total.
 - H3 policy does not allow reference audio as the sole media input. The Guide
-  can warn from its inventory, but the visual chain cannot validate actual audio
-  wiring.
+  rejects a Reference Sheet `audio_context` without a visual `reference_context`.
+  Legacy manual audio inventory can only produce a warning.
 - Native Ref2VA ordering is pictures first; then each enabled video soundtrack
   `<Audio N>` immediately before its `<Video N>`; then standalone audio. Audio
   and video labels are independently numbered, so equal numbers do not imply a
-  pairing. The visual chain does not create or analyze audio entries yet.
+  pairing. Reference Sheet audio creates standalone `ref_audio_N` entries; it
+  does not yet create video-paired soundtrack entries or analyze waveforms.
 - Native Image to Video stretches a first frame to the target canvas and
   center-cover-crops a last frame. Match endpoint aspect ratio to output
   width/height when exact composition is important.

@@ -27,6 +27,7 @@ from nodes import (
     MiniMaxH3PromptGuide,
     MiniMaxH3Shot,
     MiniMaxH3TargetTiming,
+    _shot_numbers_from_scope,
     choose_mode,
     parse_assets,
 )
@@ -70,6 +71,21 @@ def build(**overrides):
     }
     values.update(overrides)
     return MiniMaxH3PromptGuide().build(**values)
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected"),
+    [
+        ("3", [3]),
+        ("3,4", [3, 4]),
+        ("3-4", [3, 4]),
+        ("all", [1, 2, 3, 4]),
+        ("Shot 3", [3]),
+        ("Shots 3-4", [3, 4]),
+    ],
+)
+def test_shot_scope_accepts_compact_and_legacy_forms(scope, expected):
+    assert _shot_numbers_from_scope(scope, 4) == expected
 
 
 def test_auto_text_selects_t2va_and_three_fields():
@@ -905,7 +921,7 @@ def test_context_shot_scope_places_the_role_in_the_declared_shot():
         FULL_RELATION,
         "watch",
         "",
-        "Shot 2",
+        "2",
         "Use only the watch",
     )
     context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
@@ -1147,7 +1163,7 @@ def test_numbered_shot_scope_must_exist_in_the_connected_plan():
         FULL_RELATION,
         "watch",
         "",
-        "Shot 3",
+        "3",
         "Use the watch",
     )
     context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
