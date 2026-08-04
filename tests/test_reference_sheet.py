@@ -30,17 +30,14 @@ from reference_sheet import (
     AUDIO_REFERENCE,
     CREATE_SHEET,
     LOAD_SHEET,
-    NO_SUGGESTED_ROLE,
     UPDATE_SHEET,
-    USE_SHEET_ROLE,
-    MiniMaxH3ReferenceSheetAudioAsset,
     MiniMaxH3ReferenceSheetAudioReference,
-    MiniMaxH3ReferenceSheetImageAsset,
-    MiniMaxH3ReferenceSheetLibrary,
+    MiniMaxH3ReferenceSheet,
     MiniMaxH3ReferenceSheetVisualReference,
     NODE_CLASS_MAPPINGS,
-    REFERENCE_SHEET_DRAFT_TYPE,
     REFERENCE_SHEET_TYPE,
+    _load_image,
+    _load_wav_fallback,
     audio_reference_entries,
     reference_sheet_manifest,
 )
@@ -81,32 +78,23 @@ def _build_sheet(sheet_environment, *, audio_seconds=3.0):
     input_dir, _library_dir = sheet_environment
     if audio_seconds != 3.0:
         _write_wav(input_dir / "voice.wav", seconds=audio_seconds)
-    image_assets, preview, _ = MiniMaxH3ReferenceSheetImageAsset().add_image(
-        "primary.png",
-        "primary",
-        "Front view of the reusable subject",
-        IDENTITY_ROLE,
-        "main",
-    )
+    preview = _load_image(input_dir / "primary.png")
+    audio = _load_wav_fallback(input_dir / "voice.wav")
     assert preview.shape == (1, 24, 32, 3)
-    assets, audio, _ = MiniMaxH3ReferenceSheetAudioAsset().add_audio(
-        "voice.wav",
-        "voice",
-        "Warm low speaking voice with a French accent",
-        AUDIO_REFERENCE,
-        "voice",
-        previous_assets=image_assets,
-    )
     assert audio["waveform"].shape[0:2] == (1, 1)
-    sheet, report = MiniMaxH3ReferenceSheetLibrary().manage(
+    result = MiniMaxH3ReferenceSheet().manage(
         CREATE_SHEET,
         "(no saved reference sheets)",
         "Studio Subject",
         "Reusable identity and voice references",
         "identity, voice",
         False,
-        assets=assets,
+        "",
+        "",
+        image_1=preview,
+        audio_1=audio,
     )
+    sheet, report = result["result"]
     return sheet, report
 
 
@@ -168,46 +156,77 @@ def test_sheet_create_load_and_self_contained_media(sheet_environment):
 
     assert manifest["name"] == "Studio Subject"
     assert manifest["tags"] == ["identity", "voice"]
-    assert [asset["key"] for asset in manifest["assets"]] == ["primary", "voice"]
+    assert [asset["key"] for asset in manifest["assets"]] == ["image_1", "audio_1"]
     assert all((root / asset["file"]).is_file() for asset in manifest["assets"])
     assert str(root) in report
-    assert "primary (image" in report
-    assert "voice (audio" in report
+    assert "image_1 (image" in report
+    assert "audio_1 (audio" in report
 
     (input_dir / "primary.png").unlink()
     (input_dir / "voice.wav").unlink()
     selection = f"{manifest['name']} [{manifest['id'][:8]}]"
-    loaded, loaded_report = MiniMaxH3ReferenceSheetLibrary().manage(
+    loaded_result = MiniMaxH3ReferenceSheet().manage(
         LOAD_SHEET,
         selection,
         "",
         "",
         "",
         False,
+        "",
+        "",
     )
+    loaded, loaded_report = loaded_result["result"]
     loaded_manifest, loaded_root = reference_sheet_manifest(loaded)
     assert loaded_manifest == manifest
     assert loaded_root == root
     assert "Studio Subject" in loaded_report
 
 
-def test_duplicate_asset_keys_are_rejected_case_insensitively(sheet_environment):
-    assets, _, _ = MiniMaxH3ReferenceSheetImageAsset().add_image(
-        "primary.png",
-        "Main",
+def test_integrated_sheet_accepts_connected_batches_without_asset_names(sheet_environment):
+    input_dir, _library_dir = sheet_environment
+    first = _load_image(input_dir / "primary.png")
+    second = _load_image(input_dir / "detail.png")
+    result = MiniMaxH3ReferenceSheet().manage(
+        CREATE_SHEET,
+        "(no saved reference sheets)",
+        "Two Views",
         "",
-        NO_SUGGESTED_ROLE,
-        "main",
+        "",
+        False,
+        "",
+        "",
+        image_1=first,
+        image_2=second,
     )
-    with pytest.raises(ValueError, match="duplicated"):
-        MiniMaxH3ReferenceSheetAudioAsset().add_audio(
-            "voice.wav",
-            "main",
-            "",
-            AUDIO_REFERENCE,
-            "voice",
-            previous_assets=assets,
-        )
+    sheet, _report = result["result"]
+    manifest, _root = reference_sheet_manifest(sheet)
+    assert [asset["key"] for asset in manifest["assets"]] == ["image_1", "image_2"]
+    assert sheet["selected_image_key"] == "image_1"
+
+    selection = f"{manifest['name']} [{manifest['id'][:8]}]"
+    loaded_result = MiniMaxH3ReferenceSheet().manage(
+        LOAD_SHEET,
+        selection,
+        "",
+        "",
+        "",
+        False,
+        "image_2",
+        "",
+    )
+    selected_sheet, _report = loaded_result["result"]
+    assert selected_sheet["selected_image_key"] == "image_2"
+    _context, selected_image, _routing = MiniMaxH3ReferenceSheetVisualReference().use_image(
+        selected_sheet,
+        IDENTITY_ROLE,
+        FULL_RELATION,
+        "",
+        "",
+        "",
+        "",
+        768,
+    )
+    assert selected_image[0, 0, 0].tolist() == pytest.approx([32 / 255, 96 / 255, 208 / 255])
 
 
 def test_sheet_update_requires_confirmation_and_checksum_tampering_is_detected(
@@ -216,52 +235,53 @@ def test_sheet_update_requires_confirmation_and_checksum_tampering_is_detected(
     sheet, _ = _build_sheet(sheet_environment)
     manifest, root = reference_sheet_manifest(sheet)
     selection = f"{manifest['name']} [{manifest['id'][:8]}]"
-    assets, _, _ = MiniMaxH3ReferenceSheetImageAsset().add_image(
-        "detail.png",
-        "detail",
-        "Alternate detail",
-        ITEM_ROLE,
-        "detail",
-    )
+    detail = _load_image(sheet_environment[0] / "detail.png")
 
     with pytest.raises(ValueError, match="confirm_update=true"):
-        MiniMaxH3ReferenceSheetLibrary().manage(
+        MiniMaxH3ReferenceSheet().manage(
             UPDATE_SHEET,
             selection,
             "",
             "",
             "",
             False,
-            assets=assets,
+            "",
+            "",
+            image_1=detail,
         )
 
-    updated, _ = MiniMaxH3ReferenceSheetLibrary().manage(
+    updated_result = MiniMaxH3ReferenceSheet().manage(
         UPDATE_SHEET,
         selection,
         "Studio Subject Revised",
         "Updated description",
         "detail",
         True,
-        assets=assets,
+        "",
+        "",
+        image_1=detail,
     )
+    updated, _ = updated_result["result"]
     updated_manifest, updated_root = reference_sheet_manifest(updated)
     assert updated_manifest["id"] == manifest["id"]
     assert updated_manifest["name"] == "Studio Subject Revised"
-    assert [asset["key"] for asset in updated_manifest["assets"]] == ["detail"]
+    assert [asset["key"] for asset in updated_manifest["assets"]] == ["image_1"]
     assert updated_root == root
 
     updated_selection = (
         f"{updated_manifest['name']} [{updated_manifest['id'][:8]}]"
     )
-    preserved, _ = MiniMaxH3ReferenceSheetLibrary().manage(
+    preserved_result = MiniMaxH3ReferenceSheet().manage(
         UPDATE_SHEET,
         updated_selection,
         "",
         "",
         "",
         True,
-        assets=assets,
+        "",
+        "",
     )
+    preserved, _ = preserved_result["result"]
     preserved_manifest, _ = reference_sheet_manifest(preserved)
     assert preserved_manifest["description"] == "Updated description"
     assert preserved_manifest["tags"] == ["detail"]
@@ -279,8 +299,7 @@ def test_saved_visual_and_audio_assets_feed_guide_with_workflow_scopes(
     visual_context, image, visual_report = (
         MiniMaxH3ReferenceSheetVisualReference().use_image(
             sheet,
-            "primary",
-            USE_SHEET_ROLE,
+            IDENTITY_ROLE,
             FULL_RELATION,
             "",
             "",
@@ -300,8 +319,7 @@ def test_saved_visual_and_audio_assets_feed_guide_with_workflow_scopes(
     audio_context, audio, audio_report = (
         MiniMaxH3ReferenceSheetAudioReference().use_audio(
             sheet,
-            "voice",
-            "Use the sheet asset's suggested audio role",
+            AUDIO_REFERENCE,
             "3,4",
             "Use this voice only when the subject speaks",
         )
@@ -335,7 +353,6 @@ def test_audio_context_requires_visual_context_and_valid_shot_numbers(sheet_envi
     sheet, _ = _build_sheet(sheet_environment)
     audio_context, _, _ = MiniMaxH3ReferenceSheetAudioReference().use_audio(
         sheet,
-        "voice",
         AUDIO_REFERENCE,
         "5",
         "",
@@ -345,8 +362,7 @@ def test_audio_context_requires_visual_context_and_valid_shot_numbers(sheet_envi
 
     visual_context, _, _ = MiniMaxH3ReferenceSheetVisualReference().use_image(
         sheet,
-        "primary",
-        USE_SHEET_ROLE,
+        IDENTITY_ROLE,
         AUTO_RELATION,
         "",
         "",
@@ -384,8 +400,7 @@ def test_sheet_visual_accepts_a_repeatable_role_chain(sheet_environment):
     )
     context, _, report = MiniMaxH3ReferenceSheetVisualReference().use_image(
         sheet,
-        "primary",
-        USE_SHEET_ROLE,
+        IDENTITY_ROLE,
         AUTO_RELATION,
         "",
         "",
@@ -405,7 +420,6 @@ def test_audio_reference_duration_is_checked_when_used(sheet_environment):
     with pytest.raises(ValueError, match="2 through 15 seconds"):
         MiniMaxH3ReferenceSheetAudioReference().use_audio(
             sheet,
-            "voice",
             AUDIO_REFERENCE,
             "",
             "",
@@ -421,10 +435,15 @@ def test_reference_sheet_manifest_uses_relative_paths(sheet_environment):
 
 
 def test_reference_sheet_node_contracts_and_guide_socket_order():
-    assert len(NODE_CLASS_MAPPINGS) == 5
-    assert MiniMaxH3ReferenceSheetImageAsset.RETURN_TYPES[0] == REFERENCE_SHEET_DRAFT_TYPE
-    assert MiniMaxH3ReferenceSheetAudioAsset.RETURN_TYPES[0] == REFERENCE_SHEET_DRAFT_TYPE
-    assert MiniMaxH3ReferenceSheetLibrary.RETURN_TYPES[0] == REFERENCE_SHEET_TYPE
+    assert len(NODE_CLASS_MAPPINGS) == 3
+    assert set(NODE_CLASS_MAPPINGS) == {
+        "MiniMaxH3ReferenceSheet",
+        "MiniMaxH3ReferenceSheetVisualReference",
+        "MiniMaxH3ReferenceSheetAudioReference",
+    }
+    assert MiniMaxH3ReferenceSheet.RETURN_TYPES[0] == REFERENCE_SHEET_TYPE
+    assert "asset_key" not in MiniMaxH3ReferenceSheetVisualReference.INPUT_TYPES()["required"]
+    assert "asset_key" not in MiniMaxH3ReferenceSheetAudioReference.INPUT_TYPES()["required"]
     assert (
         MiniMaxH3ReferenceSheetAudioReference.RETURN_TYPES[0]
         == AUDIO_REFERENCE_CONTEXT_TYPE

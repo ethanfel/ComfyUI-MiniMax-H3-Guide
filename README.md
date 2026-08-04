@@ -145,36 +145,38 @@ ComfyUI/user/default/minimax_h3/reference_sheets/
 
 Set `MINIMAX_H3_REFERENCE_SHEETS_DIR` before starting ComfyUI only when a
 different library root is required. Each manifest is versioned and contains a
-UUID, descriptions, tags, stable asset keys, suggested roles, relative media
-paths, and SHA-256 checksums. The original image/audio files are copied from
-`ComfyUI/input`, making the sheet independent of its creation workflow. Create
-never overwrites another sheet; Update requires `confirm_update` and replaces
-the selected sheet atomically.
+UUID, descriptions, tags, relative media paths, and SHA-256 checksums. Connected
+ComfyUI `IMAGE` tensors are saved as PNG and connected `AUDIO` tensors are saved
+as WAV, making the sheet independent of its creation workflow and original
+input filenames. Create never overwrites another sheet; Update requires
+`confirm_update` and replaces the selected sheet atomically.
 
-Build and save a sheet like this:
+Build, display, and save a sheet with one integrated node:
 
 ```text
-Reference Sheet Image Asset.sheet_assets
-    └─> Reference Sheet Audio Asset.previous_assets
-            └─> chain additional Image/Audio Asset nodes as needed
+Load Image.IMAGE ───> Reference Sheet.image_1
+Load Image.IMAGE ───> Reference Sheet.image_2      optional
+Load Audio.AUDIO ───> Reference Sheet.audio_1      optional
 
-final sheet_assets ─> Reference Sheet Library.assets
-                      operation: Create new or Update existing
-                      └─ reference_sheet
+Reference Sheet
+    operation: Create new
+    sheet_name: reusable display name
+    └─ embedded thumbnail/audio gallery
 ```
 
-The asset nodes contain their own input-directory loaders. Image assets expose
-ComfyUI's upload picker; audio assets list supported audio or audio-bearing
-files already present in `ComfyUI/input`. Chain any number of image/audio asset
-nodes. `asset_key` is the stable selection name, while `suggested_role` and
-`group_key` are reusable defaults. Do not put Shot numbers, H3 labels, native
-socket numbers, retention, or transfer targets in the saved sheet: those belong
-to the workflow that uses it.
+Connect up to four image sources and three audio sources directly. An image
+batch is expanded into separate saved pictures, up to H3's nine-image limit.
+Queue once to create the sheet. Later choose `Load existing`, select the sheet,
+and click the desired thumbnail or audio player in the embedded gallery. The
+selection is carried in `reference_sheet`; users never type or remember an
+input filename or internal asset key. Update with no connected media changes
+metadata only and preserves the saved media. Update with connected media
+replaces the saved media after `confirm_update` is enabled.
 
 Use saved assets with the two workflow nodes:
 
 ```text
-Reference Sheet Library.reference_sheet
+Reference Sheet.reference_sheet
     ├─> Reference Sheet Visual Reference ─> reference_context / h3_media
     └─> Reference Sheet Audio Reference  ─> audio_context / h3_audio
 
@@ -186,18 +188,19 @@ h3_media ─> native ref_image_N
 h3_audio ─> native standalone ref_audio_N
 ```
 
-The visual-use node behaves like the ordinary Visual Reference node: it assigns
-the actual role, retention, content group, transfer target, notes, and compact
-`shot_scope` for this workflow, then can chain with other sheet or ordinary
-visual references. Blank `content_group` automatically uses a stable
-sheet/group-derived key for reusable Subject roles. Connect a normal Visual
-Reference Role chain to the sheet visual-use node when one saved image needs
-multiple simultaneous roles; that chain replaces the single-role widgets.
+The visual-use node automatically consumes the image selected in the gallery;
+it has no filename or asset-key field. It behaves like the ordinary Visual
+Reference node by assigning the actual role, retention, content group, transfer
+target, notes, and compact `shot_scope` for this workflow, then chaining with
+other sheet or ordinary visual references. Blank `content_group` uses a stable
+sheet-derived key for reusable Subject roles. Connect a normal Visual Reference
+Role chain when one selected image needs multiple simultaneous roles.
 
-The audio-use node validates the native 2–15-second per-clip limit, maximum of
-three clips, 15-second total, and exact zero-based `ref_audio_N` routing. Its
-final `audio_context` makes saved descriptions and audio relationships
-authoritative in the Guide.
+The audio-use node likewise consumes the gallery-selected audio automatically.
+It validates the native 2–15-second per-clip limit, maximum of three clips,
+15-second total, and exact zero-based `ref_audio_N` routing. Duplicate the
+integrated Reference Sheet node when several saved assets must be selected at
+the same time, then chain their corresponding use nodes.
 
 Qwen3-VL analyzes sheet images through the normal visual context. It does not
 analyze the audio waveform: the Enhancer receives the saved audio description
@@ -449,9 +452,10 @@ git clone https://github.com/ethanfel/ComfyUI-MiniMax-H3-Guide
 Then add **MiniMax H3 Prompt Guide**, **MiniMax H3 Shot**, **MiniMax H3 Target
 Timing**, **MiniMax H3 Visual Reference Role**, **MiniMax H3 Enhancer Visual
 Reference**, **MiniMax H3 Generation Tail Loader**, and **MiniMax H3 Prompt
-Enhancer (Qwen3-VL)** from **MiniMax H3 → Prompting** as needed. Reference Sheet
-Image Asset, Audio Asset, Library, Visual Reference, and Audio Reference appear
-under **MiniMax H3 → Reference Sheets**.
+Enhancer (Qwen3-VL)** from **MiniMax H3 → Prompting** as needed. The integrated
+Reference Sheet, Visual Reference, and Audio Reference nodes appear under
+**MiniMax H3 → Reference Sheets**. The previous filename-based Image Asset,
+Audio Asset, and Library builder nodes are disabled.
 
 This release expects a ComfyUI build containing native MiniMax H3 support
 (introduced by ComfyUI commit `57500fc5bc92`). Update ComfyUI if the official

@@ -406,7 +406,7 @@ def _sheet_runtime(sheet_dir: Path) -> dict:
 
 def reference_sheet_manifest(sheet) -> tuple[dict, Path]:
     if not isinstance(sheet, dict) or sheet.get("version") != SHEET_SCHEMA_VERSION:
-        raise ValueError("reference_sheet must come from MiniMax H3 Reference Sheet Library.")
+        raise ValueError("reference_sheet must come from MiniMax H3 Reference Sheet.")
     root = Path(str(sheet.get("root", ""))).resolve()
     library_root = _reference_sheet_root().resolve()
     if not _is_within(root, library_root):
@@ -418,9 +418,21 @@ def reference_sheet_manifest(sheet) -> tuple[dict, Path]:
     return manifest, root
 
 
-def _sheet_asset(sheet, asset_key: str, expected_kind: str) -> tuple[dict, dict, Path]:
+def _selected_asset_key(sheet, expected_kind: str) -> str:
+    manifest, _root = reference_sheet_manifest(sheet)
+    supplied = _clean_text(sheet.get(f"selected_{expected_kind}_key"))
+    available = [asset["key"] for asset in manifest["assets"] if asset["kind"] == expected_kind]
+    if supplied and supplied.casefold() in {key.casefold() for key in available}:
+        return supplied
+    if available:
+        return available[0]
+    raise ValueError(f"Reference Sheet {manifest['name']!r} contains no {expected_kind} assets.")
+
+
+def _sheet_asset(sheet, asset_key: str | None, expected_kind: str) -> tuple[dict, dict, Path]:
     manifest, root = reference_sheet_manifest(sheet)
-    key = _clean_text(asset_key).casefold()
+    resolved_key = _clean_text(asset_key) or _selected_asset_key(sheet, expected_kind)
+    key = resolved_key.casefold()
     matches = [asset for asset in manifest["assets"] if asset["key"].casefold() == key]
     if not matches:
         available = ", ".join(asset["key"] for asset in manifest["assets"] if asset["kind"] == expected_kind)
@@ -875,8 +887,338 @@ class MiniMaxH3ReferenceSheetLibrary:
         return _sha256(record["directory"] / "manifest.json")
 
 
+def _connected_media_entries(image_inputs: list[tuple[str, object]], audio_inputs: list[tuple[str, object]]) -> list[dict]:
+    entries = []
+    image_number = 0
+    for input_name, image in image_inputs:
+        if image is None:
+            continue
+        if not hasattr(image, "shape") or len(image.shape) != 4 or image.shape[-1] < 3:
+            raise ValueError(f"{input_name} must be a ComfyUI IMAGE batch with shape [B,H,W,C].")
+        for batch_index in range(int(image.shape[0])):
+            image_number += 1
+            entries.append(
+                {
+                    "key": f"image_{image_number}",
+                    "kind": "image",
+                    "value": image[batch_index],
+                    "source_name": f"{input_name} connection"
+                    + (f", batch item {batch_index + 1}" if image.shape[0] > 1 else ""),
+                }
+            )
+    if image_number > 9:
+        raise ValueError("A Reference Sheet accepts at most 9 connected images, matching H3's image-reference limit.")
+
+    audio_number = 0
+    for input_name, audio in audio_inputs:
+        if audio is None:
+            continue
+        _audio_duration(audio)
+        waveform = audio["waveform"]
+        if int(waveform.shape[0]) != 1:
+            raise ValueError(f"{input_name} must contain exactly one AUDIO batch item.")
+        audio_number += 1
+        entries.append(
+            {
+                "key": f"audio_{audio_number}",
+                "kind": "audio",
+                "value": audio,
+                "source_name": f"{input_name} connection",
+            }
+        )
+    if audio_number > 3:
+        raise ValueError("A Reference Sheet accepts at most 3 connected audio clips, matching H3's audio-reference limit.")
+    return entries
+
+
+def _write_connected_image(path: Path, image) -> None:
+    import numpy
+    from PIL import Image
+
+    array = image.detach().to(device="cpu").float().clamp(0.0, 1.0).numpy()[..., :3]
+    pixels = numpy.rint(array * 255.0).astype(numpy.uint8)
+    Image.fromarray(pixels).save(path, format="PNG")
+
+
+def _write_connected_audio(path: Path, audio: dict) -> None:
+    import numpy
+
+    waveform = audio["waveform"].detach().to(device="cpu").float()[0].clamp(-1.0, 1.0).numpy()
+    if waveform.ndim != 2 or waveform.shape[0] < 1:
+        raise ValueError("Connected AUDIO waveform must have shape [1, channels, samples].")
+    samples = numpy.rint(waveform.T * 32767.0).astype("<i2")
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(int(samples.shape[1]))
+        handle.setsampwidth(2)
+        handle.setframerate(int(audio["sample_rate"]))
+        handle.writeframes(samples.tobytes())
+
+
+def _save_connected_sheet(
+    operation: str,
+    saved_sheet: str,
+    sheet_name: str,
+    sheet_description: str,
+    tags: str,
+    confirm_update: bool,
+    entries: list[dict],
+) -> dict:
+    root = _reference_sheet_root()
+    root.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
+    existing = None
+
+    if operation == CREATE_SHEET:
+        display_name = _clean_text(sheet_name)
+        if not display_name:
+            raise ValueError("Create new requires a non-empty sheet_name.")
+        if not entries:
+            raise ValueError("Create new requires at least one connected IMAGE or AUDIO input.")
+        sheet_id = str(uuid.uuid4())
+        target = root / f"{_slug(display_name, 'sheet')}--{sheet_id[:8]}"
+        created_at = now
+        if target.exists():
+            raise ValueError("The generated Reference Sheet directory already exists; retry creation.")
+    elif operation == UPDATE_SHEET:
+        if not confirm_update:
+            raise ValueError("Update existing requires confirm_update=true to prevent accidental replacement.")
+        record = _selected_record(saved_sheet)
+        target = record["directory"]
+        existing = _read_manifest(target, verify_files=True)
+        sheet_id = existing["id"]
+        display_name = _clean_text(sheet_name) or existing["name"]
+        created_at = existing.get("created_at", now)
+    else:
+        raise ValueError(f"Unsupported save operation: {operation!r}.")
+
+    staging = Path(tempfile.mkdtemp(prefix=".reference-sheet-", dir=root))
+    backup = None
+    try:
+        manifest_assets = []
+        if entries:
+            for entry in entries:
+                subdirectory = "images" if entry["kind"] == "image" else "audio"
+                extension = ".png" if entry["kind"] == "image" else ".wav"
+                destination = staging / subdirectory / f"{entry['key']}{extension}"
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if entry["kind"] == "image":
+                    _write_connected_image(destination, entry["value"])
+                else:
+                    _write_connected_audio(destination, entry["value"])
+                manifest_assets.append(
+                    {
+                        "key": entry["key"],
+                        "kind": entry["kind"],
+                        "file": destination.relative_to(staging).as_posix(),
+                        "description": "",
+                        "suggested_role": "",
+                        "group_key": "main",
+                        "source_name": entry["source_name"],
+                        "sha256": _sha256(destination),
+                    }
+                )
+        else:
+            # A metadata-only update preserves the current media byte-for-byte.
+            for asset in existing["assets"]:
+                source = _manifest_asset_path(target, asset["file"])
+                destination = _manifest_asset_path(staging, asset["file"])
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+                copied = dict(asset)
+                copied["sha256"] = _sha256(destination)
+                manifest_assets.append(copied)
+
+        resolved_description = _clean_text(sheet_description)
+        resolved_tags = [part for value in tags.split(",") if (part := _clean_text(value))]
+        if existing is not None:
+            resolved_description = resolved_description or existing["description"]
+            resolved_tags = resolved_tags or existing["tags"]
+        manifest = {
+            "schema_version": SHEET_SCHEMA_VERSION,
+            "id": sheet_id,
+            "name": display_name,
+            "description": resolved_description,
+            "tags": resolved_tags,
+            "created_at": created_at,
+            "updated_at": now,
+            "assets": manifest_assets,
+        }
+        with (staging / "manifest.json").open("w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+        _validate_manifest(manifest, staging, verify_files=True)
+
+        if target.exists():
+            backup = root / f".reference-sheet-backup-{uuid.uuid4().hex}"
+            os.replace(target, backup)
+        try:
+            os.replace(staging, target)
+        except Exception:
+            if backup is not None and backup.exists() and not target.exists():
+                os.replace(backup, target)
+            raise
+        if backup is not None and backup.exists():
+            shutil.rmtree(backup)
+        return _sheet_runtime(target)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+
+def _with_selected_assets(sheet, selected_image_key: str, selected_audio_key: str) -> dict:
+    manifest, _root = reference_sheet_manifest(sheet)
+    selected = dict(sheet)
+    for kind, supplied in (("image", selected_image_key), ("audio", selected_audio_key)):
+        available = [asset["key"] for asset in manifest["assets"] if asset["kind"] == kind]
+        folded = _clean_text(supplied).casefold()
+        match = next((key for key in available if key.casefold() == folded), "")
+        selected[f"selected_{kind}_key"] = match or (available[0] if available else "")
+    return selected
+
+
+class MiniMaxH3ReferenceSheet:
+    """Create, load, preview, and select reusable reference media in one node."""
+
+    CATEGORY = "MiniMax H3/Reference Sheets"
+    FUNCTION = "manage"
+    RETURN_TYPES = (REFERENCE_SHEET_TYPE, "STRING")
+    RETURN_NAMES = ("reference_sheet", "sheet_report")
+    OUTPUT_NODE = True
+    OUTPUT_TOOLTIPS = (
+        "Carries the selected saved image/audio to the role-aware Reference Sheet use nodes.",
+        "Saved location, media inventory, and currently selected gallery items.",
+    )
+    DESCRIPTION = (
+        "One integrated Reference Sheet. Connect ordinary Load Image/Load Audio nodes, save the sheet, "
+        "then load it later and choose saved media from the embedded gallery. No filenames or asset keys are typed."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        image_tooltip = (
+            "Optional IMAGE from Load Image or another image-producing node. IMAGE batches are expanded into "
+            "separate saved references; the sheet accepts at most 9 images."
+        )
+        audio_tooltip = "Optional AUDIO from Load Audio; the sheet accepts at most 3 clips."
+        return {
+            "required": {
+                "operation": (
+                    SHEET_OPERATIONS,
+                    {
+                        "default": LOAD_SHEET,
+                        "tooltip": "Load is read-only. Create saves connected media. Update replaces media only when new media is connected.",
+                    },
+                ),
+                "saved_sheet": (
+                    _sheet_options(),
+                    {"tooltip": "Choose a saved sheet. The embedded gallery refreshes this list without typed paths."},
+                ),
+                "sheet_name": (
+                    "STRING",
+                    {"default": "", "tooltip": "Required only for Create new; optional rename for Update existing."},
+                ),
+                "sheet_description": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "dynamicPrompts": False,
+                        "default": "",
+                        "tooltip": "Reusable description of this person, object, place, style, or project reference.",
+                    },
+                ),
+                "tags": (
+                    "STRING",
+                    {"default": "", "placeholder": "character, project, location", "tooltip": "Optional comma-separated tags."},
+                ),
+                "confirm_update": (
+                    "BOOLEAN",
+                    {"default": False, "tooltip": "Safety lock required only for Update existing."},
+                ),
+                "selected_image_key": (
+                    "STRING",
+                    {"default": "", "tooltip": "Managed automatically by the embedded image gallery."},
+                ),
+                "selected_audio_key": (
+                    "STRING",
+                    {"default": "", "tooltip": "Managed automatically by the embedded audio gallery."},
+                ),
+            },
+            "optional": {
+                "image_1": ("IMAGE", {"tooltip": image_tooltip}),
+                "image_2": ("IMAGE", {"tooltip": image_tooltip}),
+                "image_3": ("IMAGE", {"tooltip": image_tooltip}),
+                "image_4": ("IMAGE", {"tooltip": image_tooltip}),
+                "audio_1": ("AUDIO", {"tooltip": audio_tooltip}),
+                "audio_2": ("AUDIO", {"tooltip": audio_tooltip}),
+                "audio_3": ("AUDIO", {"tooltip": audio_tooltip}),
+            },
+        }
+
+    def manage(
+        self,
+        operation: str,
+        saved_sheet: str,
+        sheet_name: str,
+        sheet_description: str,
+        tags: str,
+        confirm_update: bool,
+        selected_image_key: str,
+        selected_audio_key: str,
+        image_1=None,
+        image_2=None,
+        image_3=None,
+        image_4=None,
+        audio_1=None,
+        audio_2=None,
+        audio_3=None,
+    ):
+        if operation == LOAD_SHEET:
+            record = _selected_record(saved_sheet)
+            sheet = _sheet_runtime(record["directory"])
+        else:
+            entries = _connected_media_entries(
+                [("image_1", image_1), ("image_2", image_2), ("image_3", image_3), ("image_4", image_4)],
+                [("audio_1", audio_1), ("audio_2", audio_2), ("audio_3", audio_3)],
+            )
+            sheet = _save_connected_sheet(
+                operation,
+                saved_sheet,
+                sheet_name,
+                sheet_description,
+                tags,
+                bool(confirm_update),
+                entries,
+            )
+        sheet = _with_selected_assets(sheet, selected_image_key, selected_audio_key)
+        manifest, _root = reference_sheet_manifest(sheet)
+        option = f"{manifest['name']} [{manifest['id'][:8]}]"
+        report = _sheet_report(sheet) + (
+            f"\nSelected image: {sheet['selected_image_key'] or 'none'}"
+            f"\nSelected audio: {sheet['selected_audio_key'] or 'none'}"
+        )
+        return {
+            "ui": {
+                "saved_sheet": [option],
+                "sheet_id": [manifest["id"]],
+                "selected_image_key": [sheet["selected_image_key"]],
+                "selected_audio_key": [sheet["selected_audio_key"]],
+            },
+            "result": (sheet, report),
+        }
+
+    @classmethod
+    def IS_CHANGED(cls, operation, saved_sheet, **_kwargs):
+        if operation != LOAD_SHEET:
+            return float("nan")
+        try:
+            record = _selected_record(saved_sheet)
+        except ValueError:
+            return float("nan")
+        return _sha256(record["directory"] / "manifest.json")
+
+
 class MiniMaxH3ReferenceSheetVisualReference:
-    """Use one saved image as a role-aware, chainable H3 visual reference."""
+    """Use the gallery-selected image as a role-aware, chainable H3 visual reference."""
 
     CATEGORY = "MiniMax H3/Reference Sheets"
     FUNCTION = "use_image"
@@ -888,7 +1230,7 @@ class MiniMaxH3ReferenceSheetVisualReference:
         "Sheet asset, resolved workflow role, semantic H3 label, and exact native socket route.",
     )
     DESCRIPTION = (
-        "Loads one named image from a Reference Sheet, assigns workflow-specific role/retention/Shot "
+        "Loads the image selected in a Reference Sheet gallery, assigns workflow-specific role/retention/Shot "
         "scope, and adds it to the same context used by Visual Reference nodes."
     )
 
@@ -898,20 +1240,13 @@ class MiniMaxH3ReferenceSheetVisualReference:
             "required": {
                 "reference_sheet": (
                     REFERENCE_SHEET_TYPE,
-                    {"tooltip": "Connect Reference Sheet Library.reference_sheet."},
-                ),
-                "asset_key": (
-                    "STRING",
-                    {
-                        "default": "primary",
-                        "tooltip": "Exact image asset key listed in the Library node's sheet_report.",
-                    },
+                    {"tooltip": "Connect MiniMax H3 Reference Sheet.reference_sheet. Its gallery selection is used automatically."},
                 ),
                 "reference_role": (
-                    [USE_SHEET_ROLE, *[role for role in REFERENCE_ROLES if role != UNASSIGNED_ROLE]],
+                    REFERENCE_ROLES,
                     {
-                        "default": USE_SHEET_ROLE,
-                        "tooltip": "Use the saved suggestion or override it for this workflow without modifying the sheet.",
+                        "default": UNASSIGNED_ROLE,
+                        "tooltip": "Choose what the selected gallery image means in this workflow.",
                     },
                 ),
                 "retention": (
@@ -983,7 +1318,6 @@ class MiniMaxH3ReferenceSheetVisualReference:
     def use_image(
         self,
         reference_sheet,
-        asset_key: str,
         reference_role: str,
         retention: str,
         content_group: str,
@@ -994,17 +1328,15 @@ class MiniMaxH3ReferenceSheetVisualReference:
         previous_context=None,
         role_bindings=None,
     ):
-        manifest, asset, path = _sheet_asset(reference_sheet, asset_key, "image")
+        manifest, asset, path = _sheet_asset(reference_sheet, None, "image")
         if role_bindings is not None:
             resolved_bindings = role_binding_entries(role_bindings)
             role = resolved_bindings[0]["role"]
             binding = {"version": ROLE_CHAIN_VERSION, "bindings": resolved_bindings}
         else:
-            role = asset["suggested_role"] if reference_role == USE_SHEET_ROLE else reference_role
-            if not role:
-                raise ValueError(
-                    f"Sheet image {asset['key']!r} has no suggested role. Choose reference_role explicitly."
-                )
+            role = reference_role
+            if role == UNASSIGNED_ROLE:
+                raise ValueError("Choose reference_role for the image selected in the Reference Sheet gallery.")
             resolved_group = _clean_text(content_group)
             if role in SUBJECT_ROLES and not resolved_group:
                 resolved_group = f"sheet_{manifest['id'][:8]}_{_slug(asset['group_key'], 'main')}"
@@ -1021,7 +1353,7 @@ class MiniMaxH3ReferenceSheetVisualReference:
                     }
                 ],
             }
-        media_notes = asset["description"]
+        media_notes = asset["description"] or manifest["description"]
         image = _load_image(path)
         context, h3_media, report = MiniMaxH3EnhancerVisualReference().add_reference(
             image,
@@ -1036,8 +1368,8 @@ class MiniMaxH3ReferenceSheetVisualReference:
             role_bindings=binding,
         )
         prefix = (
-            f"Reference Sheet {manifest['name']} [{manifest['id'][:8]}], image asset "
-            f"{asset['key']!r}; saved suggestion={asset['suggested_role'] or 'none'}; "
+            f"Reference Sheet {manifest['name']} [{manifest['id'][:8]}], selected image "
+            f"{asset['key']!r}; "
             f"workflow roles={', '.join(item['role'] for item in binding['bindings'])}."
         )
         return (context, h3_media, prefix + "\n" + report)
@@ -1108,7 +1440,7 @@ def audio_reference_inventory(entries: list[dict]) -> str:
 
 
 class MiniMaxH3ReferenceSheetAudioReference:
-    """Use one saved audio asset in a chainable H3 audio-reference context."""
+    """Use the gallery-selected audio in a chainable H3 audio-reference context."""
 
     CATEGORY = "MiniMax H3/Reference Sheets"
     FUNCTION = "use_audio"
@@ -1120,7 +1452,7 @@ class MiniMaxH3ReferenceSheetAudioReference:
         "Audio labels, relationships, durations, Shot scopes, and exact native standalone-audio routes.",
     )
     DESCRIPTION = (
-        "Loads one named audio asset from a Reference Sheet, assigns its workflow relationship, "
+        "Loads the audio selected in a Reference Sheet gallery, assigns its workflow relationship, "
         "and routes it to a native standalone ref_audio_N input. Qwen receives saved text metadata, "
         "not waveform analysis."
     )
@@ -1131,20 +1463,13 @@ class MiniMaxH3ReferenceSheetAudioReference:
             "required": {
                 "reference_sheet": (
                     REFERENCE_SHEET_TYPE,
-                    {"tooltip": "Connect Reference Sheet Library.reference_sheet."},
-                ),
-                "asset_key": (
-                    "STRING",
-                    {
-                        "default": "voice",
-                        "tooltip": "Exact audio asset key listed in the Library node's sheet_report.",
-                    },
+                    {"tooltip": "Connect MiniMax H3 Reference Sheet.reference_sheet. Its gallery selection is used automatically."},
                 ),
                 "audio_use": (
-                    ["Use the sheet asset's suggested audio role", *AUDIO_USES],
+                    AUDIO_USES,
                     {
-                        "default": "Use the sheet asset's suggested audio role",
-                        "tooltip": "Use the saved suggestion or override it for this workflow without modifying the sheet.",
+                        "default": AUDIO_REFERENCE,
+                        "tooltip": "Choose what the selected gallery audio means in this workflow.",
                     },
                 ),
                 "shot_scope": (
@@ -1176,14 +1501,13 @@ class MiniMaxH3ReferenceSheetAudioReference:
     def use_audio(
         self,
         reference_sheet,
-        asset_key: str,
         audio_use: str,
         shot_scope: str,
         notes: str,
         previous_audio_context=None,
     ):
-        manifest, asset, path = _sheet_asset(reference_sheet, asset_key, "audio")
-        use = asset["suggested_role"] if audio_use.startswith("Use the sheet") else audio_use
+        manifest, asset, path = _sheet_asset(reference_sheet, None, "audio")
+        use = audio_use
         if use not in AUDIO_USES:
             raise ValueError(
                 f"Sheet audio {asset['key']!r} has no valid suggested use. Choose audio_use explicitly."
@@ -1202,7 +1526,7 @@ class MiniMaxH3ReferenceSheetAudioReference:
             "asset_key": asset["key"],
             "use": use,
             "retention": AUDIO_RETENTION[use],
-            "description": asset["description"],
+            "description": asset["description"] or manifest["description"],
             "notes": _clean_text(notes),
             "shot_scope": _clean_text(shot_scope),
             "duration_seconds": duration,
@@ -1220,18 +1544,83 @@ class MiniMaxH3ReferenceSheetAudioReference:
         return (context, audio, report)
 
 
+def _reference_sheet_catalog() -> list[dict]:
+    catalog = []
+    for record in _sheet_records():
+        try:
+            manifest = _read_manifest(record["directory"], verify_files=True)
+        except ValueError:
+            continue
+        catalog.append(
+            {
+                "id": manifest["id"],
+                "option": f"{manifest['name']} [{manifest['id'][:8]}]",
+                "name": manifest["name"],
+                "description": manifest["description"],
+                "tags": manifest["tags"],
+                "assets": [
+                    {
+                        "key": asset["key"],
+                        "kind": asset["kind"],
+                        "description": asset["description"],
+                        "sha256": asset["sha256"],
+                    }
+                    for asset in manifest["assets"]
+                ],
+            }
+        )
+    return catalog
+
+
+def _register_reference_sheet_routes() -> None:
+    try:
+        from aiohttp import web
+        from server import PromptServer
+    except ImportError:
+        return
+    prompt_server = getattr(PromptServer, "instance", None)
+    if prompt_server is None or getattr(prompt_server, "_minimax_h3_reference_sheet_routes", False):
+        return
+    prompt_server._minimax_h3_reference_sheet_routes = True
+
+    @prompt_server.routes.get("/minimax_h3/reference_sheets/catalog")
+    async def reference_sheet_catalog_route(_request):
+        return web.json_response({"sheets": _reference_sheet_catalog()})
+
+    @prompt_server.routes.get("/minimax_h3/reference_sheets/media")
+    async def reference_sheet_media_route(request):
+        sheet_id = _clean_text(request.rel_url.query.get("sheet_id"))
+        asset_key = _clean_text(request.rel_url.query.get("asset_key"))
+        if not sheet_id or not asset_key:
+            raise web.HTTPBadRequest(text="sheet_id and asset_key are required")
+        try:
+            record = _selected_record(sheet_id)
+            manifest = _read_manifest(record["directory"], verify_files=True)
+            asset = next(item for item in manifest["assets"] if item["key"] == asset_key)
+            path = _manifest_asset_path(record["directory"], asset["file"])
+        except (ValueError, StopIteration):
+            raise web.HTTPNotFound(text="Reference Sheet media was not found") from None
+        return web.FileResponse(
+            path,
+            headers={
+                "Content-Disposition": "inline",
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, max-age=3600",
+            },
+        )
+
+
+_register_reference_sheet_routes()
+
+
 NODE_CLASS_MAPPINGS = {
-    "MiniMaxH3ReferenceSheetImageAsset": MiniMaxH3ReferenceSheetImageAsset,
-    "MiniMaxH3ReferenceSheetAudioAsset": MiniMaxH3ReferenceSheetAudioAsset,
-    "MiniMaxH3ReferenceSheetLibrary": MiniMaxH3ReferenceSheetLibrary,
+    "MiniMaxH3ReferenceSheet": MiniMaxH3ReferenceSheet,
     "MiniMaxH3ReferenceSheetVisualReference": MiniMaxH3ReferenceSheetVisualReference,
     "MiniMaxH3ReferenceSheetAudioReference": MiniMaxH3ReferenceSheetAudioReference,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "MiniMaxH3ReferenceSheetImageAsset": "MiniMax H3 Reference Sheet Image Asset",
-    "MiniMaxH3ReferenceSheetAudioAsset": "MiniMax H3 Reference Sheet Audio Asset",
-    "MiniMaxH3ReferenceSheetLibrary": "MiniMax H3 Reference Sheet Library",
+    "MiniMaxH3ReferenceSheet": "MiniMax H3 Reference Sheet",
     "MiniMaxH3ReferenceSheetVisualReference": "MiniMax H3 Reference Sheet Visual Reference",
     "MiniMaxH3ReferenceSheetAudioReference": "MiniMax H3 Reference Sheet Audio Reference",
 }
