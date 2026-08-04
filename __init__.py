@@ -1,6 +1,10 @@
 """ComfyUI nodes for planning and writing MiniMax H3 prompts."""
 
 if __package__:
+    from .plan_v2 import (
+        NODE_CLASS_MAPPINGS as PLAN_V2_NODE_CLASS_MAPPINGS,
+        NODE_DISPLAY_NAME_MAPPINGS as PLAN_V2_NODE_DISPLAY_NAME_MAPPINGS,
+    )
     from .enhancer import (
         NODE_CLASS_MAPPINGS as ENHANCER_NODE_CLASS_MAPPINGS,
         NODE_DISPLAY_NAME_MAPPINGS as ENHANCER_NODE_DISPLAY_NAME_MAPPINGS,
@@ -18,6 +22,10 @@ if __package__:
         NODE_DISPLAY_NAME_MAPPINGS as SHEET_NODE_DISPLAY_NAME_MAPPINGS,
     )
 else:  # Allows direct loading by test runners from a hyphenated folder.
+    from plan_v2 import (
+        NODE_CLASS_MAPPINGS as PLAN_V2_NODE_CLASS_MAPPINGS,
+        NODE_DISPLAY_NAME_MAPPINGS as PLAN_V2_NODE_DISPLAY_NAME_MAPPINGS,
+    )
     from enhancer import (
         NODE_CLASS_MAPPINGS as ENHANCER_NODE_CLASS_MAPPINGS,
         NODE_DISPLAY_NAME_MAPPINGS as ENHANCER_NODE_DISPLAY_NAME_MAPPINGS,
@@ -36,12 +44,14 @@ else:  # Allows direct loading by test runners from a hyphenated folder.
     )
 
 NODE_CLASS_MAPPINGS = {
+    **PLAN_V2_NODE_CLASS_MAPPINGS,
     **GUIDE_NODE_CLASS_MAPPINGS,
     **MEDIA_NODE_CLASS_MAPPINGS,
     **SHEET_NODE_CLASS_MAPPINGS,
     **ENHANCER_NODE_CLASS_MAPPINGS,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
+    **PLAN_V2_NODE_DISPLAY_NAME_MAPPINGS,
     **GUIDE_NODE_DISPLAY_NAME_MAPPINGS,
     **MEDIA_NODE_DISPLAY_NAME_MAPPINGS,
     **SHEET_NODE_DISPLAY_NAME_MAPPINGS,

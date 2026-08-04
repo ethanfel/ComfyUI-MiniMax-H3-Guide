@@ -1081,11 +1081,12 @@ class MiniMaxH3ReferenceSheet:
 
     CATEGORY = "MiniMax H3/Reference Sheets"
     FUNCTION = "manage"
-    RETURN_TYPES = (REFERENCE_SHEET_TYPE, "STRING")
-    RETURN_NAMES = ("reference_sheet", "sheet_report")
+    RETURN_TYPES = (REFERENCE_SHEET_TYPE, "IMAGE", "STRING")
+    RETURN_NAMES = ("reference_sheet", "selected_image", "sheet_report")
     OUTPUT_NODE = True
     OUTPUT_TOOLTIPS = (
         "Carries the selected saved image/audio to the role-aware Reference Sheet use nodes.",
+        "The image currently selected in the embedded gallery. Connect it directly to the native H3 ref_image_N input listed by the role node.",
         "Saved location, media inventory, and currently selected gallery items.",
     )
     DESCRIPTION = (
@@ -1196,6 +1197,10 @@ class MiniMaxH3ReferenceSheet:
             f"\nSelected image: {sheet['selected_image_key'] or 'none'}"
             f"\nSelected audio: {sheet['selected_audio_key'] or 'none'}"
         )
+        selected_image = None
+        if sheet["selected_image_key"]:
+            _manifest, _asset, selected_path = _sheet_asset(sheet, None, "image")
+            selected_image = _load_image(selected_path)
         return {
             "ui": {
                 "saved_sheet": [option],
@@ -1203,7 +1208,7 @@ class MiniMaxH3ReferenceSheet:
                 "selected_image_key": [sheet["selected_image_key"]],
                 "selected_audio_key": [sheet["selected_audio_key"]],
             },
-            "result": (sheet, report),
+            "result": (sheet, selected_image, report),
         }
 
     @classmethod

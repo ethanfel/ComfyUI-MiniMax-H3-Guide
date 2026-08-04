@@ -6,6 +6,63 @@ The node is based on MiniMax's official [base prompt guide](https://huggingface.
 
 ## Nodes
 
+### Plan v2 ordered workflow (Phase 1)
+
+For new reference-heavy workflows, the Plan v2 nodes provide a typed semantic
+chain instead of asking one large form or an LLM to infer what each file means:
+
+    MiniMax H3 Project Setup (Plan v2)
+        -> Image / Video / Audio Reference nodes
+        -> optional Subject Binding nodes
+        -> Shot 1
+        -> optional Dialogue Event nodes
+        -> Shot 2 ...
+        -> MiniMax H3 Prompt Merge (Plan v2)
+
+Every node consumes and returns one **MINIMAX_H3_PLAN_V2** value. Reference
+nodes are accepted only before the first Shot. A Shot uses one cut time; the
+next cut or Project duration computes its end. Dialogue Events attach to the
+most recently opened Shot, allowing Prompt Merge to assign S1, S2, and later
+speaker IDs from actual vocal-event order.
+
+The three media nodes require an exact relationship:
+
+- Image Reference distinguishes reusable visible content, exact first/last
+  frames, concrete keyframes, and storyboard planning. It creates a Subject
+  only when reusable visible content is explicitly selected.
+- Video Reference distinguishes source editing, continuation, visible content,
+  motion/action transfer, and camera/cut/temporal structure.
+- Audio Reference distinguishes voice, music style, beat, sound-effect
+  texture, exact dialogue/lyric content, continuity, complete copy, partial
+  copy, and broad inspiration. Voice requires a target speaker; exact content
+  requires language and transcript. Its optional paired-video handle routes
+  that audio as the soundtrack belonging to the selected Video Reference.
+
+Subject names are human aliases such as woman, truck, or wristwatch. Prompt
+Merge assigns the final Subject/Picture/Video/Audio numbers, validates compact
+scopes such as 3,4 or 3-4, canonicalizes native media order, and returns:
+
+1. **h3_prompt** — an immediately usable deterministic three- or six-section
+   prompt;
+2. **rewrite_request** — prose-enhancement instructions that explicitly lock
+   labels, roles, retention, speakers, dialogue, and cut times;
+3. **plan_context** — the compiled typed plan for the structured enhancer and
+   native adapter planned in later phases;
+4. **problems_report** — readiness, mode, timing, inventory, and exact native
+   routes;
+5. **h3_length** — the Project Setup native frame length.
+
+Reference Sheet remains the reusable media library: connect its selected image
+or loaded audio to the matching Plan v2 reference node, where the
+workflow-specific role is declared.
+
+Phase 1 intentionally uses normal ComfyUI widgets and keeps native H3
+conditioning separate. Contextual role widgets, Shot less-than autocomplete,
+live canvas badges, hard-locked structured Qwen enhancement, and the optional
+native Apply Reference Plan adapter are later phases. Until the adapter is
+available, connect each media pass-through output to the native socket listed
+by Prompt Merge.
+
 ### MiniMax H3 Prompt Guide
 
 `MiniMax H3 Prompt Guide` appears under `MiniMax H3/Prompting`. It produces:
@@ -180,11 +237,13 @@ Reference Sheet.reference_sheet
     ├─> Reference Sheet Visual Reference ─> reference_context / h3_media
     └─> Reference Sheet Audio Reference  ─> audio_context / h3_audio
 
+Reference Sheet.selected_image ───────────> native ref_image_N
+
 final visual reference_context ─┬─> Prompt Guide.reference_context
                                 └─> Prompt Enhancer.reference_context
 final audio_context ───────────────> Prompt Guide.audio_context
 
-h3_media ─> native ref_image_N
+h3_media ─> native ref_image_N             equivalent image output
 h3_audio ─> native standalone ref_audio_N
 ```
 
@@ -195,6 +254,10 @@ target, notes, and compact `shot_scope` for this workflow, then chaining with
 other sheet or ordinary visual references. Blank `content_group` uses a stable
 sheet-derived key for reusable Subject roles. Connect a normal Visual Reference
 Role chain when one selected image needs multiple simultaneous roles.
+The integrated node's `selected_image` output is the original saved image, so
+it can connect directly to native H3 while `reference_sheet` feeds the role
+node. The role node retains its equivalent `h3_media` output for chaining
+compatibility; connect one of these image outputs, not both.
 
 The audio-use node likewise consumes the gallery-selected audio automatically.
 It validates the native 2–15-second per-clip limit, maximum of three clips,

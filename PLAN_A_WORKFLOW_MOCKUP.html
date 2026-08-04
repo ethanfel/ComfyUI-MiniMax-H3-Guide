@@ -1,0 +1,1735 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MiniMax H3 Plan A Workflow Mockup</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0c0d12;
+      --surface: #12141b;
+      --surface-2: #171a23;
+      --surface-3: #1d212c;
+      --line: #2b3040;
+      --line-soft: #222633;
+      --text: #f4f5f8;
+      --muted: #9ca3b5;
+      --faint: #697184;
+      --plan: #8f78ff;
+      --plan-bright: #b4a6ff;
+      --media: #43d8c4;
+      --prompt: #f3c761;
+      --good: #65d29b;
+      --warn: #f2a65a;
+      --project: #9d7cff;
+      --reference: #48a8ff;
+      --audio: #f0aa4f;
+      --shot: #55c994;
+      --compile: #e271c7;
+      --enhance: #6f8dff;
+      --apply: #ff6f91;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+      margin: 0;
+      background:
+        radial-gradient(circle at 20% -10%, rgba(143, 120, 255, 0.13), transparent 33rem),
+        radial-gradient(circle at 90% 0%, rgba(67, 216, 196, 0.08), transparent 30rem),
+        var(--bg);
+      color: var(--text);
+    }
+
+    body {
+      padding: 18px;
+    }
+
+    button,
+    input,
+    textarea {
+      font: inherit;
+    }
+
+    .app {
+      max-width: 1800px;
+      margin: 0 auto;
+      overflow: hidden;
+      border: 1px solid #252a38;
+      border-radius: 18px;
+      background: rgba(15, 17, 23, 0.96);
+      box-shadow: 0 28px 90px rgba(0, 0, 0, 0.45);
+    }
+
+    .topbar {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--line-soft);
+      background: rgba(18, 20, 27, 0.92);
+      backdrop-filter: blur(12px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 270px;
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.18), transparent 45%),
+        linear-gradient(135deg, #8065ff, #ba57d4);
+      font-weight: 850;
+      letter-spacing: -0.06em;
+      box-shadow: 0 10px 26px rgba(137, 102, 255, 0.27);
+    }
+
+    .brand-copy strong,
+    .brand-copy span {
+      display: block;
+    }
+
+    .brand-copy strong {
+      font-size: 14px;
+      letter-spacing: 0.01em;
+    }
+
+    .brand-copy span {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .view-switcher {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: #0e1016;
+    }
+
+    .view-button {
+      appearance: none;
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 12px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 650;
+      transition: 150ms ease;
+    }
+
+    .view-button:hover {
+      color: var(--text);
+      background: #191c25;
+    }
+
+    .view-button.active {
+      color: white;
+      background: #2a253e;
+      box-shadow: inset 0 0 0 1px rgba(180, 166, 255, 0.2);
+    }
+
+    .mockup-tag {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .mockup-tag::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--good);
+      box-shadow: 0 0 0 4px rgba(101, 210, 155, 0.11);
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 380px;
+      min-height: 980px;
+    }
+
+    .canvas-panel {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      background: #0d0f15;
+    }
+
+    .canvas-heading {
+      min-height: 76px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 15px 20px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .canvas-heading h1 {
+      margin: 0 0 5px;
+      font-size: 17px;
+      letter-spacing: -0.02em;
+    }
+
+    .canvas-heading p {
+      max-width: 760px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .ready-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+      padding: 8px 11px;
+      border: 1px solid rgba(101, 210, 155, 0.22);
+      border-radius: 999px;
+      color: #b8f0d1;
+      background: rgba(57, 126, 90, 0.12);
+      font-size: 11px;
+      font-weight: 750;
+    }
+
+    .ready-pill::before {
+      content: "✓";
+      width: 17px;
+      height: 17px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      color: #0f1712;
+      background: var(--good);
+      font-size: 11px;
+    }
+
+    .canvas-viewport {
+      position: relative;
+      flex: 1;
+      min-height: 850px;
+      overflow: auto;
+      background-color: #0d0f15;
+      background-image: radial-gradient(circle, rgba(111, 120, 145, 0.22) 1px, transparent 1.2px);
+      background-position: -2px -2px;
+      background-size: 22px 22px;
+    }
+
+    .stage {
+      position: relative;
+      width: 1180px;
+      height: 880px;
+      margin: 0 auto;
+    }
+
+    .connections {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      overflow: visible;
+      pointer-events: none;
+    }
+
+    .plan-wire,
+    .media-wire,
+    .prompt-wire {
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .plan-wire {
+      stroke: var(--plan);
+      stroke-width: 4;
+      filter: drop-shadow(0 0 6px rgba(143, 120, 255, 0.35));
+    }
+
+    .media-wire {
+      stroke: var(--media);
+      stroke-width: 2.5;
+      stroke-dasharray: 6 6;
+      opacity: 0.78;
+    }
+
+    .prompt-wire {
+      stroke: var(--prompt);
+      stroke-width: 3;
+      filter: drop-shadow(0 0 5px rgba(243, 199, 97, 0.24));
+    }
+
+    .source-chip {
+      position: absolute;
+      z-index: 2;
+      width: 198px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 10px;
+      border: 1px dashed rgba(67, 216, 196, 0.4);
+      border-radius: 10px;
+      color: #b9eee7;
+      background: rgba(25, 56, 55, 0.42);
+      box-shadow: 0 7px 18px rgba(0, 0, 0, 0.15);
+      font-size: 10px;
+    }
+
+    .source-chip strong {
+      max-width: 145px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 10px;
+    }
+
+    .source-chip span {
+      color: #7fd9cc;
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+    }
+
+    .source-image {
+      left: 260px;
+      top: 22px;
+    }
+
+    .source-video {
+      left: 488px;
+      top: 22px;
+    }
+
+    .source-audio {
+      left: 716px;
+      top: 22px;
+    }
+
+    .node {
+      --accent: var(--reference);
+      position: absolute;
+      z-index: 3;
+      width: 198px;
+      overflow: visible;
+      border: 1px solid #303646;
+      border-radius: 12px;
+      background: linear-gradient(180deg, #1a1e28, #141720);
+      box-shadow:
+        0 17px 33px rgba(0, 0, 0, 0.28),
+        inset 0 1px 0 rgba(255, 255, 255, 0.03);
+      cursor: pointer;
+      transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+    }
+
+    .node:hover {
+      transform: translateY(-2px);
+      border-color: #454d64;
+    }
+
+    .node.active {
+      border-color: var(--accent);
+      box-shadow:
+        0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent),
+        0 19px 42px rgba(0, 0, 0, 0.38),
+        0 0 24px color-mix(in srgb, var(--accent) 18%, transparent);
+    }
+
+    .node.project {
+      --accent: var(--project);
+      left: 32px;
+      top: 88px;
+    }
+
+    .node.image-ref {
+      --accent: var(--reference);
+      left: 260px;
+      top: 88px;
+    }
+
+    .node.video-ref {
+      --accent: #57b8d9;
+      left: 488px;
+      top: 88px;
+    }
+
+    .node.audio-ref {
+      --accent: var(--audio);
+      left: 716px;
+      top: 88px;
+    }
+
+    .node.shot-one {
+      --accent: var(--shot);
+      left: 944px;
+      top: 88px;
+    }
+
+    .node.dialogue {
+      --accent: #79d883;
+      left: 944px;
+      top: 390px;
+    }
+
+    .node.shot-two {
+      --accent: var(--shot);
+      left: 716px;
+      top: 390px;
+    }
+
+    .node.merge {
+      --accent: var(--compile);
+      left: 488px;
+      top: 390px;
+    }
+
+    .node.enhancer {
+      --accent: var(--enhance);
+      left: 488px;
+      top: 680px;
+    }
+
+    .node.apply {
+      --accent: var(--apply);
+      left: 716px;
+      top: 680px;
+    }
+
+    .node.optional::after {
+      content: "OPTIONAL";
+      position: absolute;
+      top: -9px;
+      right: 10px;
+      padding: 2px 6px;
+      border: 1px solid #40475b;
+      border-radius: 999px;
+      color: #aab1c2;
+      background: #171a23;
+      font-size: 8px;
+      font-weight: 850;
+      letter-spacing: 0.09em;
+    }
+
+    .node-header {
+      min-height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-bottom: 1px solid #2a2f3d;
+      border-radius: 11px 11px 0 0;
+      background:
+        linear-gradient(90deg, color-mix(in srgb, var(--accent) 25%, #1a1e28), #1a1e28 72%);
+    }
+
+    .node-icon {
+      width: 23px;
+      height: 23px;
+      display: grid;
+      flex: 0 0 auto;
+      place-items: center;
+      border: 1px solid color-mix(in srgb, var(--accent) 40%, #303646);
+      border-radius: 7px;
+      color: color-mix(in srgb, var(--accent) 80%, white);
+      background: color-mix(in srgb, var(--accent) 12%, #161922);
+      font-size: 11px;
+      font-weight: 850;
+    }
+
+    .node-title {
+      min-width: 0;
+    }
+
+    .node-title strong,
+    .node-title span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .node-title strong {
+      font-size: 10px;
+      letter-spacing: 0.015em;
+    }
+
+    .node-title span {
+      margin-top: 1px;
+      color: #8991a4;
+      font-size: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .node-body {
+      display: grid;
+      gap: 7px;
+      padding: 9px;
+    }
+
+    .widget {
+      min-height: 32px;
+      padding: 6px 8px;
+      border: 1px solid #2d3342;
+      border-radius: 7px;
+      background: #10131a;
+    }
+
+    .widget-label {
+      display: block;
+      margin-bottom: 4px;
+      color: #737c91;
+      font-size: 8px;
+      font-weight: 750;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+
+    .widget-value {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 7px;
+      color: #dce0e9;
+      font-size: 9px;
+      line-height: 1.35;
+    }
+
+    .widget-value .chevron {
+      flex: 0 0 auto;
+      color: #747d90;
+      font-size: 8px;
+    }
+
+    .widget.multiline {
+      min-height: 46px;
+    }
+
+    .widget.multiline .widget-value {
+      display: block;
+      color: #c7ccd8;
+      line-height: 1.45;
+    }
+
+    .token {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 5px;
+      border: 1px solid rgba(143, 120, 255, 0.28);
+      border-radius: 4px;
+      color: #c8beff;
+      background: rgba(143, 120, 255, 0.1);
+      white-space: nowrap;
+    }
+
+    .node-footer {
+      min-height: 25px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 5px 9px 6px;
+      border-top: 1px solid #252a37;
+      color: #818a9d;
+      font-size: 8px;
+    }
+
+    .node-footer strong {
+      color: color-mix(in srgb, var(--accent) 72%, white);
+      font-size: 8px;
+    }
+
+    .socket {
+      position: absolute;
+      z-index: 5;
+      width: 11px;
+      height: 11px;
+      border: 2px solid #141720;
+      border-radius: 50%;
+      background: var(--plan);
+      box-shadow: 0 0 0 1px rgba(143, 120, 255, 0.65);
+    }
+
+    .socket.left {
+      left: -6px;
+      top: 90px;
+    }
+
+    .socket.right {
+      right: -6px;
+      top: 90px;
+    }
+
+    .socket.top {
+      left: calc(50% - 5px);
+      top: -6px;
+    }
+
+    .socket.bottom {
+      left: calc(50% - 5px);
+      bottom: -6px;
+    }
+
+    .socket.media {
+      background: var(--media);
+      box-shadow: 0 0 0 1px rgba(67, 216, 196, 0.65);
+    }
+
+    .socket.prompt {
+      background: var(--prompt);
+      box-shadow: 0 0 0 1px rgba(243, 199, 97, 0.65);
+    }
+
+    .flow-label {
+      position: absolute;
+      z-index: 1;
+      padding: 4px 7px;
+      border: 1px solid rgba(143, 120, 255, 0.22);
+      border-radius: 6px;
+      color: #aaa0ed;
+      background: rgba(18, 18, 28, 0.9);
+      font-size: 8px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .flow-label.plan-one {
+      left: 226px;
+      top: 163px;
+    }
+
+    .flow-label.shots {
+      left: 908px;
+      top: 344px;
+    }
+
+    .flow-label.locked {
+      left: 609px;
+      top: 638px;
+    }
+
+    .callout {
+      position: absolute;
+      z-index: 2;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      max-width: 255px;
+      color: #a8afbf;
+      font-size: 9px;
+      line-height: 1.45;
+    }
+
+    .callout-number {
+      width: 19px;
+      height: 19px;
+      display: grid;
+      flex: 0 0 auto;
+      place-items: center;
+      border: 1px solid rgba(180, 166, 255, 0.35);
+      border-radius: 50%;
+      color: #d3ccff;
+      background: #211d31;
+      font-size: 9px;
+      font-weight: 850;
+    }
+
+    .callout.refs {
+      left: 32px;
+      top: 350px;
+    }
+
+    .callout.timeline {
+      left: 32px;
+      top: 435px;
+    }
+
+    .callout.compiler {
+      left: 32px;
+      top: 520px;
+    }
+
+    .autocomplete-popover {
+      position: absolute;
+      z-index: 8;
+      left: 742px;
+      top: 575px;
+      width: 365px;
+      display: none;
+      overflow: hidden;
+      border: 1px solid #4c456a;
+      border-radius: 11px;
+      background: rgba(23, 25, 34, 0.98);
+      box-shadow: 0 20px 55px rgba(0, 0, 0, 0.48);
+    }
+
+    .stage.show-autocomplete .autocomplete-popover {
+      display: block;
+      animation: popup-in 150ms ease-out;
+    }
+
+    @keyframes popup-in {
+      from {
+        opacity: 0;
+        transform: translateY(-5px) scale(0.985);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    .autocomplete-search {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 11px;
+      border-bottom: 1px solid #303446;
+      color: #d7d2fa;
+      font-size: 10px;
+    }
+
+    .autocomplete-search kbd {
+      min-width: 23px;
+      padding: 2px 5px;
+      border: 1px solid #4c456a;
+      border-radius: 5px;
+      color: #d4caff;
+      background: #242036;
+      font: inherit;
+      font-weight: 850;
+      text-align: center;
+    }
+
+    .autocomplete-item {
+      display: grid;
+      grid-template-columns: 88px 1fr auto;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 11px;
+      border-bottom: 1px solid #252a37;
+      font-size: 9px;
+    }
+
+    .autocomplete-item.active {
+      background: rgba(143, 120, 255, 0.12);
+    }
+
+    .autocomplete-item code {
+      color: #c9c0ff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9px;
+    }
+
+    .autocomplete-item strong {
+      color: #e1e4ec;
+      font-size: 9px;
+    }
+
+    .autocomplete-item span {
+      color: #778095;
+      font-size: 8px;
+    }
+
+    .legend {
+      min-height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 22px;
+      padding: 0 20px;
+      border-top: 1px solid var(--line-soft);
+      color: #858da0;
+      background: #101219;
+      font-size: 10px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .legend-line {
+      width: 27px;
+      height: 0;
+      border-top: 3px solid var(--plan);
+      border-radius: 999px;
+    }
+
+    .legend-line.media {
+      border-top: 2px dashed var(--media);
+    }
+
+    .legend-line.prompt {
+      border-color: var(--prompt);
+    }
+
+    .inspector {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid var(--line-soft);
+      background: #13151d;
+    }
+
+    .inspector-head {
+      padding: 18px;
+      border-bottom: 1px solid var(--line-soft);
+      background: linear-gradient(180deg, #181b25, #14171f);
+    }
+
+    .inspector-kicker {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 9px;
+      color: #858da0;
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+
+    .inspector-status {
+      padding: 3px 7px;
+      border: 1px solid rgba(101, 210, 155, 0.2);
+      border-radius: 999px;
+      color: #a8e6c4;
+      background: rgba(66, 139, 100, 0.12);
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    .inspector h2 {
+      margin: 0;
+      font-size: 19px;
+      letter-spacing: -0.025em;
+    }
+
+    .inspector-summary {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .inspector-scroll {
+      flex: 1;
+      overflow: auto;
+      padding: 16px 18px 24px;
+    }
+
+    .section-title {
+      margin: 2px 0 9px;
+      color: #798195;
+      font-size: 9px;
+      font-weight: 850;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+
+    .inspector-fields {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    .inspector-field {
+      padding: 10px;
+      border: 1px solid #2b3040;
+      border-radius: 9px;
+      background: #101219;
+    }
+
+    .inspector-field label {
+      display: block;
+      margin-bottom: 5px;
+      color: #7e879a;
+      font-size: 9px;
+      font-weight: 750;
+    }
+
+    .inspector-field div {
+      color: #e4e6ec;
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+
+    .inspector-field.conditional {
+      border-color: rgba(240, 170, 79, 0.28);
+      background: rgba(62, 45, 25, 0.17);
+    }
+
+    .inspector-field.conditional::before {
+      content: "Shown because of selected role";
+      display: inline-block;
+      margin-bottom: 7px;
+      padding: 2px 5px;
+      border-radius: 4px;
+      color: #d9a968;
+      background: rgba(240, 170, 79, 0.1);
+      font-size: 8px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+    }
+
+    .outputs {
+      display: grid;
+      gap: 7px;
+      margin-bottom: 20px;
+    }
+
+    .output {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px;
+      border: 1px solid #2a3040;
+      border-radius: 8px;
+      color: #cfd4df;
+      background: #11141b;
+      font-size: 10px;
+    }
+
+    .output code {
+      color: #bfb4ff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9px;
+    }
+
+    .output-type {
+      padding: 2px 5px;
+      border-radius: 4px;
+      color: #7ed9cc;
+      background: rgba(67, 216, 196, 0.09);
+      font-size: 8px;
+      font-weight: 800;
+    }
+
+    .note-card {
+      padding: 11px 12px;
+      border: 1px solid rgba(143, 120, 255, 0.23);
+      border-radius: 9px;
+      color: #b8b1d8;
+      background: rgba(67, 55, 116, 0.12);
+      font-size: 10px;
+      line-height: 1.55;
+    }
+
+    .compiled-preview {
+      display: none;
+      max-height: 310px;
+      margin: 0 0 20px;
+      overflow: auto;
+      padding: 11px;
+      border: 1px solid #303549;
+      border-radius: 9px;
+      color: #cfd4e0;
+      background: #0d0f15;
+      font: 9px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+    }
+
+    .inspector.compiled .compiled-preview {
+      display: block;
+    }
+
+    .inspector-foot {
+      padding: 12px 18px;
+      border-top: 1px solid var(--line-soft);
+      color: #767e91;
+      background: #11131a;
+      font-size: 9px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 1320px) {
+      body {
+        padding: 0;
+      }
+
+      .app {
+        border-radius: 0;
+      }
+
+      .workspace {
+        grid-template-columns: minmax(0, 1fr) 340px;
+      }
+    }
+
+    @media (max-width: 960px) {
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+
+      .inspector {
+        min-height: 560px;
+        border-top: 1px solid var(--line-soft);
+        border-left: 0;
+      }
+
+      .mockup-tag {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">H3</div>
+        <div class="brand-copy">
+          <strong>MiniMax H3 Prompt Planner</strong>
+          <span>Plan A · ordered semantic workflow</span>
+        </div>
+      </div>
+
+      <nav class="view-switcher" aria-label="Mockup views">
+        <button class="view-button active" data-view="overview" data-target="project">Workflow</button>
+        <button class="view-button" data-view="autocomplete" data-target="shot2">Shot autocomplete</button>
+        <button class="view-button" data-view="compiled" data-target="merge">Compiled prompt</button>
+      </nav>
+
+      <div class="mockup-tag">Interactive concept mockup</div>
+    </header>
+
+    <main class="workspace">
+      <section class="canvas-panel">
+        <div class="canvas-heading">
+          <div>
+            <h1>Reference-to-video project · 6.0 seconds requested</h1>
+            <p>
+              Configure references before the first shot. Every purple connection carries one
+              typed plan; media and prompt wires remain visibly separate.
+            </p>
+          </div>
+          <div class="ready-pill">Plan ready · 0 errors</div>
+        </div>
+
+        <div class="canvas-viewport">
+          <div class="stage" id="stage">
+            <svg class="connections" viewBox="0 0 1180 880" aria-hidden="true">
+              <defs>
+                <marker id="plan-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                  <path d="M0,0 L6,3 L0,6 Z" fill="#8f78ff"></path>
+                </marker>
+                <marker id="media-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                  <path d="M0,0 L6,3 L0,6 Z" fill="#43d8c4"></path>
+                </marker>
+                <marker id="prompt-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                  <path d="M0,0 L6,3 L0,6 Z" fill="#f3c761"></path>
+                </marker>
+              </defs>
+
+              <path class="plan-wire" marker-end="url(#plan-arrow)" d="M230 178 L260 178"></path>
+              <path class="plan-wire" marker-end="url(#plan-arrow)" d="M458 178 L488 178"></path>
+              <path class="plan-wire" marker-end="url(#plan-arrow)" d="M686 178 L716 178"></path>
+              <path class="plan-wire" marker-end="url(#plan-arrow)" d="M914 178 L944 178"></path>
+              <path class="plan-wire" marker-end="url(#plan-arrow)" d="M1043 300 C1043 330 1043 350 1043 390"></path>
+              <path class="plan-wire" marker-end="url(#plan-arrow)" d="M944 480 L914 480"></path>
+              <path class="plan-wire" marker-end="url(#plan-arrow)" d="M716 480 L686 480"></path>
+              <path class="plan-wire" marker-end="url(#plan-arrow)" d="M587 604 C587 625 587 647 587 680"></path>
+              <path class="prompt-wire" marker-end="url(#prompt-arrow)" d="M686 770 L716 770"></path>
+
+              <path class="media-wire" marker-end="url(#media-arrow)" d="M359 62 L359 88"></path>
+              <path class="media-wire" marker-end="url(#media-arrow)" d="M587 62 L587 88"></path>
+              <path class="media-wire" marker-end="url(#media-arrow)" d="M815 62 L815 88"></path>
+            </svg>
+
+            <div class="source-chip source-image">
+              <strong>Reference Sheet · woman.jpg</strong>
+              <span>IMAGE</span>
+            </div>
+            <div class="source-chip source-video">
+              <strong>Load Video · source_truck.mp4</strong>
+              <span>VIDEO</span>
+            </div>
+            <div class="source-chip source-audio">
+              <strong>Reference Sheet · woman_voice.wav</strong>
+              <span>AUDIO</span>
+            </div>
+
+            <div class="flow-label plan-one">one H3 plan</div>
+            <div class="flow-label shots">playback order</div>
+            <div class="flow-label locked">locked structure</div>
+
+            <article class="node project active" data-node="project" tabindex="0">
+              <span class="socket right"></span>
+              <div class="node-header">
+                <div class="node-icon">P</div>
+                <div class="node-title">
+                  <strong>H3 Project Setup</strong>
+                  <span>Global intent</span>
+                </div>
+              </div>
+              <div class="node-body">
+                <div class="widget multiline">
+                  <span class="widget-label">Initial prompt</span>
+                  <div class="widget-value">A woman rides in an old truck through Arizona...</div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Duration</span>
+                  <div class="widget-value"><span>6.00 seconds requested</span><span class="chevron">▾</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Soundscape</span>
+                  <div class="widget-value"><span>Truck interior, road noise</span></div>
+                </div>
+              </div>
+              <div class="node-footer"><span>Native 6.583 s</span><strong>h3_length · 158</strong></div>
+            </article>
+
+            <article class="node image-ref" data-node="image" tabindex="0">
+              <span class="socket left"></span>
+              <span class="socket right"></span>
+              <span class="socket top media"></span>
+              <div class="node-header">
+                <div class="node-icon">I</div>
+                <div class="node-title">
+                  <strong>H3 Image Reference</strong>
+                  <span>Picture 1</span>
+                </div>
+              </div>
+              <div class="node-body">
+                <div class="widget">
+                  <span class="widget-label">Use</span>
+                  <div class="widget-value"><span>Identity / appearance</span><span class="chevron">▾</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Subject name</span>
+                  <div class="widget-value"><span>woman</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Shot scope</span>
+                  <div class="widget-value"><span>1-2</span></div>
+                </div>
+              </div>
+              <div class="node-footer"><span>Reference registered</span><strong>Subject 1</strong></div>
+            </article>
+
+            <article class="node video-ref" data-node="video" tabindex="0">
+              <span class="socket left"></span>
+              <span class="socket right"></span>
+              <span class="socket top media"></span>
+              <div class="node-header">
+                <div class="node-icon">V</div>
+                <div class="node-title">
+                  <strong>H3 Video Reference</strong>
+                  <span>Video 1</span>
+                </div>
+              </div>
+              <div class="node-body">
+                <div class="widget">
+                  <span class="widget-label">Use</span>
+                  <div class="widget-value"><span>Source video to edit</span><span class="chevron">▾</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Preserve</span>
+                  <div class="widget-value"><span>Camera + timing</span><span class="chevron">▾</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Soundtrack</span>
+                  <div class="widget-value"><span>Do not reuse</span></div>
+                </div>
+              </div>
+              <div class="node-footer"><span>2.0-15.0 s valid</span><strong>Video 1</strong></div>
+            </article>
+
+            <article class="node audio-ref" data-node="audio" tabindex="0">
+              <span class="socket left"></span>
+              <span class="socket right"></span>
+              <span class="socket top media"></span>
+              <div class="node-header">
+                <div class="node-icon">A</div>
+                <div class="node-title">
+                  <strong>H3 Audio Reference</strong>
+                  <span>Audio 1</span>
+                </div>
+              </div>
+              <div class="node-body">
+                <div class="widget">
+                  <span class="widget-label">Exact role</span>
+                  <div class="widget-value"><span>Voice timbre + delivery</span><span class="chevron">▾</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Target speaker</span>
+                  <div class="widget-value"><span>Woman · Subject 1</span><span class="chevron">▾</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Copy source words</span>
+                  <div class="widget-value"><span>No</span></div>
+                </div>
+              </div>
+              <div class="node-footer"><span>Voice binding valid</span><strong>Audio 1 → woman</strong></div>
+            </article>
+
+            <article class="node shot-one" data-node="shot1" tabindex="0">
+              <span class="socket left"></span>
+              <span class="socket bottom"></span>
+              <div class="node-header">
+                <div class="node-icon">1</div>
+                <div class="node-title">
+                  <strong>H3 Shot</strong>
+                  <span>Shot 1 · 00:00.000</span>
+                </div>
+              </div>
+              <div class="node-body">
+                <div class="widget">
+                  <span class="widget-label">Cut at</span>
+                  <div class="widget-value"><span>First shot · fixed at 0</span></div>
+                </div>
+                <div class="widget multiline">
+                  <span class="widget-label">Description</span>
+                  <div class="widget-value">
+                    Inside the moving truck, <span class="token">&lt;Subject 1&gt;</span>
+                    sits beside the driver.
+                  </div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Transition</span>
+                  <div class="widget-value"><span>Opening shot</span></div>
+                </div>
+              </div>
+              <div class="node-footer"><span>Range computed</span><strong>0.000-2.800 s</strong></div>
+            </article>
+
+            <article class="node dialogue optional" data-node="dialogue" tabindex="0">
+              <span class="socket top"></span>
+              <span class="socket left"></span>
+              <div class="node-header">
+                <div class="node-icon">D</div>
+                <div class="node-title">
+                  <strong>H3 Dialogue Event</strong>
+                  <span>Attached to Shot 1</span>
+                </div>
+              </div>
+              <div class="node-body">
+                <div class="widget">
+                  <span class="widget-label">Speaker</span>
+                  <div class="widget-value"><span>Woman · Subject 1</span><span class="chevron">▾</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Language</span>
+                  <div class="widget-value"><span>English</span></div>
+                </div>
+                <div class="widget multiline">
+                  <span class="widget-label">Exact words</span>
+                  <div class="widget-value">“Thanks for stopping for me.”</div>
+                </div>
+              </div>
+              <div class="node-footer"><span>First vocal event</span><strong>Woman becomes S1</strong></div>
+            </article>
+
+            <article class="node shot-two" data-node="shot2" tabindex="0">
+              <span class="socket right"></span>
+              <span class="socket left"></span>
+              <div class="node-header">
+                <div class="node-icon">2</div>
+                <div class="node-title">
+                  <strong>H3 Shot</strong>
+                  <span>Shot 2 · 00:02.800</span>
+                </div>
+              </div>
+              <div class="node-body">
+                <div class="widget">
+                  <span class="widget-label">Cut at</span>
+                  <div class="widget-value"><span>2.800 seconds</span></div>
+                </div>
+                <div class="widget multiline">
+                  <span class="widget-label">Description</span>
+                  <div class="widget-value">
+                    Close shot as <span class="token">&lt;Subject 1&gt;</span> looks toward the driver...
+                  </div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Transition</span>
+                  <div class="widget-value"><span>Direct cut</span><span class="chevron">▾</span></div>
+                </div>
+              </div>
+              <div class="node-footer"><span>Final shot</span><strong>2.800-6.583 s</strong></div>
+            </article>
+
+            <article class="node merge" data-node="merge" tabindex="0">
+              <span class="socket right"></span>
+              <span class="socket bottom"></span>
+              <div class="node-header">
+                <div class="node-icon">M</div>
+                <div class="node-title">
+                  <strong>H3 Prompt Merge</strong>
+                  <span>Deterministic compiler</span>
+                </div>
+              </div>
+              <div class="node-body">
+                <div class="widget">
+                  <span class="widget-label">Detected route</span>
+                  <div class="widget-value"><span>Ref2VA · video edit</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Prompt structure</span>
+                  <div class="widget-value"><span>6 required sections</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Validation</span>
+                  <div class="widget-value"><span style="color:#8de0b5">✓ Ready · 0 errors</span></div>
+                </div>
+              </div>
+              <div class="node-footer"><span>Labels + timing locked</span><strong>H3 prompt</strong></div>
+            </article>
+
+            <article class="node enhancer optional" data-node="enhancer" tabindex="0">
+              <span class="socket top"></span>
+              <span class="socket right prompt"></span>
+              <div class="node-header">
+                <div class="node-icon">E</div>
+                <div class="node-title">
+                  <strong>H3 Prompt Enhancer</strong>
+                  <span>Prose only</span>
+                </div>
+              </div>
+              <div class="node-body">
+                <div class="widget">
+                  <span class="widget-label">Model</span>
+                  <div class="widget-value"><span>Qwen3-VL 32B</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Visual context</span>
+                  <div class="widget-value"><span>Picture 1 + Video 1</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Editable</span>
+                  <div class="widget-value"><span>Description + camera + sound</span></div>
+                </div>
+              </div>
+              <div class="node-footer"><span>Fallback: compiled draft</span><strong>Enhanced prompt</strong></div>
+            </article>
+
+            <article class="node apply optional" data-node="apply" tabindex="0">
+              <span class="socket left prompt"></span>
+              <div class="node-header">
+                <div class="node-icon">H</div>
+                <div class="node-title">
+                  <strong>H3 Apply Reference Plan</strong>
+                  <span>Native adapter</span>
+                </div>
+              </div>
+              <div class="node-body">
+                <div class="widget">
+                  <span class="widget-label">Native media order</span>
+                  <div class="widget-value"><span>Auto-routed from plan</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Target</span>
+                  <div class="widget-value"><span>1344 × 768 · 158 frames</span></div>
+                </div>
+                <div class="widget">
+                  <span class="widget-label">Outputs</span>
+                  <div class="widget-value"><span>Conditioning + latent</span></div>
+                </div>
+              </div>
+              <div class="node-footer"><span>No manual ref sockets</span><strong>Ready to sample</strong></div>
+            </article>
+
+            <div class="callout refs">
+              <span class="callout-number">1</span>
+              <span>References declare exact meaning once. Human aliases replace memorized numeric labels.</span>
+            </div>
+            <div class="callout timeline">
+              <span class="callout-number">2</span>
+              <span>Shots and dialogue follow playback order, so cut times and speaker IDs are deterministic.</span>
+            </div>
+            <div class="callout compiler">
+              <span class="callout-number">3</span>
+              <span>The merger locks semantics. Qwen may improve prose, but cannot change roles or routes.</span>
+            </div>
+
+            <div class="autocomplete-popover" id="autocomplete">
+              <div class="autocomplete-search">
+                <kbd>&lt;</kbd>
+                <span>Insert an upstream H3 reference</span>
+              </div>
+              <div class="autocomplete-item active">
+                <code>&lt;Subject 1&gt;</code>
+                <strong>Woman</strong>
+                <span>identity · Picture 1</span>
+              </div>
+              <div class="autocomplete-item">
+                <code>&lt;Video 1&gt;</code>
+                <strong>Source truck video</strong>
+                <span>edit source</span>
+              </div>
+              <div class="autocomplete-item">
+                <code>&lt;Audio 1&gt;</code>
+                <strong>Woman's voice</strong>
+                <span>bound to Subject 1</span>
+              </div>
+              <div class="autocomplete-item">
+                <code>&lt;Subject 1&gt; (S1)</code>
+                <strong>Woman speaking</strong>
+                <span>speaker snippet</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="legend">
+          <div class="legend-item"><span class="legend-line"></span><span>Semantic plan</span></div>
+          <div class="legend-item"><span class="legend-line media"></span><span>Original media</span></div>
+          <div class="legend-item"><span class="legend-line prompt"></span><span>Final prompt</span></div>
+          <div class="legend-item"><span>Click any node to inspect its full proposed interface.</span></div>
+        </div>
+      </section>
+
+      <aside class="inspector" id="inspector">
+        <div class="inspector-head">
+          <div class="inspector-kicker">
+            <span id="inspector-type">Selected node</span>
+            <span class="inspector-status" id="inspector-status">Required</span>
+          </div>
+          <h2 id="inspector-title">H3 Project Setup</h2>
+          <p class="inspector-summary" id="inspector-summary"></p>
+        </div>
+
+        <div class="inspector-scroll">
+          <div class="section-title">Proposed controls</div>
+          <div class="inspector-fields" id="inspector-fields"></div>
+
+          <pre class="compiled-preview" id="compiled-preview"></pre>
+
+          <div class="section-title">Outputs</div>
+          <div class="outputs" id="inspector-outputs"></div>
+
+          <div class="section-title">Design reason</div>
+          <div class="note-card" id="inspector-note"></div>
+        </div>
+
+        <div class="inspector-foot">
+          Concept only. Widget names and spacing may change during implementation; semantic ownership
+          and connection direction are the proposed contract.
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script>
+    const nodeData = {
+      project: {
+        type: "Project and timing",
+        status: "Required",
+        title: "H3 Project Setup",
+        summary: "Defines only properties of the target video as a whole and starts the typed planning chain.",
+        fields: [
+          ["Initial prompt", "A woman rides in an old truck through Arizona. Keep the scene cinematic and grounded."],
+          ["Duration", "6.00 seconds requested · 6.583 seconds native"],
+          ["Visual style", "Cinematic live action"],
+          ["Overall soundscape", "Truck engine, road vibration, quiet desert wind"],
+          ["Non-diegetic music", "N/A"]
+        ],
+        outputs: [
+          ["h3_plan", "PLAN V2"],
+          ["h3_length", "INT"],
+          ["project_preview", "STRING"]
+        ],
+        note: "Duration is available before media preparation and shots. There is one authoritative end time, so shot ranges cannot drift apart."
+      },
+      image: {
+        type: "Reference setup",
+        status: "Required when connected",
+        title: "H3 Image Reference",
+        summary: "Registers one image once, then declares its exact primary relationship to the target video.",
+        fields: [
+          ["Image", "woman.jpg · from Reference Sheet"],
+          ["Use", "Define reusable visible content"],
+          ["Content type", "Identity / appearance", true],
+          ["Subject name", "woman", true],
+          ["Retention", "Partially preserved"],
+          ["Shot scope", "1-2"]
+        ],
+        outputs: [
+          ["h3_plan", "PLAN V2"],
+          ["reference_handle", "H3 REF"],
+          ["Picture 1 media", "IMAGE"],
+          ["reference_preview", "STRING"]
+        ],
+        note: "The user chooses “Woman”, not “Subject 1”. Internal IDs stay stable; the compiler assigns H3 numbering after the full reference catalog is known."
+      },
+      video: {
+        type: "Reference setup",
+        status: "Optional",
+        title: "H3 Video Reference",
+        summary: "Separates editing, continuation, visible-content, motion, and camera-structure relationships.",
+        fields: [
+          ["Video", "source_truck.mp4"],
+          ["Use", "Source video to edit"],
+          ["Preserve", "Camera motion and timing"],
+          ["Requested changes", "Replace the passenger while preserving the moving-truck structure"],
+          ["Paired soundtrack", "Do not reuse"]
+        ],
+        outputs: [
+          ["h3_plan", "PLAN V2"],
+          ["reference_handle", "H3 REF"],
+          ["Video 1 media", "VIDEO"],
+          ["reference_preview", "STRING"]
+        ],
+        note: "“Edit this video” and “copy motion from this video” are different H3 tasks. They must be explicit before prompt enhancement."
+      },
+      audio: {
+        type: "Reference setup",
+        status: "Optional",
+        title: "H3 Audio Reference",
+        summary: "Assigns one exact audio relationship. Conditional controls appear only when relevant to the selected role.",
+        fields: [
+          ["Audio", "woman_voice.wav · 4.2 seconds"],
+          ["Exact role", "Voice timbre and delivery"],
+          ["Target speaker", "woman · Subject 1", true],
+          ["Delivery guidance", "Natural, youthful, initially hesitant", true],
+          ["Copy source words", "No — use Dialogue Event text", true],
+          ["Retention", "Reference only; do not copy signal"]
+        ],
+        outputs: [
+          ["h3_plan", "PLAN V2"],
+          ["Audio 1 media", "AUDIO"],
+          ["audio_binding_preview", "STRING"]
+        ],
+        note: "There is no “voice, music, beat, or sound” option. Choosing Voice produces a voice definition; choosing Music exposes different fields and produces a music definition."
+      },
+      shot1: {
+        type: "Timeline",
+        status: "Required",
+        title: "H3 Shot 1",
+        summary: "Opens the first timeline segment. Its start is automatically fixed at zero.",
+        fields: [
+          ["Cut at", "0.000 seconds · fixed for first shot"],
+          ["Description", "Inside the moving truck, <Subject 1> sits beside the driver as sunlight flickers through the windows."],
+          ["Camera direction", "Stable medium two-shot from the dashboard"],
+          ["Transition", "Opening shot"],
+          ["Computed range", "00:00.000–00:02.800"]
+        ],
+        outputs: [
+          ["h3_plan", "PLAN V2"],
+          ["shot_preview", "STRING"]
+        ],
+        note: "The Shot does not ask the user to type “[Shot 1]”. Numbering and its final time range come from chain order and the next cut."
+      },
+      dialogue: {
+        type: "Timeline event",
+        status: "Optional",
+        title: "H3 Dialogue Event",
+        summary: "Attaches exact spoken content to the most recently opened Shot and resolves speaker order.",
+        fields: [
+          ["Speaker", "woman · Subject 1"],
+          ["Language", "English"],
+          ["Exact text", "Thanks for stopping for me."],
+          ["Delivery", "Relieved, slightly breathless"],
+          ["Voice mode", "On-screen speech"]
+        ],
+        outputs: [
+          ["h3_plan", "PLAN V2"],
+          ["dialogue_preview", "STRING"]
+        ],
+        note: "Because this is the first vocal event, Woman becomes S1. Audio 1 can now be compiled as the voice-timbre reference for <Subject 1> (S1)."
+      },
+      shot2: {
+        type: "Timeline",
+        status: "Required",
+        title: "H3 Shot 2",
+        summary: "Starts at one cut time; its end is supplied by the next Shot or the global project duration.",
+        fields: [
+          ["Cut at", "2.800 seconds"],
+          ["Description", "Close shot as <Subject 1> looks toward the driver and reacts to what he says."],
+          ["Reference picker", "Type < to choose from every upstream Subject, Picture, Video, and Audio"],
+          ["Transition", "Direct cut"],
+          ["Computed range", "00:02.800–00:06.583"]
+        ],
+        outputs: [
+          ["h3_plan", "PLAN V2"],
+          ["shot_preview", "STRING"]
+        ],
+        note: "The autocomplete uses human aliases but inserts the exact H3 token. Python validates the token again, so API workflows remain safe without JavaScript."
+      },
+      merge: {
+        type: "Compiler",
+        status: "Required",
+        title: "H3 Prompt Merge",
+        summary: "Compiles the semantic plan into a valid H3 prompt and route table without using an LLM.",
+        fields: [
+          ["Detected mode", "Ref2VA · source video editing"],
+          ["References", "1 Picture · 1 Video · 1 standalone Audio"],
+          ["Timeline", "2 shots · 1 dialogue event · 6.00 seconds requested / 6.583 native"],
+          ["Validation", "Ready · 0 errors"],
+          ["Locked fields", "Labels, roles, retention, speakers, exact dialogue, cut times"]
+        ],
+        outputs: [
+          ["h3_prompt", "STRING"],
+          ["enhancer_request", "STRING"],
+          ["plan_context", "PLAN V2"],
+          ["problems_report", "STRING"],
+          ["h3_length", "INT"]
+        ],
+        note: "This is the authority boundary. The prompt is already valid here. Enhancement is optional and cannot alter semantic facts.",
+        compiled: "subject_definitions:\n<Subject 1> is the woman whose identity and appearance come from <Picture 1>.\n<Video 1> is the source video edited into the target video.\n<Audio 1> is the voice-timbre and delivery reference for <Subject 1> (S1).\n\nsummary:\n[video editing + identity reference + voice reference] ...\n\nretention_analysis:\n<Subject 1>: partially_preserved ...\n<Video 1>: partially_preserved ...\n<Audio 1>: reference_only ...\n\ndetailed_description:\n[Shot 1] Inside the moving truck, <Subject 1> (S1) ...\n<d>[English] Thanks for stopping for me.</d>\n[Shot 2] At 00:02.800, close shot as <Subject 1> ...\n\noverall_soundscape:\nTruck engine, road vibration, quiet desert wind.\n\nnon_diegetic_music:\nN/A"
+      },
+      enhancer: {
+        type: "Optional enhancement",
+        status: "Optional",
+        title: "H3 Prompt Enhancer",
+        summary: "Uses Qwen to improve descriptive prose while the compiled semantic plan remains locked.",
+        fields: [
+          ["CLIP / LLM", "Qwen3-VL 32B"],
+          ["Visual context", "Picture 1 + sampled Video 1 frames"],
+          ["System prompt", "Input override supported; base and effective prompts are outputs"],
+          ["Tail", "Optional side-node input"],
+          ["Editable fields", "Visual description, actions, camera prose, ambience and music"],
+          ["Locked fields", "All labels, roles, speaker IDs, dialogue and timing"]
+        ],
+        outputs: [
+          ["enhanced_h3_prompt", "STRING"],
+          ["base_system_prompt", "STRING"],
+          ["system_prompt_used", "STRING"],
+          ["enhancer_warnings", "STRING"]
+        ],
+        note: "If structured output fails validation, the node returns the deterministic draft instead of a malformed prompt. Audio meaning comes from metadata, not waveform guessing."
+      },
+      apply: {
+        type: "Native integration",
+        status: "Optional · Phase 3",
+        title: "H3 Apply Reference Plan",
+        summary: "Turns the plan and final prompt into native H3 conditioning without manual reference-socket ordering.",
+        fields: [
+          ["Prompt", "Enhanced prompt, or direct compiled prompt"],
+          ["Model inputs", "CLIP, VAE and optional audio VAE"],
+          ["Target size", "1344 × 768"],
+          ["Length", "158 frames · derived from Project"],
+          ["Canonical route", "Pictures → paired audio/video → standalone audio"]
+        ],
+        outputs: [
+          ["positive", "CONDITIONING"],
+          ["latent", "LATENT"],
+          ["native_route_report", "STRING"]
+        ],
+        note: "This adapter stays separate so prompt planning works without model weights and users can still connect the official native node if they prefer."
+      }
+    };
+
+    const nodes = Array.from(document.querySelectorAll(".node"));
+    const stage = document.getElementById("stage");
+    const inspector = document.getElementById("inspector");
+    const inspectorType = document.getElementById("inspector-type");
+    const inspectorStatus = document.getElementById("inspector-status");
+    const inspectorTitle = document.getElementById("inspector-title");
+    const inspectorSummary = document.getElementById("inspector-summary");
+    const inspectorFields = document.getElementById("inspector-fields");
+    const inspectorOutputs = document.getElementById("inspector-outputs");
+    const inspectorNote = document.getElementById("inspector-note");
+    const compiledPreview = document.getElementById("compiled-preview");
+    const viewButtons = Array.from(document.querySelectorAll(".view-button"));
+
+    function renderInspector(key, view) {
+      const data = nodeData[key];
+      if (!data) {
+        return;
+      }
+
+      nodes.forEach(function (node) {
+        node.classList.toggle("active", node.dataset.node === key);
+      });
+
+      inspectorType.textContent = data.type;
+      inspectorStatus.textContent = data.status;
+      inspectorTitle.textContent = data.title;
+      inspectorSummary.textContent = data.summary;
+      inspectorFields.replaceChildren();
+      inspectorOutputs.replaceChildren();
+
+      data.fields.forEach(function (field) {
+        const card = document.createElement("div");
+        card.className = "inspector-field" + (field[2] ? " conditional" : "");
+        const label = document.createElement("label");
+        const value = document.createElement("div");
+        label.textContent = field[0];
+        value.textContent = field[1];
+        card.append(label, value);
+        inspectorFields.append(card);
+      });
+
+      data.outputs.forEach(function (output) {
+        const row = document.createElement("div");
+        row.className = "output";
+        const name = document.createElement("code");
+        const type = document.createElement("span");
+        name.textContent = output[0];
+        type.className = "output-type";
+        type.textContent = output[1];
+        row.append(name, type);
+        inspectorOutputs.append(row);
+      });
+
+      inspectorNote.textContent = data.note;
+      compiledPreview.textContent = data.compiled || "";
+      inspector.classList.toggle("compiled", view === "compiled" && Boolean(data.compiled));
+      stage.classList.toggle("show-autocomplete", view === "autocomplete");
+
+      if (view) {
+        viewButtons.forEach(function (button) {
+          button.classList.toggle("active", button.dataset.view === view);
+        });
+      }
+    }
+
+    nodes.forEach(function (node) {
+      function selectNode() {
+        const key = node.dataset.node;
+        const view = key === "shot1" || key === "shot2" ? "autocomplete" : "overview";
+        renderInspector(key, view);
+      }
+
+      node.addEventListener("click", selectNode);
+      node.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectNode();
+        }
+      });
+    });
+
+    viewButtons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        renderInspector(button.dataset.target, button.dataset.view);
+      });
+    });
+
+    renderInspector("project", "overview");
+  </script>
+</body>
+</html>

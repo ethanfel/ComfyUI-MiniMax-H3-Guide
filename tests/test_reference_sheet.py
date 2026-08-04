@@ -94,7 +94,8 @@ def _build_sheet(sheet_environment, *, audio_seconds=3.0):
         image_1=preview,
         audio_1=audio,
     )
-    sheet, report = result["result"]
+    sheet, selected_image, report = result["result"]
+    assert selected_image.shape == (1, 24, 32, 3)
     return sheet, report
 
 
@@ -175,7 +176,8 @@ def test_sheet_create_load_and_self_contained_media(sheet_environment):
         "",
         "",
     )
-    loaded, loaded_report = loaded_result["result"]
+    loaded, selected_image, loaded_report = loaded_result["result"]
+    assert selected_image.shape == (1, 24, 32, 3)
     loaded_manifest, loaded_root = reference_sheet_manifest(loaded)
     assert loaded_manifest == manifest
     assert loaded_root == root
@@ -198,7 +200,8 @@ def test_integrated_sheet_accepts_connected_batches_without_asset_names(sheet_en
         image_1=first,
         image_2=second,
     )
-    sheet, _report = result["result"]
+    sheet, selected_image, _report = result["result"]
+    assert selected_image[0, 0, 0].tolist() == pytest.approx([192 / 255, 64 / 255, 32 / 255])
     manifest, _root = reference_sheet_manifest(sheet)
     assert [asset["key"] for asset in manifest["assets"]] == ["image_1", "image_2"]
     assert sheet["selected_image_key"] == "image_1"
@@ -214,8 +217,9 @@ def test_integrated_sheet_accepts_connected_batches_without_asset_names(sheet_en
         "image_2",
         "",
     )
-    selected_sheet, _report = loaded_result["result"]
+    selected_sheet, selected_image_output, _report = loaded_result["result"]
     assert selected_sheet["selected_image_key"] == "image_2"
+    assert selected_image_output[0, 0, 0].tolist() == pytest.approx([32 / 255, 96 / 255, 208 / 255])
     _context, selected_image, _routing = MiniMaxH3ReferenceSheetVisualReference().use_image(
         selected_sheet,
         IDENTITY_ROLE,
@@ -261,7 +265,7 @@ def test_sheet_update_requires_confirmation_and_checksum_tampering_is_detected(
         "",
         image_1=detail,
     )
-    updated, _ = updated_result["result"]
+    updated, _selected_image, _ = updated_result["result"]
     updated_manifest, updated_root = reference_sheet_manifest(updated)
     assert updated_manifest["id"] == manifest["id"]
     assert updated_manifest["name"] == "Studio Subject Revised"
@@ -281,7 +285,7 @@ def test_sheet_update_requires_confirmation_and_checksum_tampering_is_detected(
         "",
         "",
     )
-    preserved, _ = preserved_result["result"]
+    preserved, _selected_image, _ = preserved_result["result"]
     preserved_manifest, _ = reference_sheet_manifest(preserved)
     assert preserved_manifest["description"] == "Updated description"
     assert preserved_manifest["tags"] == ["detail"]
