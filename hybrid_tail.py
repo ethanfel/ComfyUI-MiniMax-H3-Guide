@@ -8,7 +8,9 @@ and the LM head while text is generated. It never changes the connected CLIP.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import gc
 import re
+import traceback
 
 import torch
 
@@ -27,6 +29,77 @@ FULL_LAYER_COUNT = 64
 RUNTIME_HEADROOM = 6 * 1024**3
 LM_HEAD_CHUNK_ROWS = 4096
 LAYER_KEY = re.compile(r"^model\.layers\.(\d+)\.")
+
+
+def _layout_name(weight):
+    layout = getattr(weight, "_layout_cls", "")
+    return layout if isinstance(layout, str) else getattr(layout, "__name__", "")
+
+
+def _int8_scale_chunk(scale, start: int, end: int, row_count: int):
+    """Return a scalar or row-broadcastable scale for an INT8 head chunk."""
+
+    if not isinstance(scale, torch.Tensor):
+        raise ValueError("The generation-tail LM-head INT8 scale is not a tensor.")
+    if scale.numel() == 1:
+        return scale
+    if scale.shape[0] != row_count:
+        raise ValueError(
+            "The generation-tail LM-head INT8 scale must be scalar or have "
+            f"one value per vocabulary row; got shape {tuple(scale.shape)} for "
+            f"{row_count} rows."
+        )
+    chunk = scale[start:end]
+    if chunk.ndim == 1:
+        chunk = chunk.unsqueeze(-1)
+    if chunk.ndim != 2 or chunk.shape[1] != 1:
+        raise ValueError(
+            "The generation-tail LM-head only supports tensor-wise or per-row "
+            f"INT8 scales; got shape {tuple(scale.shape)}."
+        )
+    return chunk
+
+
+def _validate_int8_head(weight, qdata, scale):
+    """Reject quantized layouts that cannot use the explicit chunked head path."""
+
+    layout = _layout_name(weight)
+    if layout != "TensorWiseINT8Layout":
+        raise ValueError(
+            "The generation-tail LM head must use ComfyUI int8_tensorwise "
+            "quantization; unsupported layout "
+            f"{layout or '<unknown>'}. Select the published INT8 ConvRot tail."
+        )
+    if not isinstance(qdata, torch.Tensor) or qdata.ndim != 2:
+        raise ValueError(
+            "The generation-tail LM-head INT8 data must be a two-dimensional "
+            "[vocabulary, hidden_size] tensor."
+        )
+    if qdata.dtype != torch.int8:
+        raise ValueError(
+            "The generation-tail LM-head int8_tensorwise data must have torch.int8 "
+            f"storage, got {qdata.dtype}."
+        )
+    _int8_scale_chunk(scale, 0, min(1, qdata.shape[0]), qdata.shape[0])
+
+    params = getattr(weight, "_params", None)
+    if getattr(params, "convrot", False):
+        group_size = int(getattr(params, "convrot_groupsize", 0))
+        factor = group_size
+        while factor > 1 and factor % 4 == 0:
+            factor //= 4
+        if group_size < 4 or factor != 1:
+            raise ValueError(
+                "The generation-tail ConvRot group size must be a positive power "
+                f"of four; got {group_size}."
+            )
+        # _hadamard below additionally verifies a power of four. This early
+        # divisibility check provides a clearer artifact-compatibility error.
+        if qdata.shape[1] % group_size:
+            raise ValueError(
+                f"The LM-head hidden size {qdata.shape[1]} is not divisible by "
+                f"its ConvRot group size {group_size}."
+            )
 
 
 def _hadamard(size, device, dtype=torch.float32):
@@ -112,8 +185,15 @@ class Qwen3VL32BGenerationTail(torch.nn.Module):
         qdata = getattr(weight, "_qdata", None)
         params = getattr(weight, "_params", None)
         scale = getattr(params, "scale", None)
-        if qdata is None or scale is None:
+        if qdata is None and scale is None:
             return self.model.lm_head(hidden[:, -1:])
+        if qdata is None or scale is None:
+            raise ValueError(
+                "The generation-tail LM head has an incomplete quantized layout: "
+                "both INT8 data and scale are required."
+            )
+
+        _validate_int8_head(weight, qdata, scale)
 
         input_token = hidden[:, -1:].float()
         if getattr(params, "convrot", False):
@@ -128,8 +208,11 @@ class Qwen3VL32BGenerationTail(torch.nn.Module):
                 device=input_token.device, non_blocking=True
             )
             weight_chunk = q_chunk.to(dtype=torch.float32)
+            scale_chunk = _int8_scale_chunk(
+                scale, start, end, qdata.shape[0]
+            )
             weight_chunk.mul_(
-                scale[start:end].to(
+                scale_chunk.to(
                     device=input_token.device,
                     dtype=torch.float32,
                     non_blocking=True,
@@ -239,6 +322,89 @@ def _sample(base, logits, options, history, generator):
     )
 
 
+def _generate_tail_tokens(
+    wrapper,
+    base,
+    tail,
+    tokens,
+    generation_options,
+    load_device,
+):
+    """Own all temporary CUDA generation state in a short-lived stack frame."""
+
+    token_batches = next(iter(tokens.values())) if isinstance(tokens, dict) else tokens
+    token_ids = [[token[0] for token in batch] for batch in token_batches]
+    embeds, _, _, embeds_info = wrapper.process_tokens(token_ids, load_device)
+    position_ids, visual_pos_masks, deepstack = base.build_image_inputs(
+        embeds, embeds_info
+    )
+
+    execution_dtype = (
+        torch.bfloat16
+        if comfy.model_management.should_use_bf16(load_device)
+        else torch.float32
+    )
+    embeds = embeds.to(execution_dtype)
+    if embeds.ndim == 2:
+        embeds = embeds.unsqueeze(0)
+    max_new_tokens = int(generation_options.get("max_length", 128))
+    cache_len = embeds.shape[1] + max_new_tokens
+    base_cache = base.init_kv_cache(
+        embeds.shape[0], cache_len, load_device, execution_dtype
+    )
+    tail_cache = tail.init_kv_cache(
+        embeds.shape[0], cache_len, load_device, execution_dtype
+    )
+
+    do_sample = bool(generation_options.get("do_sample", True))
+    generator = (
+        torch.Generator(device=load_device).manual_seed(
+            int(generation_options.get("seed", 0))
+        )
+        if do_sample
+        else None
+    )
+    generated = []
+    progress = comfy.utils.ProgressBar(max_new_tokens)
+    next_pos = (
+        int(position_ids[:, -1].max()) + 1
+        if position_ids is not None
+        else embeds.shape[1]
+    )
+
+    for step in range(max_new_tokens):
+        extra = {}
+        if step == 0 and deepstack is not None:
+            extra["deepstack_embeds"] = deepstack
+            extra["visual_pos_masks"] = visual_pos_masks
+        base_hidden, _, base_cache = base(
+            None,
+            embeds=embeds,
+            position_ids=position_ids,
+            past_key_values=base_cache,
+            embeds_info=embeds_info if step == 0 else [],
+            **extra,
+        )
+        full_hidden, _, tail_cache = tail(
+            base_hidden, position_ids, tail_cache
+        )
+        logits = tail.logits(full_hidden)[:, -1]
+        next_token = _sample(
+            base, logits, generation_options, generated, generator
+        )
+        token_id = next_token[0].item()
+        generated.append(token_id)
+        progress.update(1)
+        if token_id in tail.model.config.stop_tokens:
+            break
+
+        embeds = base.model.embed_tokens(next_token).to(execution_dtype)
+        position_ids = torch.tensor([[next_pos]], device=load_device)
+        next_pos += 1
+        comfy.model_management.throw_exception_if_processing_interrupted()
+    return generated
+
+
 def generate_with_tail(clip, tail_name, tokens, generation_options):
     """Generate through base layers 0..49 and a temporary tail 50..63."""
 
@@ -247,6 +413,14 @@ def generate_with_tail(clip, tail_name, tokens, generation_options):
     offload_device = clip.patcher.offload_device
     tail = tail_patcher = None
     old_execution_device = wrapper.execution_device
+    result = None
+    primary_error = primary_traceback = None
+    cleanup_errors = []
+
+    def remember_cleanup_error(exc):
+        traceback.clear_frames(exc.__traceback__)
+        cleanup_errors.append(exc)
+
     try:
         tail, tail_patcher = _build_tail(
             tail_name, load_device, offload_device
@@ -255,79 +429,61 @@ def generate_with_tail(clip, tail_name, tokens, generation_options):
             [clip.patcher, tail_patcher], memory_required=RUNTIME_HEADROOM
         )
         wrapper.execution_device = load_device
-
-        token_batches = next(iter(tokens.values())) if isinstance(tokens, dict) else tokens
-        token_ids = [[token[0] for token in batch] for batch in token_batches]
-        embeds, _, _, embeds_info = wrapper.process_tokens(token_ids, load_device)
-        position_ids, visual_pos_masks, deepstack = base.build_image_inputs(
-            embeds, embeds_info
+        # Keeping CUDA temporaries inside a separate call is deliberate: its KV
+        # caches, embeddings, and logits are released before the managed tail
+        # unload below asks PyTorch to return cached memory to the driver.
+        result = _generate_tail_tokens(
+            wrapper,
+            base,
+            tail,
+            tokens,
+            generation_options,
+            load_device,
         )
-
-        execution_dtype = (
-            torch.bfloat16
-            if comfy.model_management.should_use_bf16(load_device)
-            else torch.float32
-        )
-        embeds = embeds.to(execution_dtype)
-        if embeds.ndim == 2:
-            embeds = embeds.unsqueeze(0)
-        max_new_tokens = int(generation_options.get("max_length", 128))
-        cache_len = embeds.shape[1] + max_new_tokens
-        base_cache = base.init_kv_cache(
-            embeds.shape[0], cache_len, load_device, execution_dtype
-        )
-        tail_cache = tail.init_kv_cache(
-            embeds.shape[0], cache_len, load_device, execution_dtype
-        )
-
-        do_sample = bool(generation_options.get("do_sample", True))
-        generator = (
-            torch.Generator(device=load_device).manual_seed(
-                int(generation_options.get("seed", 0))
-            )
-            if do_sample else None
-        )
-        generated = []
-        progress = comfy.utils.ProgressBar(max_new_tokens)
-        next_pos = (
-            int(position_ids[:, -1].max()) + 1
-            if position_ids is not None else embeds.shape[1]
-        )
-
-        for step in range(max_new_tokens):
-            extra = {}
-            if step == 0 and deepstack is not None:
-                extra["deepstack_embeds"] = deepstack
-                extra["visual_pos_masks"] = visual_pos_masks
-            base_hidden, _, base_cache = base(
-                None,
-                embeds=embeds,
-                position_ids=position_ids,
-                past_key_values=base_cache,
-                embeds_info=embeds_info if step == 0 else [],
-                **extra,
-            )
-            full_hidden, _, tail_cache = tail(
-                base_hidden, position_ids, tail_cache
-            )
-            logits = tail.logits(full_hidden)[:, -1]
-            next_token = _sample(
-                base, logits, generation_options, generated, generator
-            )
-            token_id = next_token[0].item()
-            generated.append(token_id)
-            progress.update(1)
-            if token_id in tail.model.config.stop_tokens:
-                break
-
-            embeds = base.model.embed_tokens(next_token).to(execution_dtype)
-            position_ids = torch.tensor([[next_pos]], device=load_device)
-            next_pos += 1
-            comfy.model_management.throw_exception_if_processing_interrupted()
-        return generated
+    except BaseException as exc:
+        primary_error = exc
+        primary_traceback = exc.__traceback__
+        # InterruptProcessingException inherits BaseException. Clear completed
+        # inner forward frames before cleanup so their CUDA tensors do not stay
+        # reachable through the traceback while the original error propagates.
+        traceback.clear_frames(primary_traceback)
     finally:
-        wrapper.execution_device = old_execution_device
+        try:
+            wrapper.execution_device = old_execution_device
+        except BaseException as exc:
+            remember_cleanup_error(exc)
         if tail_patcher is not None:
-            comfy.model_management.unload_model_and_clones(
-                tail_patcher, unload_additional_models=False
+            try:
+                comfy.model_management.unload_model_and_clones(
+                    tail_patcher,
+                    unload_additional_models=False,
+                    all_devices=True,
+                )
+            except BaseException as exc:
+                remember_cleanup_error(exc)
+        tail = tail_patcher = None
+        try:
+            gc.collect()
+        except BaseException as exc:
+            remember_cleanup_error(exc)
+        try:
+            comfy.model_management.soft_empty_cache(force=True)
+        except TypeError:
+            # Compatibility with older ComfyUI builds that lacked `force`.
+            try:
+                comfy.model_management.soft_empty_cache()
+            except BaseException as exc:
+                remember_cleanup_error(exc)
+        except BaseException as exc:
+            remember_cleanup_error(exc)
+
+    if primary_error is not None:
+        if cleanup_errors and hasattr(primary_error, "add_note"):
+            primary_error.add_note(
+                "Generation-tail cleanup also failed: "
+                + "; ".join(str(error) for error in cleanup_errors)
             )
+        raise primary_error.with_traceback(primary_traceback)
+    if cleanup_errors:
+        raise cleanup_errors[0]
+    return result

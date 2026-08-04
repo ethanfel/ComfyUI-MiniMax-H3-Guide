@@ -2,6 +2,9 @@ import { app } from "../../scripts/app.js";
 
 const NODE_CLASS = "MiniMaxH3EnhancerVisualReference";
 const PICTURE = "Picture";
+const UNASSIGNED_ROLE = "Unassigned - choose a reference role";
+const FIRST_FRAME = "Exact first frame (I2VA or FL2VA)";
+const LAST_FRAME = "Exact last frame (L2VA or FL2VA)";
 
 function widget(node, name) {
     return (node.widgets || []).find((item) => item.name === name);
@@ -29,16 +32,64 @@ function isReferenceNode(node) {
     return node?.comfyClass === NODE_CLASS || node?.type === NODE_CLASS;
 }
 
+function graphLink(graph, linkId) {
+    return graph?.links?.[linkId] || graph?.links?.get?.(linkId) || null;
+}
+
+function isReroute(node) {
+    const type = String(node?.comfyClass || node?.type || node?.title || "");
+    return type === "Reroute" || type.endsWith("Reroute") || node?.isVirtualNode === true;
+}
+
+function passthroughInput(node, outputType) {
+    const connected = (node?.inputs || []).filter((item) => item.link != null);
+    return connected.find((item) => item.type === outputType) || connected[0] || null;
+}
+
+function upstreamReference(graph, linkId, visited = new Set()) {
+    const link = graphLink(graph, linkId);
+    if (!link) return null;
+    const origin = graph?.getNodeById?.(link.origin_id);
+    if (!origin || visited.has(origin.id)) return null;
+    visited.add(origin.id);
+
+    if (isReferenceNode(origin)) {
+        // ComfyUI mode 4 is bypass. A bypassed reference contributes neither
+        // media nor numbering, so continue through its context input.
+        if (origin.mode !== 4) return origin;
+        const previous = (origin.inputs || []).find(
+            (item) => item.name === "previous_context"
+        );
+        return previous?.link == null
+            ? null
+            : upstreamReference(graph, previous.link, visited);
+    }
+
+    if (isReroute(origin) || origin.mode === 4) {
+        const outputType = origin.outputs?.[link.origin_slot]?.type || link.type;
+        const input = passthroughInput(origin, outputType);
+        return input?.link == null
+            ? null
+            : upstreamReference(graph, input.link, visited);
+    }
+    return null;
+}
+
 function previousReference(node) {
     const input = (node.inputs || []).find((item) => item.name === "previous_context");
     if (input?.link == null || !node.graph) return null;
-    const link = node.graph.links?.[input.link] || node.graph.links?.get?.(input.link);
-    if (!link) return null;
-    const previous = node.graph.getNodeById(link.origin_id);
-    return isReferenceNode(previous) ? previous : null;
+    return upstreamReference(node.graph, input.link);
 }
 
 function routeFor(node) {
+    const roleInput = (node.inputs || []).find((item) => item.name === "role_bindings");
+    if (roleInput?.link != null) return "h3_media · see routing_report";
+
+    const role = String(widget(node, "reference_role")?.value || "");
+    if (role === UNASSIGNED_ROLE) return "choose reference role";
+    if (role === FIRST_FRAME) return "first_frame";
+    if (role === LAST_FRAME) return "last_frame";
+
     const mediaType = String(widget(node, "media_type")?.value || PICTURE);
     let number = 1;
     let previous = previousReference(node);
@@ -85,6 +136,15 @@ app.registerExtension({
                 };
                 mediaType.__h3RouteCallback = true;
             }
+            const referenceRole = widget(this, "reference_role");
+            if (referenceRole && !referenceRole.__h3RouteCallback) {
+                const originalCallback = referenceRole.callback;
+                referenceRole.callback = function () {
+                    originalCallback?.apply(this, arguments);
+                    queueMicrotask(refreshAll);
+                };
+                referenceRole.__h3RouteCallback = true;
+            }
             queueMicrotask(refreshAll);
         };
 
@@ -97,6 +157,12 @@ app.registerExtension({
         const originalConnectionsChange = nodeType.prototype.onConnectionsChange;
         nodeType.prototype.onConnectionsChange = function () {
             originalConnectionsChange?.apply(this, arguments);
+            queueMicrotask(refreshAll);
+        };
+
+        const originalModeChange = nodeType.prototype.onModeChange;
+        nodeType.prototype.onModeChange = function () {
+            originalModeChange?.apply(this, arguments);
             queueMicrotask(refreshAll);
         };
 

@@ -41,6 +41,8 @@ LAST_IMAGE = "Use as the last frame"
 FIRST_LAST_IMAGES = "Use as first and last frames"
 APPEARANCE_IMAGE = "Reference appearance, scene, or style"
 STORYBOARD_IMAGE = "Use as storyboard or concrete keyframe"
+STORYBOARD_REFERENCE_IMAGE = "Use as storyboard or shot-planning reference"
+KEYFRAME_IMAGE = "Use as a concrete keyframe"
 MOTION_TARGET_IMAGE = "Target subject for motion transfer"
 
 IMAGE_USES = [
@@ -49,8 +51,10 @@ IMAGE_USES = [
     LAST_IMAGE,
     FIRST_LAST_IMAGES,
     APPEARANCE_IMAGE,
-    STORYBOARD_IMAGE,
+    KEYFRAME_IMAGE,
+    STORYBOARD_REFERENCE_IMAGE,
     MOTION_TARGET_IMAGE,
+    STORYBOARD_IMAGE,
 ]
 
 NO_VIDEO = "No reference video"
@@ -97,13 +101,20 @@ FIDELITIES = [
     WEAK_FIDELITY,
 ]
 
+AUTO_VISUAL_STYLE = "Auto - derive from references and intent"
+
 SHOT_PLAN_TYPE = "MINIMAX_H3_SHOT_PLAN"
 SHOT_TRANSITIONS = ["Direct cut", "Cross-dissolve", "Fade", "Wipe"]
+H3_FPS = 24
+H3_FRAME_MODULUS = 17
+H3_FRAME_OFFSET = 5
 
 _ASSET_RE = re.compile(
     r"^\s*<?(Subject|Picture|Video|Audio)\s*(\d+)>?\s*(?::|=|\s-\s)\s*(.+?)\s*$",
     re.IGNORECASE,
 )
+_MANUAL_SHOT_RE = re.compile(r"(?:\[\s*)?\bShot\s+(\d+)(?:\s*\])?", re.IGNORECASE)
+_TIMECODE_RE = r"(?:\d{1,3}:\d{1,2}(?:\.\d{1,3})?|\d+(?:\.\d{1,3})?)"
 
 
 @dataclass(frozen=True)
@@ -153,6 +164,180 @@ def _format_timestamp(seconds: float) -> str:
     return f"{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
 
 
+def _native_frame_count(duration_seconds: float) -> int:
+    """Snap a requested duration upward to ComfyUI's native H3 17k+5 grid."""
+
+    requested_frames = max(H3_FRAME_OFFSET, math.ceil(float(duration_seconds) * H3_FPS - 1e-9))
+    remainder = requested_frames % H3_FRAME_MODULUS
+    return requested_frames + (H3_FRAME_OFFSET - remainder) % H3_FRAME_MODULUS
+
+
+def _parse_timecode(value: str) -> float:
+    """Parse ``MM:SS.mmm`` or plain seconds from the legacy shot widget."""
+
+    text = value.strip()
+    if ":" in text:
+        minutes_text, seconds_text = text.split(":", 1)
+        minutes = int(minutes_text)
+        seconds = float(seconds_text)
+        if seconds >= 60.0:
+            raise ValueError(f"Invalid shot timestamp '{value}': seconds must be below 60.")
+        result = minutes * 60.0 + seconds
+    else:
+        result = float(text)
+    if not math.isfinite(result) or result < 0.0:
+        raise ValueError(f"Invalid shot timestamp '{value}'.")
+    return result
+
+
+def _manual_shot_parts(fragment: str, number: int) -> dict:
+    """Parse the header and body following one legacy ``Shot N`` marker."""
+
+    range_match = re.fullmatch(
+        rf"\s*,?\s*(?P<start>{_TIMECODE_RE})\s*[-–—]\s*"
+        rf"(?P<end>{_TIMECODE_RE})\s*:\s*(?P<description>.+?)\s*",
+        fragment,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if range_match:
+        return {
+            "number": number,
+            "declared_start": _parse_timecode(range_match.group("start")),
+            "declared_end": _parse_timecode(range_match.group("end")),
+            "description": _clean(range_match.group("description")),
+            "transition": "Direct cut",
+        }
+
+    cut_match = re.fullmatch(
+        rf"\s*,?\s*(?:(?P<transition>direct\s+cut|cut|cross[- ]dissolve|fade|wipe)\s+at|at)\s+"
+        rf"(?P<start>{_TIMECODE_RE})\s*[:,]\s*(?P<description>.+?)\s*",
+        fragment,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if cut_match:
+        transition_text = _clean(cut_match.group("transition")).lower()
+        transition = {
+            "": "Direct cut",
+            "cut": "Direct cut",
+            "direct cut": "Direct cut",
+            "cross-dissolve": "Cross-dissolve",
+            "cross dissolve": "Cross-dissolve",
+            "fade": "Fade",
+            "wipe": "Wipe",
+        }[transition_text]
+        return {
+            "number": number,
+            "declared_start": _parse_timecode(cut_match.group("start")),
+            "declared_end": None,
+            "description": _clean(cut_match.group("description")),
+            "transition": transition,
+        }
+
+    simple_match = re.fullmatch(
+        r"\s*:\s*(?P<description>.+?)\s*",
+        fragment,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if simple_match:
+        return {
+            "number": number,
+            "declared_start": None,
+            "declared_end": None,
+            "description": _clean(simple_match.group("description")),
+            "transition": "Direct cut",
+        }
+
+    raise ValueError(
+        f"Could not parse Shot {number}. Use 'Shot 1: description', "
+        "'Shot 1, 00:00-00:02.500: description', or "
+        "'Shot 2, cut at 00:02.500: description'."
+    )
+
+
+def _parse_manual_shots(manual_plan: str, duration: float) -> list[dict]:
+    """Turn the legacy text widget into the same validated payload as shot nodes."""
+
+    text = (manual_plan or "").strip()
+    if not text:
+        return []
+    markers = list(_MANUAL_SHOT_RE.finditer(text))
+    if not markers:
+        raise ValueError(
+            "Manual shot plan must contain sequential 'Shot N' markers. "
+            "For free-form notes, leave the shot field empty and use target_description."
+        )
+    prefix = text[: markers[0].start()].strip(" \t\r\n.;")
+    if prefix:
+        raise ValueError("Manual shot plan must begin with Shot 1.")
+
+    parsed: list[dict] = []
+    for index, marker in enumerate(markers, start=1):
+        number = int(marker.group(1))
+        if number != index:
+            raise ValueError(
+                f"Manual shot numbers must be sequential from Shot 1; expected Shot {index}, "
+                f"found Shot {number}."
+            )
+        end = markers[index].start() if index < len(markers) else len(text)
+        parsed.append(_manual_shot_parts(text[marker.end() : end], number))
+
+    duration = float(duration)
+    if not math.isfinite(duration) or duration <= 0.0 or duration > 15.0:
+        raise ValueError("Manual shot duration must stay within the H3 range above 0 and at most 15 seconds.")
+
+    starts: list[float] = []
+    for index, entry in enumerate(parsed):
+        declared_start = entry["declared_start"]
+        if index == 0:
+            start = 0.0 if declared_start is None else declared_start
+        elif declared_start is not None:
+            start = declared_start
+        else:
+            previous_end = parsed[index - 1]["declared_end"]
+            if previous_end is None:
+                raise ValueError(
+                    f"Shot {index + 1} needs a cut time, because Shot {index} has no explicit end time."
+                )
+            start = previous_end
+        starts.append(start)
+
+    shots: list[dict] = []
+    for index, (entry, start) in enumerate(zip(parsed, starts)):
+        declared_end = entry["declared_end"]
+        if index + 1 < len(parsed):
+            end = starts[index + 1] if declared_end is None else declared_end
+        else:
+            end = duration if declared_end is None else declared_end
+        timeline_end = end if index + 1 == len(parsed) else duration
+        if start >= timeline_end:
+            raise ValueError(
+                f"Shot {index + 1} starts at {_format_timestamp(start)}, which must be before "
+                f"its ending {_format_timestamp(timeline_end)}."
+            )
+        shots.append(
+            {
+                "start_time": start,
+                "end_time": end,
+                "description": entry["description"],
+                "camera_direction": "",
+                "transition": entry["transition"],
+            }
+        )
+    return _shots_from_plan({"shots": shots})
+
+
+def _extend_final_shot(shots: list[dict], effective_duration: float) -> list[dict]:
+    """Return a copied timeline whose last shot reaches the native playback end."""
+
+    if not shots:
+        return []
+    extended = [dict(shot) for shot in shots]
+    if effective_duration <= extended[-1]["start_time"]:
+        raise ValueError("The native duration must end after the final shot begins.")
+    extended[-1]["end_time"] = float(effective_duration)
+    return extended
+
+
 def _shots_from_plan(shot_plan) -> list[dict]:
     """Validate and copy the serializable shot-chain payload."""
 
@@ -187,13 +372,18 @@ def _shots_from_plan(shot_plan) -> list[dict]:
         description = _clean(str(raw_shot.get("description", "")))
         if not description:
             raise ValueError(f"Shot {index} needs a visible action or composition description.")
+        transition = str(raw_shot.get("transition", SHOT_TRANSITIONS[0]))
+        if transition not in SHOT_TRANSITIONS:
+            raise ValueError(
+                f"Shot {index} transition must be one of: {', '.join(SHOT_TRANSITIONS)}."
+            )
         shots.append(
             {
                 "start_time": start,
                 "end_time": end,
                 "description": description,
                 "camera_direction": _clean(str(raw_shot.get("camera_direction", ""))),
-                "transition": str(raw_shot.get("transition", SHOT_TRANSITIONS[0])),
+                "transition": transition,
             }
         )
         previous_end = end
@@ -205,7 +395,7 @@ def _shots_from_plan(shot_plan) -> list[dict]:
 def _shot_body(shot: dict) -> str:
     parts = [_sentence(shot["description"])]
     if shot["camera_direction"]:
-        parts.append(_sentence(f"Camera direction: {shot['camera_direction']}"))
+        parts.append(_sentence(shot["camera_direction"]))
     return " ".join(parts)
 
 
@@ -253,13 +443,59 @@ def parse_assets(reference_assets: str) -> tuple[list[Asset], list[str]]:
             continue
         kind = match.group(1).title()
         number = int(match.group(2))
+        if number < 1:
+            raise ValueError(f"{kind} labels are one-based; use <{kind} 1> instead of <{kind} {number}>.")
         key = (kind, number)
         if key in seen:
-            notes.append(f"Additional note for <{kind} {number}>: {match.group(3).strip()}")
-            continue
+            raise ValueError(
+                f"Duplicate <{kind} {number}> definition. Keep one definition per label and "
+                "move extra details onto that same line."
+            )
         seen.add(key)
         assets.append(Asset(kind, number, match.group(3).strip()))
     return assets, notes
+
+
+def _asset_label_warnings(assets: list[Asset]) -> list[str]:
+    """Report labels that cannot match H3's independently ordered media sockets."""
+
+    warnings: list[str] = []
+    for kind in ("Subject", "Picture", "Video", "Audio"):
+        numbers = [asset.number for asset in assets if asset.kind == kind]
+        if not numbers:
+            continue
+        expected = list(range(1, len(numbers) + 1))
+        if sorted(numbers) != expected:
+            warnings.append(
+                f"{kind} labels must be contiguous from 1 in native input order; "
+                f"found {', '.join(str(number) for number in numbers)}."
+            )
+        elif numbers != expected:
+            warnings.append(
+                f"{kind} labels are out of order; list them as "
+                f"{', '.join(f'{kind} {number}' for number in expected)}."
+            )
+    return warnings
+
+
+def _validate_active_asset_labels(
+    assets: list[Asset], image_use: str, video_use: str, audio_use: str
+) -> None:
+    """Reject active media labels that cannot bind to native one-based sockets."""
+
+    for kind, selected in (
+        ("Picture", image_use != NO_IMAGE),
+        ("Video", video_use != NO_VIDEO),
+        ("Audio", audio_use != NO_AUDIO),
+    ):
+        if not selected:
+            continue
+        numbers = [asset.number for asset in assets if asset.kind == kind]
+        if numbers and sorted(numbers) != list(range(1, len(numbers) + 1)):
+            raise ValueError(
+                f"Active {kind} labels must be contiguous from <{kind} 1> so they bind to "
+                "the native H3 input order."
+            )
 
 
 def choose_mode(
@@ -325,17 +561,16 @@ def _resolve_roles(goal: str, image_use: str, video_use: str) -> tuple[str, str]
 def _task_types(goal: str, image_use: str, video_use: str, audio_use: str) -> list[str]:
     task_types: list[str] = []
 
-    if goal == EDIT_GOAL or video_use == EDIT_VIDEO:
+    if video_use == EDIT_VIDEO:
         task_types.append("video editing")
-    elif goal == CONTINUE_GOAL or video_use == CONTINUE_VIDEO:
+    elif video_use == CONTINUE_VIDEO:
         task_types.append("video continuation")
 
-    if image_use in {FIRST_IMAGE, LAST_IMAGE, FIRST_LAST_IMAGES, STORYBOARD_IMAGE}:
+    if image_use in {FIRST_IMAGE, LAST_IMAGE, FIRST_LAST_IMAGES, KEYFRAME_IMAGE, STORYBOARD_IMAGE}:
         task_types.append("keyframe completion")
 
     reference_generation = (
-        goal in {REFERENCE_GOAL, MOTION_GOAL}
-        or image_use in {APPEARANCE_IMAGE, MOTION_TARGET_IMAGE}
+        image_use in {APPEARANCE_IMAGE, MOTION_TARGET_IMAGE, STORYBOARD_REFERENCE_IMAGE}
         or video_use in {MOTION_VIDEO, STRUCTURE_VIDEO, CONTENT_VIDEO}
     )
     if reference_generation:
@@ -355,21 +590,20 @@ def _assets_with_defaults(
     assets: list[Asset], image_use: str, video_use: str, audio_use: str
 ) -> list[Asset]:
     result = list(assets)
-    picture_numbers = {asset.number for asset in result if asset.kind == "Picture"}
+    pictures = [asset for asset in result if asset.kind == "Picture"]
+    picture_numbers = {asset.number for asset in pictures}
     required_pictures = range(1, 3) if image_use == FIRST_LAST_IMAGES else range(1, 2)
     if image_use != NO_IMAGE:
-        result.extend(
-            Asset("Picture", number, "the supplied reference image")
-            for number in required_pictures
-            if number not in picture_numbers
-        )
-    if video_use != NO_VIDEO and not any(
-        asset.kind == "Video" and asset.number == 1 for asset in result
-    ):
+        if not pictures:
+            result.extend(
+                Asset("Picture", number, "the supplied reference image")
+                for number in required_pictures
+            )
+        elif image_use == FIRST_LAST_IMAGES and picture_numbers == {1}:
+            result.append(Asset("Picture", 2, "the supplied ending reference image"))
+    if video_use != NO_VIDEO and not any(asset.kind == "Video" for asset in result):
         result.append(Asset("Video", 1, "the supplied reference video"))
-    if audio_use != NO_AUDIO and not any(
-        asset.kind == "Audio" and asset.number == 1 for asset in result
-    ):
+    if audio_use != NO_AUDIO and not any(asset.kind == "Audio" for asset in result):
         result.append(Asset("Audio", 1, "the supplied reference audio"))
     return result
 
@@ -399,18 +633,14 @@ def _build_reference_items(
     videos = [asset for asset in assets if asset.kind == "Video" and video_use != NO_VIDEO]
     audios = [asset for asset in assets if asset.kind == "Audio" and audio_use != NO_AUDIO]
 
-    if video_use in {EDIT_VIDEO, CONTINUE_VIDEO} and not items and videos:
-        source_role = "edited" if video_use == EDIT_VIDEO else "continued"
-        item_role = "edited visible content" if video_use == EDIT_VIDEO else "visible content"
-        items.append(
-            ReferenceItem(
-                "<Subject 1>",
-                "Subject",
-                item_role,
-                f"the principal visible subject or scene from {videos[0].label} that is {source_role} "
-                "while remaining identifiable",
-            )
-        )
+    if image_use in {FIRST_IMAGE, LAST_IMAGE}:
+        pictures = [picture for picture in pictures if picture.number == 1]
+    elif image_use == FIRST_LAST_IMAGES:
+        pictures = [picture for picture in pictures if picture.number in {1, 2}]
+    if video_use in {EDIT_VIDEO, CONTINUE_VIDEO}:
+        videos = [video for video in videos if video.number == 1]
+    if audio_use == COPY_ALL_AUDIO:
+        audios = [audio for audio in audios if audio.number == 1]
 
     if image_use in {APPEARANCE_IMAGE, MOTION_TARGET_IMAGE}:
         for picture in pictures:
@@ -434,8 +664,12 @@ def _build_reference_items(
                     role = "last frame"
                 else:
                     role = "picture reference"
+            elif image_use == KEYFRAME_IMAGE:
+                role = "concrete keyframe"
+            elif image_use == STORYBOARD_REFERENCE_IMAGE:
+                role = "storyboard or shot-planning reference"
             elif image_use == STORYBOARD_IMAGE:
-                role = "storyboard or concrete keyframe"
+                role = "concrete keyframe (legacy combined role)"
             else:
                 role = "picture reference"
             items.append(ReferenceItem(picture.label, "Picture", role, picture.description))
@@ -477,7 +711,7 @@ def _build_reference_items(
     return items
 
 
-def _definition_line(item: ReferenceItem) -> str:
+def _definition_line(item: ReferenceItem, final_shot_number: int = 1) -> str:
     description = _clean(item.description)
     if item.kind == "Subject":
         return _sentence(f"{item.label} is {description}")
@@ -485,9 +719,16 @@ def _definition_line(item: ReferenceItem) -> str:
         if item.role == "first frame":
             return _sentence(f"{item.label} is the first frame of [Shot 1], showing {description}")
         if item.role == "last frame":
-            return _sentence(f"{item.label} is the target video's final frame, showing {description}")
-        if item.role == "storyboard or concrete keyframe":
-            return _sentence(f"{item.label} is a storyboard or concrete keyframe anchor showing {description}")
+            return _sentence(
+                f"{item.label} is the final frame of [Shot {final_shot_number}], showing {description}"
+            )
+        if item.role in {"concrete keyframe", "concrete keyframe (legacy combined role)"}:
+            return _sentence(f"{item.label} is a concrete keyframe anchor showing {description}")
+        if item.role == "storyboard or shot-planning reference":
+            return _sentence(
+                f"{item.label} is a storyboard reference defining viewpoint, placement, or shot order: "
+                f"{description}"
+            )
         return _sentence(f"{item.label} is a picture reference showing {description}")
     if item.kind == "Video":
         if item.role == "source video editing":
@@ -500,23 +741,53 @@ def _definition_line(item: ReferenceItem) -> str:
     return _sentence(f"{item.label} is the {item.role}: {description}")
 
 
-def _visual_marker(fidelity: str, role: str) -> str:
+def _visual_marker(fidelity: str, role: str, allow_attribute_transfer: bool = False) -> str:
     if role == "motion source":
-        return "attribute_transfer"
+        return "attribute_transfer" if allow_attribute_transfer else "weak_reference"
+    if role in {
+        "first frame",
+        "last frame",
+        "concrete keyframe",
+        "concrete keyframe (legacy combined role)",
+    }:
+        return "fully_preserved"
+    if role in {"source video editing", "continuation starting point"}:
+        return "fully_preserved" if fidelity == FULL_FIDELITY else "partially_preserved"
+    if role == "motion target" and fidelity == TRANSFER_FIDELITY:
+        return "fully_preserved"
+    if role == "camera, cut, and rhythm structure":
+        if fidelity == FULL_FIDELITY:
+            return "fully_preserved"
+        if fidelity == PARTIAL_FIDELITY:
+            return "partially_preserved"
+        return "weak_reference"
+    if role == "storyboard or shot-planning reference":
+        if fidelity == PARTIAL_FIDELITY:
+            return "partially_preserved"
+        if fidelity in {TRANSFER_FIDELITY, WEAK_FIDELITY}:
+            return "weak_reference"
+        return "fully_preserved"
     if fidelity == FULL_FIDELITY:
         return "fully_preserved"
     if fidelity == PARTIAL_FIDELITY:
         return "partially_preserved"
     if fidelity == TRANSFER_FIDELITY:
-        return "attribute_transfer"
-    if fidelity == WEAK_FIDELITY or role == "camera, cut, and rhythm structure":
+        return "fully_preserved"
+    if fidelity == WEAK_FIDELITY:
         return "weak_reference"
-    if role in {"edited visible content", "source video editing", "continuation starting point", "picture reference"}:
+    if role in {"edited visible content", "picture reference"}:
         return "partially_preserved"
     return "fully_preserved"
 
 
-def _retention_line(item: ReferenceItem, fidelity: str, audio_use: str) -> str:
+def _retention_line(
+    item: ReferenceItem,
+    fidelity: str,
+    audio_use: str,
+    final_shot_number: int = 1,
+    shot_count: int = 1,
+    allow_attribute_transfer: bool = False,
+) -> str:
     if item.kind == "Audio":
         marker = {
             COPY_ALL_AUDIO: "fully_copy",
@@ -532,7 +803,7 @@ def _retention_line(item: ReferenceItem, fidelity: str, audio_use: str) -> str:
         }[marker]
         return _sentence(f"{item.label}: {marker} - {explanation}")
 
-    marker = _visual_marker(fidelity, item.role)
+    marker = _visual_marker(fidelity, item.role, allow_attribute_transfer)
     if marker == "attribute_transfer":
         explanation = "the referenced characteristics or motion are transferred to the identifiable target subject"
     elif marker == "fully_preserved":
@@ -543,9 +814,16 @@ def _retention_line(item: ReferenceItem, fidelity: str, audio_use: str) -> str:
         explanation = "only the requested broad structure, category, style, or atmosphere is retained"
 
     if item.kind == "Subject":
-        context = " (appears in [Shot 1])"
+        context = " (appears in [Shot 1])" if shot_count == 1 else ""
     elif item.kind == "Picture":
-        context = f" ([Shot 1] {item.role})"
+        if item.role == "first frame":
+            context = " ([Shot 1] first frame)"
+        elif item.role == "last frame":
+            context = f" ([Shot {final_shot_number}] last frame)"
+        elif item.role in {"concrete keyframe", "concrete keyframe (legacy combined role)"}:
+            context = " ([Shot 1] concrete keyframe)" if shot_count == 1 else " (concrete keyframe)"
+        else:
+            context = f" ({item.role})"
     else:
         context = f" ({item.role})"
     return _sentence(f"{item.label}{context}: {marker} - {explanation}")
@@ -579,6 +857,7 @@ def _detail_body(
     dialogue_and_text: str,
     role_sentences: str,
     reference_notes: list[str],
+    complete_audio_label: str = "",
 ) -> str:
     parts = [_sentence(target_description, "Create a coherent audiovisual scene from the supplied intent")]
     if role_sentences:
@@ -586,13 +865,20 @@ def _detail_body(
     if shot_plan.strip():
         parts.append(_sentence(f"Shot and timing plan: {shot_plan}"))
     if camera_direction.strip():
-        parts.append(_sentence(f"Camera direction: {camera_direction}"))
+        parts.append(_sentence(camera_direction))
     if dialogue_and_text.strip():
+        audio_constraint = (
+            f" Any spoken or sung wording must already exist in the unchanged {complete_audio_label} "
+            "track; do not synthesize, replace, or remix audio."
+            if complete_audio_label
+            else ""
+        )
         parts.append(
             _sentence(
                 "Dialogue and visible-text requirements: "
                 f"{dialogue_and_text} Preserve exact wording and language; put spoken words inside "
                 "<d>[Language] ...</d> and visible text in double quotation marks"
+                + audio_constraint
             )
         )
     if reference_notes:
@@ -603,6 +889,85 @@ def _detail_body(
 def _section_sentence(text: str, fallback: str) -> str:
     value = _clean(text, fallback)
     return "N/A" if value.upper().rstrip(".") == "N/A" else _sentence(value)
+
+
+def _reference_audio_sections(
+    items: list[ReferenceItem],
+    audio_use: str,
+    soundscape: str,
+    music: str,
+) -> tuple[str, str]:
+    """Cite reference audio in the semantic audio phase without inventing a new mix."""
+
+    labels = [item.label for item in items if item.kind == "Audio"]
+    if not labels:
+        return (
+            _section_sentence(soundscape, "Use coherent ambience and synchronized physical sounds"),
+            _section_sentence(music, "N/A"),
+        )
+    label_text = ", ".join(labels)
+    sound_detail = _clean(soundscape)
+    music_detail = _clean(music)
+
+    if audio_use == COPY_ALL_AUDIO:
+        sound = (
+            f"{label_text} is reused 1:1 as the target video's complete final audio track, "
+            "with no added, removed, or replaced sound layers."
+        )
+        if sound_detail:
+            sound += " The copied ambience and physical-sound content is described as: " + _sentence(
+                sound_detail
+            )
+        score = (
+            f"Any audience-only music already present in {label_text} remains inside the unchanged "
+            "copied track; no new score is added."
+        )
+        if music_detail and music_detail.upper().rstrip(".") != "N/A":
+            score += " The copied score is described as: " + _sentence(music_detail)
+        return _sentence(sound), _sentence(score)
+
+    relationship = {
+        COPY_PART_AUDIO: "Selected time ranges or layers are copied and mixed with the target audio",
+        REFERENCE_AUDIO: "Its declared timbre, rhythm, voice, music, or sound texture guides the target without copying samples",
+        WEAK_AUDIO: "Only its broad sonic category or atmosphere guides the target",
+    }.get(audio_use, "It guides the target audio without an undeclared copy relationship")
+    sound = _sentence(f"{label_text}: {relationship}")
+    if sound_detail:
+        sound += " " + _sentence(sound_detail)
+    elif audio_use == COPY_PART_AUDIO:
+        sound += " Other target sounds remain synchronized to the described actions."
+
+    if not music_detail or music_detail.upper().rstrip(".") == "N/A":
+        score = "N/A"
+    else:
+        score_relationship = {
+            COPY_PART_AUDIO: "Any copied audience-only music layer is taken from",
+            REFERENCE_AUDIO: "The requested audience-only score follows the declared music characteristics of",
+            WEAK_AUDIO: "The requested audience-only score uses only broad inspiration from",
+        }.get(audio_use, "The requested audience-only score is related to")
+        score = _sentence(f"{score_relationship} {label_text}") + " " + _sentence(music_detail)
+    return sound, score
+
+
+def _base_style_opening(mode: str, visual_style: str) -> str:
+    value = _clean(visual_style)
+    if value and value != AUTO_VISUAL_STYLE:
+        return value
+    return {
+        "I2VA": "Preserve <Picture 1>'s existing visual style",
+        "FL2VA": "Derive a compatible visual treatment from Picture 1 and Picture 2",
+        "L2VA": "Use a visual treatment that converges on <Picture 1>'s existing style",
+    }.get(mode, "Use the visual style specified by the target description")
+
+
+def _reference_style_sentence(visual_style: str) -> str:
+    value = _clean(visual_style)
+    if not value or value == AUTO_VISUAL_STYLE:
+        return (
+            "The target video derives its visual style from the active visual references and "
+            "the user's requested intent."
+        )
+    return _sentence(f"The target video uses a {value} style")
 
 
 def _base_prompt(
@@ -617,6 +982,7 @@ def _base_prompt(
     music: str,
     reference_notes: list[str],
     structured_shots: list[dict] | None = None,
+    final_shot_number: int = 1,
 ) -> str:
     duration_text = f"{duration:.2f}"
     if mode == "I2VA":
@@ -628,13 +994,14 @@ def _base_prompt(
     elif mode == "FL2VA":
         instruction = (
             "How the reference pictures align with the target video — Picture 1 (from Shot 1) "
-            "aligns with the 0.00-second mark of the target video; Picture 2 (from Shot 1) "
+            f"aligns with the 0.00-second mark of the target video; Picture 2 (from Shot {final_shot_number}) "
             f"aligns with the {duration_text}-second mark of the target video.\n\n"
         )
         anchor = "Begin at Picture 1 and show a continuous observable path that lands exactly on Picture 2."
     elif mode == "L2VA":
         instruction = (
-            "How the reference pictures align with the target video — <Picture 1> (from [Shot 1]) "
+            "How the reference pictures align with the target video — "
+            f"<Picture 1> (from [Shot {final_shot_number}]) "
             f"aligns with the {duration_text}-second mark of the target video.\n\n"
         )
         anchor = "Infer a plausible preceding state and converge exactly on <Picture 1> at the end."
@@ -651,7 +1018,7 @@ def _base_prompt(
         anchor,
         reference_notes,
     )
-    style = _clean(visual_style, "Cinematic")
+    style = _base_style_opening(mode, visual_style)
     timeline = (
         _render_structured_shots(structured_shots, f"{style}. {body}")
         if structured_shots
@@ -683,8 +1050,9 @@ def _reference_prompt(
     audio_use: str,
     reference_notes: list[str],
     structured_shots: list[dict] | None = None,
+    final_shot_number: int = 1,
 ) -> str:
-    definitions = "\n".join(_definition_line(item) for item in items)
+    definitions = "\n".join(_definition_line(item, final_shot_number) for item in items)
     types = " + ".join(_task_types(goal, image_use, video_use, audio_use))
     labels = ", ".join(item.label for item in items)
 
@@ -694,13 +1062,27 @@ def _reference_prompt(
         summary_start = "The target video continues from the ending state of <Video 1>."
     else:
         summary_start = "The target video is generated from the defined reference relationships."
-    summary = (
-        f"[{types}] {summary_start} {_sentence(target_description)} "
-        f"The reference roles use {labels}."
-    )
+    reference_clause = f" The reference roles use {labels}." if labels else ""
+    summary = f"[{types}] {summary_start} {_sentence(target_description)}{reference_clause}"
 
-    retention = "\n".join(_retention_line(item, fidelity, audio_use) for item in items)
+    shot_count = len(structured_shots) if structured_shots else 1
+    allow_attribute_transfer = image_use == MOTION_TARGET_IMAGE and video_use == MOTION_VIDEO
+    retention = "\n".join(
+        _retention_line(
+            item,
+            fidelity,
+            audio_use,
+            final_shot_number,
+            shot_count,
+            allow_attribute_transfer,
+        )
+        for item in items
+    )
     role_sentences = _role_sentences(items, video_use)
+    complete_audio_label = next(
+        (item.label for item in items if item.role == "complete synchronized audio reuse"),
+        "",
+    )
     detail = _detail_body(
         target_description,
         visual_style,
@@ -709,22 +1091,24 @@ def _reference_prompt(
         dialogue_and_text,
         role_sentences,
         reference_notes,
+        complete_audio_label,
     )
-    style = _clean(visual_style, "cinematic audiovisual")
+    style_sentence = _reference_style_sentence(visual_style)
     timeline = (
         _render_structured_shots(structured_shots, detail)
         if structured_shots
         else f"[Shot 1] {detail}"
     )
-    sound = _section_sentence(soundscape, "Use coherent ambience and synchronized physical sounds")
-    score = _section_sentence(music, "N/A")
+    sound, score = _reference_audio_sections(items, audio_use, soundscape, music)
+    definitions_block = f"{definitions}\n" if definitions else ""
+    retention_block = f"{retention}\n" if retention else ""
 
     return (
-        f"subject_definitions:\n{definitions}\n\n"
+        f"subject_definitions:\n{definitions_block}\n"
         f"summary:\n{summary}\n\n"
-        f"retention_analysis:\n{retention}\n\n"
+        f"retention_analysis:\n{retention_block}\n"
         "detailed_description:\n"
-        f"The target video uses a {style} style and lasts {duration:.2f} seconds.\n"
+        f"{style_sentence} The target video lasts {duration:.2f} seconds.\n"
         f"{timeline}\n\n"
         f"overall_soundscape:\n{sound}\n\n"
         f"non_diegetic_music:\n{score}"
@@ -739,24 +1123,59 @@ def _warnings(
     audio_use: str,
     assets: list[Asset],
     target_description: str,
+    reference_fidelity: str,
+    shot_count: int,
+    dialogue_and_text: str,
 ) -> list[str]:
-    warnings: list[str] = []
+    warnings = _asset_label_warnings(assets)
     if not target_description.strip():
         warnings.append(
             "Target description is empty. Describe the actual subject, action or edit, setting, and ending before enhancement."
         )
     counts = {kind: sum(asset.kind == kind for asset in assets) for kind in ("Picture", "Video", "Audio")}
-    if counts["Picture"] > 9:
-        warnings.append("Ref2VA accepts at most 9 reference images.")
-    if counts["Video"] > 3:
-        warnings.append("Ref2VA accepts at most 3 reference videos.")
-    if counts["Audio"] > 3:
-        warnings.append("Ref2VA accepts at most 3 reference audio clips.")
-    if sum(counts.values()) > 12:
-        warnings.append("Ref2VA accepts at most 12 media files in total.")
-    if audio_use != NO_AUDIO and image_use == NO_IMAGE and video_use == NO_VIDEO and not (
-        counts["Picture"] or counts["Video"]
-    ):
+    active_picture_count = counts["Picture"] if image_use != NO_IMAGE else 0
+    active_video_count = counts["Video"] if video_use != NO_VIDEO else 0
+    active_audio_count = counts["Audio"] if audio_use != NO_AUDIO else 0
+
+    if decision.mode == "Ref2VA":
+        if counts["Picture"] > 9:
+            warnings.append("Ref2VA accepts at most 9 reference images.")
+        if counts["Video"] > 3:
+            warnings.append("Ref2VA accepts at most 3 reference videos.")
+        if counts["Audio"] > 3:
+            warnings.append("Ref2VA accepts at most 3 reference audio clips.")
+        if sum(counts.values()) > 12:
+            warnings.append("Ref2VA accepts at most 12 media files in total.")
+
+    expected_picture_count = {
+        FIRST_IMAGE: 1,
+        LAST_IMAGE: 1,
+        FIRST_LAST_IMAGES: 2,
+    }.get(image_use)
+    if expected_picture_count is not None and active_picture_count != expected_picture_count:
+        warnings.append(
+            f"'{image_use}' requires exactly {expected_picture_count} ordered Picture "
+            f"label(s); found {active_picture_count}."
+        )
+
+    if video_use in {EDIT_VIDEO, CONTINUE_VIDEO} and active_video_count != 1:
+        warnings.append(
+            f"'{video_use}' currently requires exactly one source Video label; "
+            f"found {active_video_count}."
+        )
+    if audio_use == COPY_ALL_AUDIO and active_audio_count != 1:
+        warnings.append(
+            "Complete 1:1 audio reuse requires exactly one Audio label; use partial reuse when "
+            "mixing multiple source signals."
+        )
+    if audio_use == COPY_ALL_AUDIO and dialogue_and_text.strip():
+        warnings.append(
+            "Complete audio reuse cannot create a new spoken or sung signal. Treat dialogue/lyrics "
+            "in the combined text field as a transcription of the unchanged copied Audio track "
+            "(new visible text is still allowed), or choose partial reuse/audio reference."
+        )
+
+    if audio_use != NO_AUDIO and active_picture_count == 0 and active_video_count == 0:
         warnings.append("Reference audio cannot be the only Ref2VA media input; add an image or video.")
     if decision.mode != "Ref2VA" and (video_use != NO_VIDEO or audio_use != NO_AUDIO):
         warnings.append(
@@ -775,8 +1194,46 @@ def _warnings(
             f"{decision.mode} expects '{expected_image_use}', but '{image_use}' is selected. "
             "Choose Auto or align the image role with the explicit goal."
         )
-    if decision.mode == "Ref2VA" and not assets:
+    if decision.mode == "Ref2VA" and not (
+        active_picture_count or active_video_count or active_audio_count
+    ):
         warnings.append("Ref2VA is selected but no image, video, or audio reference is described.")
+    if (image_use == MOTION_TARGET_IMAGE) != (video_use == MOTION_VIDEO):
+        warnings.append(
+            "Motion transfer requires both a target-picture role and a motion-source video role."
+        )
+    if reference_fidelity == TRANSFER_FIDELITY and not (
+        image_use == MOTION_TARGET_IMAGE and video_use == MOTION_VIDEO
+    ):
+        warnings.append(
+            "attribute_transfer requires the explicit motion target + motion source pair. "
+            "The global transfer fidelity is downgraded for all other reference roles."
+        )
+    if image_use == STORYBOARD_IMAGE:
+        warnings.append(
+            "The legacy combined storyboard/keyframe role is interpreted as a concrete keyframe. "
+            "Choose the dedicated storyboard role when the picture only plans shots."
+        )
+    if image_use in {KEYFRAME_IMAGE, STORYBOARD_IMAGE} and shot_count > 1:
+        warnings.append(
+            "A concrete keyframe is selected for a multi-shot plan. Name its <Picture N> label in "
+            "the intended shot description so the enhancer can preserve the mapping."
+        )
+    if image_use in {FIRST_IMAGE, LAST_IMAGE, FIRST_LAST_IMAGES, KEYFRAME_IMAGE, STORYBOARD_IMAGE} and (
+        reference_fidelity not in {AUTO_FIDELITY, FULL_FIDELITY}
+    ):
+        warnings.append(
+            "Concrete frame anchors are always fully_preserved; the selected global fidelity is "
+            "ignored for those Picture entries."
+        )
+    if video_use in {EDIT_VIDEO, CONTINUE_VIDEO} and reference_fidelity in {
+        TRANSFER_FIDELITY,
+        WEAK_FIDELITY,
+    }:
+        warnings.append(
+            "Editing and continuation source videos cannot use attribute_transfer or weak_reference; "
+            "their retention marker is constrained to partially_preserved."
+        )
     for kind, selected in (
         ("Picture", image_use != NO_IMAGE),
         ("Video", video_use != NO_VIDEO),
@@ -839,7 +1296,7 @@ def _rewrite_request(
     if decision.mode == "Ref2VA":
         format_rules = """Return exactly these six English sections in order:
 subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music.
-Use stable <Subject N>, <Picture N>, <Video N>, and <Audio N> labels. In summary, use only applicable fixed task types: keyframe completion, reference generation, video editing, video continuation, audio reuse, audio reference. In retention_analysis, use only fully_preserved, partially_preserved, attribute_transfer, or weak_reference for visual references, and fully_copy, partially_copy, reference, or weak_reference for audio. Make detailed_description explicit and chronological, normally 350-500 English words for generation tasks. Establish style before [Shot 1]."""
+Use stable <Subject N>, <Picture N>, <Video N>, and <Audio N> labels. In summary, use only applicable fixed task types: keyframe completion, reference generation, video editing, video continuation, audio reuse, audio reference. In retention_analysis, use only fully_preserved, partially_preserved, attribute_transfer, or weak_reference for visual references, and fully_copy, partially_copy, reference, or weak_reference for audio. A fully_copy source is the complete final track: do not add, replace, remix, or synthesize any dialogue, lyrics, ambience, effects, or music, and cite it in every applicable audio section. Make detailed_description explicit and chronological, normally 350-500 English words for generation tasks. Establish style before [Shot 1]."""
     else:
         format_rules = """Return the applicable image-alignment instruction first when this is I2VA, FL2VA, or L2VA, followed by one blank line. Then return exactly these three fields: integrated_multimodal_description, overall_soundscape, non_diegetic_music. Start the body with [Shot 1]. Put no timestamp on Shot 1; later cuts use [Shot N] At MM:SS.mmm with strictly increasing times inside the duration."""
 
@@ -856,7 +1313,7 @@ REFERENCE INVENTORY
 
 FORMAT REQUIREMENTS
 {format_rules}
-Write camera motion naturally as motion type plus meaningful amplitude and speed. Keep speaker IDs stable. Put only exact spoken words inside <d>[Language] ...</d>; preserve dialogue, lyrics, and visible text in their original language. Keep ambience and physical sounds in overall_soundscape. Put only audience-only score in non_diegetic_music. Do not invent unsupported reference assets or change the user's requested identity, action, dialogue, or endpoint frames. Output only the finished H3 prompt.
+Write camera motion naturally as motion type plus meaningful amplitude and speed. Assign stable (S1), (S2), and later IDs only to actual vocal sources, in first-vocal-event order. Put only the user's exact spoken or sung words inside <d>[Language] ...</d>. For voice-over, use the exact phrase `says in an off-screen voiceover` and immediately state after the <d> block that the on-screen character's lips remain completely closed. If one utterance crosses a cut, put <scenetrans> at both connecting points and explicitly say its audio continues across the cut; use <cutoff> when speech is truncated by the video ending. Preserve dialogue, lyrics, and visible text in their original language. Keep ambience and physical sounds in overall_soundscape. Put only audience-only score in non_diegetic_music. Do not invent unsupported reference assets or change the user's requested identity, action, dialogue, or endpoint frames. Output only the finished H3 prompt.
 
 STRUCTURED DRAFT TO EXPAND
 {draft}"""
@@ -904,7 +1361,8 @@ class MiniMaxH3Shot:
                         "step": 0.001,
                         "tooltip": (
                             "End time in seconds; it must be greater than start_time. The final node's "
-                            "end_time becomes the target video duration when connected to Prompt Guide."
+                            "end_time becomes the requested duration when connected to Prompt Guide; "
+                            "the guide may extend it slightly to native H3's frame grid."
                         ),
                     },
                 ),
@@ -982,12 +1440,13 @@ class MiniMaxH3PromptGuide:
 
     CATEGORY = "MiniMax H3/Prompting"
     FUNCTION = "build"
-    RETURN_TYPES = ("STRING", "STRING", "STRING")
-    RETURN_NAMES = ("h3_prompt", "rewrite_request", "mode_report")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "INT")
+    RETURN_NAMES = ("h3_prompt", "rewrite_request", "mode_report", "h3_length")
     OUTPUT_TOOLTIPS = (
-        "Pre-LLM H3 draft. Use it directly when your inputs are already detailed, or connect it to MiniMax H3 Prompt Enhancer.manual_prompt for a polished rewrite.",
+        "Structured pre-LLM H3 draft. Connect it to MiniMax H3 Prompt Enhancer.manual_prompt for the recommended detailed, source-grounded rewrite; use it directly only after reviewing every reference and timeline detail.",
         "Self-contained instructions for a different LLM node. It includes the selected H3 format, fixed labels, rules, and this structured draft.",
         "Read this first when results look wrong. It shows the chosen H3 mode/checkpoint, resolved media roles, task prefix, input limits, and conflicts to fix.",
+        "Native ComfyUI H3 frame count on the required 17k+5 grid at 24 FPS. Connect this directly to the official H3 conditioning node's length input so prompt timing and generation duration agree.",
     )
     DESCRIPTION = (
         "Start here: describe the intended video and explain what each supplied image, video, or audio file does. "
@@ -1032,7 +1491,8 @@ class MiniMaxH3PromptGuide:
                         "tooltip": (
                             "Choose the image's job. First frame = exact image at 0.00s (I2VA). Last frame = exact final composition (L2VA). "
                             "First + last = continuous path between two exact frames (FL2VA). Appearance/scene/style guides generation but is not an exact frame. "
-                            "Storyboard/keyframe anchors a concrete internal composition. Motion target is the subject that receives motion from a video."
+                            "Concrete keyframe anchors an exact internal composition and uses keyframe completion. Storyboard only plans viewpoint, placement, or shot order "
+                            "and uses reference generation. Motion target is the subject that receives motion from a video. The combined storyboard/keyframe choice remains only for old workflows."
                         ),
                     },
                 ),
@@ -1065,7 +1525,7 @@ class MiniMaxH3PromptGuide:
                         "tooltip": (
                             "Controls Ref2VA retention markers. Auto chooses per role. Fully preserve keeps defined identity/composition. Partly preserve allows visible edits. "
                             "Transfer applies attributes or motion to a different identifiable target. Weak inspiration keeps only broad style/category/atmosphere. "
-                            "Motion-source subjects always use attribute_transfer."
+                            "A motion source uses attribute_transfer only when the target-picture role is also selected; otherwise it is reported as incomplete and kept non-transfer."
                         ),
                     },
                 ),
@@ -1091,18 +1551,18 @@ class MiniMaxH3PromptGuide:
                         "max": 15.0,
                         "step": 0.01,
                         "tooltip": (
-                            "Target playback duration, from 4 to 15 seconds. This becomes the exact landing time for last-frame tasks. "
-                            "Every later-shot cut time must be smaller than this value."
+                            "Requested playback duration, from 4 to 15 seconds. Native ComfyUI rounds it upward to a 17k+5 frame count at 24 FPS; "
+                            "the effective rounded time becomes the exact landing time for last-frame tasks. Every later-shot cut must be earlier than the requested end."
                         ),
                     },
                 ),
                 "visual_style": (
                     "STRING",
                     {
-                        "default": "cinematic, live-action",
+                        "default": AUTO_VISUAL_STYLE,
                         "tooltip": (
-                            "Overall visible medium and treatment, such as 'cinematic, live-action', '2D animation', '3D CG', 'claymation', or 'vintage film'. "
-                            "For an exact keyframe, normally match the image's existing style unless the target description explicitly requests a transition."
+                            "Auto derives the treatment from endpoint/reference pictures and the written intent, so it does not force live action onto animation or artwork. "
+                            "Enter an explicit override such as 'cinematic, live-action', '2D animation', '3D CG', 'claymation', or 'vintage film' only when you want that change."
                         ),
                     },
                 ),
@@ -1115,7 +1575,7 @@ class MiniMaxH3PromptGuide:
                         "tooltip": (
                             "Advanced legacy fallback when no MiniMax H3 Shot chain is connected. Give Shot 1's content but no H3 cut timestamp; for later shots provide the exact cut time. "
                             "Example: 'Shot 1, 00:00-00:02.500: medium entrance. Shot 2, cut at 00:02.500: close-up. "
-                            "Shot 3, cut at 00:04.250: wide ending.' The enhancer converts later cuts to '[Shot 2] At 00:02.500, ...'. "
+                            "Shot 3, cut at 00:04.250: wide ending.' The guide converts later cuts to '[Shot 2] At 00:02.500, ...'. "
                             "Times must strictly increase and remain inside the duration. A connected shot_plan takes priority."
                         ),
                         "advanced": True,
@@ -1201,13 +1661,25 @@ class MiniMaxH3PromptGuide:
         non_diegetic_music: str,
         shot_plan=None,
     ):
-        structured_shots = _shots_from_plan(shot_plan) if shot_plan is not None else []
-        effective_duration = structured_shots[-1]["end_time"] if structured_shots else duration_seconds
-        if structured_shots and effective_duration < 4.0:
+        connected_shots = _shots_from_plan(shot_plan) if shot_plan is not None else []
+        manual_shots = (
+            _parse_manual_shots(shot_and_timing_plan, duration_seconds)
+            if not connected_shots and shot_and_timing_plan.strip()
+            else []
+        )
+        planned_shots = connected_shots or manual_shots
+        requested_duration = (
+            planned_shots[-1]["end_time"] if planned_shots else float(duration_seconds)
+        )
+        if planned_shots and requested_duration < 4.0:
             raise ValueError(
-                "The connected shot chain ends before H3's 4-second minimum. Extend the final shot "
+                "The shot plan ends before H3's 4-second minimum. Extend the final shot "
                 "so its end_time is at least 4.000 seconds."
             )
+        h3_length = _native_frame_count(requested_duration)
+        effective_duration = h3_length / H3_FPS
+        structured_shots = _extend_final_shot(planned_shots, effective_duration)
+        final_shot_number = len(structured_shots) or 1
         parsed_assets, notes = parse_assets(reference_assets)
         effective_image_use, effective_video_use = _resolve_roles(
             what_do_you_want,
@@ -1215,14 +1687,6 @@ class MiniMaxH3PromptGuide:
             how_video_is_used,
         )
         effective_audio_use = how_audio_is_used
-        if what_do_you_want == AUTO_GOAL:
-            kinds = {asset.kind for asset in parsed_assets}
-            if effective_image_use == NO_IMAGE and "Picture" in kinds:
-                effective_image_use = APPEARANCE_IMAGE
-            if effective_video_use == NO_VIDEO and "Video" in kinds:
-                effective_video_use = CONTENT_VIDEO
-            if effective_audio_use == NO_AUDIO and "Audio" in kinds:
-                effective_audio_use = REFERENCE_AUDIO
         decision = choose_mode(
             what_do_you_want,
             effective_image_use,
@@ -1235,6 +1699,12 @@ class MiniMaxH3PromptGuide:
             effective_video_use,
             effective_audio_use,
         )
+        _validate_active_asset_labels(
+            assets,
+            effective_image_use,
+            effective_video_use,
+            effective_audio_use,
+        )
         warnings = _warnings(
             decision,
             what_do_you_want,
@@ -1243,7 +1713,24 @@ class MiniMaxH3PromptGuide:
             effective_audio_use,
             assets,
             target_description,
+            reference_fidelity,
+            len(structured_shots) or 1,
+            dialogue_lyrics_and_visible_text,
         )
+        declared_asset_keys = {(asset.kind, asset.number) for asset in parsed_assets}
+        placeholder_labels = [
+            asset.label
+            for asset in assets
+            if asset.kind in {"Picture", "Video", "Audio"}
+            and (asset.kind, asset.number) not in declared_asset_keys
+        ]
+        if placeholder_labels:
+            warnings.append(
+                "The selected roles required draft placeholder label(s) "
+                + ", ".join(placeholder_labels)
+                + ". A placeholder is not an attached file; connect real media to every corresponding "
+                "native H3 input."
+            )
         report = _mode_report(
             decision,
             what_do_you_want,
@@ -1253,13 +1740,38 @@ class MiniMaxH3PromptGuide:
             assets,
             warnings,
         )
-        if structured_shots:
+        report += (
+            f"\nNative duration: {h3_length} frames at {H3_FPS} FPS = "
+            f"{effective_duration:.3f} seconds."
+        )
+        if not math.isclose(requested_duration, effective_duration, abs_tol=0.0005):
+            report += (
+                f" Requested {requested_duration:.3f} seconds was snapped upward to ComfyUI's "
+                f"17k+5 frame grid; connect h3_length={h3_length} to the native H3 node."
+            )
+        if connected_shots:
             report += (
                 f"\nShot chain: {len(structured_shots)} shot(s), 00:00.000–"
-                f"{_format_timestamp(effective_duration)}; final end_time overrides duration_seconds."
+                f"{_format_timestamp(requested_duration)} planned; final end_time overrides "
+                "duration_seconds."
             )
             if shot_and_timing_plan.strip():
                 report += "\nManual shot fallback: ignored because shot_plan is connected."
+        elif manual_shots:
+            report += (
+                f"\nManual shot plan: parsed and validated {len(structured_shots)} shot(s), "
+                f"00:00.000–{_format_timestamp(requested_duration)} planned."
+            )
+            if not math.isclose(requested_duration, duration_seconds, abs_tol=0.0005):
+                report += " Its explicit final end overrides duration_seconds."
+        if structured_shots and not math.isclose(
+            requested_duration, effective_duration, abs_tol=0.0005
+        ):
+            report += (
+                f"\nFinal [Shot {final_shot_number}] is extended through "
+                f"{_format_timestamp(effective_duration)} so the described timeline reaches the "
+                "native playback end."
+            )
 
         if decision.mode == "Ref2VA":
             items = _build_reference_items(
@@ -1268,15 +1780,6 @@ class MiniMaxH3PromptGuide:
                 effective_video_use,
                 effective_audio_use,
             )
-            if not items:
-                items = [
-                    ReferenceItem(
-                        "<Subject 1>",
-                        "Subject",
-                        "visible content",
-                        "the main target subject described in the user brief",
-                    )
-                ]
             draft = _reference_prompt(
                 what_do_you_want,
                 effective_duration,
@@ -1294,6 +1797,7 @@ class MiniMaxH3PromptGuide:
                 effective_audio_use,
                 notes,
                 structured_shots,
+                final_shot_number,
             )
         else:
             draft = _base_prompt(
@@ -1308,6 +1812,7 @@ class MiniMaxH3PromptGuide:
                 non_diegetic_music,
                 notes,
                 structured_shots,
+                final_shot_number,
             )
 
         rewrite = _rewrite_request(
@@ -1317,7 +1822,7 @@ class MiniMaxH3PromptGuide:
             target_description,
             reference_assets,
         )
-        return (draft, rewrite, report)
+        return (draft, rewrite, report, h3_length)
 
 
 NODE_CLASS_MAPPINGS = {
