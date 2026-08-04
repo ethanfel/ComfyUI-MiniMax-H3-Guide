@@ -6,7 +6,7 @@ The node is based on MiniMax's official [base prompt guide](https://huggingface.
 
 ## Nodes
 
-### Plan v2 ordered workflow (Phase 1)
+### Plan v2 ordered workflow (Phases 1–2)
 
 For new reference-heavy workflows, the Plan v2 nodes provide a typed semantic
 chain instead of asking one large form or an LLM to infer what each file means:
@@ -18,6 +18,8 @@ chain instead of asking one large form or an LLM to infer what each file means:
         -> optional Dialogue Event nodes
         -> Shot 2 ...
         -> MiniMax H3 Prompt Merge (Plan v2)
+        -> optional Structured Prompt Enhancer (Plan v2)
+        -> optional Apply Structured Prose (Plan v2)
 
 Every node consumes and returns one **MINIMAX_H3_PLAN_V2** value. Reference
 nodes are accepted only before the first Shot. A Shot uses one cut time; the
@@ -47,7 +49,7 @@ scopes such as 3,4 or 3-4, canonicalizes native media order, and returns:
 2. **rewrite_request** — prose-enhancement instructions that explicitly lock
    labels, roles, retention, speakers, dialogue, and cut times;
 3. **plan_context** — the compiled typed plan for the structured enhancer and
-   native adapter planned in later phases;
+   future native adapter;
 4. **problems_report** — readiness, mode, timing, inventory, and exact native
    routes;
 5. **h3_length** — the Project Setup native frame length.
@@ -56,12 +58,41 @@ Reference Sheet remains the reusable media library: connect its selected image
 or loaded audio to the matching Plan v2 reference node, where the
 workflow-specific role is declared.
 
-Phase 1 intentionally uses normal ComfyUI widgets and keeps native H3
-conditioning separate. Contextual role widgets, Shot less-than autocomplete,
-live canvas badges, hard-locked structured Qwen enhancement, and the optional
-native Apply Reference Plan adapter are later phases. Until the adapter is
-available, connect each media pass-through output to the native socket listed
-by Prompt Merge.
+The Phase 2 browser extension hides irrelevant role fields, supplies upstream
+Subject pickers, validates numeric scope syntax, shows live label/route/timing
+badges, fixes the first Shot at 0.000 seconds, and replaces the Shot description
+box with an editor that opens an upstream reference menu when `<` is typed.
+These conveniences do not replace Python validation and are not required in
+API/headless mode.
+
+The optional **Structured Prompt Enhancer (Plan v2)** gives Qwen the complete
+compiled scene in one request: the valid H3 draft, all references and roles,
+every Shot, exact dialogue, audio metadata/transcripts, timing, routes, and the
+compiler report. When visual analysis is enabled, the same request also
+contains image pixels and timestamped video samples. Audio waveforms are never
+presented as something Qwen can understand; audio meaning remains explicit
+metadata.
+
+Qwen returns only a versioned JSON object containing visual style, global
+intent, Shot descriptions/camera prose, soundscape, and music prose. Python
+then reconstructs the complete H3 prompt and verifies that labels, reference
+roles, retention, native routes, speaker order, exact dialogue, Shot order, and
+cut times did not change. Invalid, incomplete, or collapsed model output falls
+back to the deterministic compiler draft. The node exposes:
+
+1. the rebuilt `enhanced_prompt` and valid `editable_prose` JSON;
+2. the matching compiled `enhanced_plan_context`;
+3. both the editable `base_system_prompt` and actual
+   `effective_system_prompt` with its appended locked contract;
+4. the complete `llm_prompt` and a validation/offload report.
+
+Use **Apply Structured Prose (Plan v2)** after a text editor when the returned
+JSON should be refined manually and recompiled without running Qwen again.
+The side-node Generation Tail Loader and explicit CLIP offload remain
+supported.
+
+Native H3 conditioning is still separate until Phase 3. Connect each media
+pass-through output to the socket listed by Prompt Merge.
 
 ### MiniMax H3 Prompt Guide
 

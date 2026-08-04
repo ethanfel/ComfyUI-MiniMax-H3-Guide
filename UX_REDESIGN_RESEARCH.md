@@ -1,11 +1,14 @@
 # MiniMax H3 prompt workflow UX redesign
 
 Research date: 2026-08-04
-Development branch: `dev/reference-workflow-ux`
+Development branches: `dev/reference-workflow-ux`,
+`dev/reference-workflow-ux-phase2`
 
-Implementation status: Phase 1 is implemented on this branch as the isolated
-`MINIMAX_H3_PLAN_V2` compiler and eight new Plan v2 nodes. Phase 2 interaction
-work and Phase 3 native-adapter work remain intentionally separate.
+Implementation status: Phase 1 is implemented as the isolated
+`MINIMAX_H3_PLAN_V2` compiler and eight Plan v2 planning nodes. Phase 2 adds the
+interaction extension, hard-locked full-context structured enhancer, and
+manual Apply Structured Prose node. Phase 3 native-adapter and onboarding work
+remain intentionally separate.
 
 ## Recommendation
 
@@ -675,6 +678,12 @@ no LLM and leaves all current nodes operational.
    prompts.
 4. Add image/video analysis selectively; describe audio only from explicit
    metadata and transcripts.
+
+Implemented on `dev/reference-workflow-ux-phase2`. Qwen receives the complete
+compiled scene and reference inventory in one request, optionally accompanied
+by visual evidence. Its response is restricted to a versioned prose JSON
+surface; Python recompiles the H3 document and compares all semantic locks
+before accepting it. Invalid responses fall back to the deterministic draft.
 
 ### Phase 3 - end-to-end integration and onboarding
 
