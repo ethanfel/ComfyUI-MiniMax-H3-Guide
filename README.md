@@ -6,7 +6,7 @@ The node is based on MiniMax's official [base prompt guide](https://huggingface.
 
 ## Nodes
 
-### Plan v2 ordered workflow (Phases 1–2)
+### Plan v2 ordered workflow
 
 For new reference-heavy workflows, the Plan v2 nodes provide a typed semantic
 chain instead of asking one large form or an LLM to infer what each file means:
@@ -20,6 +20,8 @@ chain instead of asking one large form or an LLM to infer what each file means:
         -> MiniMax H3 Prompt Merge (Plan v2)
         -> optional Structured Prompt Enhancer (Plan v2)
         -> optional Apply Structured Prose (Plan v2)
+        -> MiniMax H3 Apply Reference Plan (Plan v2)
+        -> sampler
 
 Every node consumes and returns one **MINIMAX_H3_PLAN_V2** value. Reference
 nodes are accepted only before the first Shot. A Shot uses one cut time; the
@@ -49,13 +51,13 @@ scopes such as 3,4 or 3-4, canonicalizes native media order, and returns:
 2. **rewrite_request** — prose-enhancement instructions that explicitly lock
    labels, roles, retention, speakers, dialogue, and cut times;
 3. **plan_context** — the compiled typed plan for the structured enhancer and
-   future native adapter;
+   native Apply Reference Plan adapter;
 4. **problems_report** — readiness, mode, timing, inventory, and exact native
    routes;
 5. **h3_length** — the Project Setup native frame length.
 
 Reference Sheet remains the reusable media library: connect its selected image
-or loaded audio to the matching Plan v2 reference node, where the
+or selected audio output to the matching Plan v2 reference node, where the
 workflow-specific role is declared.
 
 The Phase 2 browser extension hides irrelevant role fields, supplies upstream
@@ -91,10 +93,38 @@ JSON should be refined manually and recompiled without running Qwen again.
 The side-node Generation Tail Loader and explicit CLIP offload remain
 supported.
 
-Native H3 conditioning is still separate until Phase 3. Connect each media
-pass-through output to the socket listed by Prompt Merge.
+**Apply Reference Plan (Plan v2)** is the native handoff. Connect `h3_prompt`
+and `plan_context` from the same Prompt Merge, Structured Prompt Enhancer, or
+Apply Structured Prose result, plus the official H3 CLIP/video VAE and optional
+audio VAE. The node verifies that the pair still matches, automatically routes
+stored media as endpoint frames or canonical Ref2VA dictionaries, and delegates
+conditioning to ComfyUI's installed `MiniMaxH3ImageToVideo` or
+`MiniMaxH3ReferenceToVideo` implementation. It returns native positive
+conditioning and the joint AV latent. Reference audio requires the audio VAE;
+text-only and endpoint plans do not.
 
-### MiniMax H3 Prompt Guide
+The adapter does not duplicate ComfyUI's encoder. It checks the installed
+native call signature and fails with an actionable compatibility message when
+that API changes. `adapter_report` states the selected mode, required checkpoint
+family, target size, length, native implementation, and every applied route.
+
+### Workflow presets and migration
+
+Ready-to-open examples live in `example_workflows/` and appear in ComfyUI's
+workflow template browser. The text-only prompt builder is preconfigured for
+APP mode; reference starters keep their semantic spine visible so files, roles,
+Shots, and dialogue can be inspected before generation. The identity-and-voice
+example also includes the current official Ref2VA model, sampler, joint video/
+audio decode, and Save Video path, with Apply Reference Plan replacing manual
+reference-socket wiring.
+
+For existing graphs, see [Migrating existing workflows to Plan v2](MIGRATION_TO_PLAN_V2.md).
+Old node IDs remain registered so saved workflows load, but the monolithic
+Prompt Guide, Target Timing/Shot chain, visual/audio context builders, and
+free-form enhancer now include **Legacy** in their library names. Reference
+Sheet and Generation Tail Loader remain supported components.
+
+### Legacy: MiniMax H3 Prompt Guide
 
 `MiniMax H3 Prompt Guide` appears under `MiniMax H3/Prompting`. It produces:
 
@@ -105,7 +135,7 @@ pass-through output to the socket listed by Prompt Merge.
 
 No model, API key, or extra Python dependency is required for the guide itself.
 
-### MiniMax H3 Target Timing
+### Legacy: MiniMax H3 Target Timing
 
 Use **MiniMax H3 Target Timing** whenever a final Visual Reference
 `reference_context` will feed the Prompt Guide. It is especially important for
@@ -124,7 +154,7 @@ does the final reference context reach the Guide. Do not feed
 `Prompt Guide.h3_length` back into a video Visual Reference that contributes to
 the Guide's own `reference_context`.
 
-### MiniMax H3 Prompt Enhancer (Qwen3-VL)
+### Legacy: MiniMax H3 Prompt Enhancer (Qwen3-VL)
 
 This node follows ComfyUI's native **Generate Text** execution model. Connect
 `h3_prompt` and optionally `mode_report` from the guide node. Its `CLIP` input
@@ -261,48 +291,26 @@ input filename or internal asset key. Update with no connected media changes
 metadata only and preserves the saved media. Update with connected media
 replaces the saved media after `confirm_update` is enabled.
 
-Use saved assets with the two workflow nodes:
+Use saved assets directly with Plan v2:
 
 ```text
-Reference Sheet.reference_sheet
-    ├─> Reference Sheet Visual Reference ─> reference_context / h3_media
-    └─> Reference Sheet Audio Reference  ─> audio_context / h3_audio
-
-Reference Sheet.selected_image ───────────> native ref_image_N
-
-final visual reference_context ─┬─> Prompt Guide.reference_context
-                                └─> Prompt Enhancer.reference_context
-final audio_context ───────────────> Prompt Guide.audio_context
-
-h3_media ─> native ref_image_N             equivalent image output
-h3_audio ─> native standalone ref_audio_N
+Reference Sheet.selected_image -> Plan v2 Image Reference.image
+Reference Sheet.selected_audio -> Plan v2 Audio Reference.audio
 ```
 
-The visual-use node automatically consumes the image selected in the gallery;
-it has no filename or asset-key field. It behaves like the ordinary Visual
-Reference node by assigning the actual role, retention, content group, transfer
-target, notes, and compact `shot_scope` for this workflow, then chaining with
-other sheet or ordinary visual references. Blank `content_group` uses a stable
-sheet-derived key for reusable Subject roles. Connect a normal Visual Reference
-Role chain when one selected image needs multiple simultaneous roles.
-The integrated node's `selected_image` output is the original saved image, so
-it can connect directly to native H3 while `reference_sheet` feeds the role
-node. The role node retains its equivalent `h3_media` output for chaining
-compatibility; connect one of these image outputs, not both.
+The Plan v2 reference node assigns the actual workflow relationship, retention,
+scope, speaker/layer binding, and native route. Duplicate Reference Sheet when
+several saved assets must be selected independently. The old Reference Sheet
+Visual/Audio Reference context nodes remain registered for existing Prompt
+Guide workflows and are labeled Legacy.
 
-The audio-use node likewise consumes the gallery-selected audio automatically.
-It validates the native 2–15-second per-clip limit, maximum of three clips,
-15-second total, and exact zero-based `ref_audio_N` routing. Duplicate the
-integrated Reference Sheet node when several saved assets must be selected at
-the same time, then chain their corresponding use nodes.
+The structured Qwen enhancer can analyze the selected image after it enters the
+Plan v2 image inventory. It does not analyze the audio waveform: audio meaning
+comes from the exact Audio Reference metadata, while native H3 receives the real
+`AUDIO` value through Apply Reference Plan. Reference Sheet stores images and
+standalone audio; use Video Reference for decoded video frame batches.
 
-Qwen3-VL analyzes sheet images through the normal visual context. It does not
-analyze the audio waveform: the Enhancer receives the saved audio description
-as text, while native H3 receives the real `AUDIO` output. The first Reference
-Sheet release stores images and standalone audio; use the existing Visual
-Reference node for reference-video frame batches.
-
-### Visual references, roles, and native routing
+### Legacy: visual references, roles, and native routing
 
 Use one **MiniMax H3 Enhancer Visual Reference** node per picture or reference
 video. `previous_context` records assets in chain order. The backend then
@@ -543,13 +551,13 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/ethanfel/ComfyUI-MiniMax-H3-Guide
 ```
 
-Then add **MiniMax H3 Prompt Guide**, **MiniMax H3 Shot**, **MiniMax H3 Target
-Timing**, **MiniMax H3 Visual Reference Role**, **MiniMax H3 Enhancer Visual
-Reference**, **MiniMax H3 Generation Tail Loader**, and **MiniMax H3 Prompt
-Enhancer (Qwen3-VL)** from **MiniMax H3 → Prompting** as needed. The integrated
-Reference Sheet, Visual Reference, and Audio Reference nodes appear under
-**MiniMax H3 → Reference Sheets**. The previous filename-based Image Asset,
-Audio Asset, and Library builder nodes are disabled.
+For new work, add nodes from **MiniMax H3 → Plan v2**, beginning with Project
+Setup and ending with Prompt Merge plus Apply Reference Plan. Reference Sheet
+appears under **MiniMax H3 → Reference Sheets**, and Generation Tail Loader
+remains under **MiniMax H3 → Prompting**. Other Prompting/context nodes include
+Legacy in their displayed names for old-workflow compatibility. The previous
+filename-based Reference Sheet Image Asset, Audio Asset, and Library builder
+nodes remain disabled.
 
 This release expects a ComfyUI build containing native MiniMax H3 support
 (introduced by ComfyUI commit `57500fc5bc92`). Update ComfyUI if the official
@@ -562,30 +570,29 @@ MiniMax tokenizer are absent.
   `17k+5` frames, so the effective value shown in the prompt/report can be
   slightly longer (for example, 7.25 seconds becomes 175 frames / 7.292 seconds).
 - H3 Ref2VA policy allows up to 9 images, 3 videos, 3 audio clips, and 12 media
-  files in total. The visual chain validates its image/video portion. A connected
-  Reference Sheet `audio_context` validates its standalone-audio portion and lets
-  the Guide diagnose the mixed count; manually wired legacy audio remains outside
-  that verification.
+  files in total. Plan v2 validates the complete mixed inventory before
+  conditioning.
 - H3 policy requires each reference video/audio clip to be 2–15 seconds and
   limits each media type to 15 seconds total. Video duration is validated by the
-  visual chain; Reference Sheet audio validates audio duration and total.
-- H3 policy does not allow reference audio as the sole media input. The Guide
-  rejects a Reference Sheet `audio_context` without a visual `reference_context`.
-  Legacy manual audio inventory can only produce a warning.
+  Video Reference and Audio Reference validate these limits when each asset is
+  registered and Prompt Merge validates their totals.
+- H3 policy does not allow reference audio as the sole media input. Prompt Merge
+  rejects that plan before Apply Reference Plan can run.
 - Native Ref2VA ordering is pictures first; then each enabled video soundtrack
   `<Audio N>` immediately before its `<Video N>`; then standalone audio. Audio
   and video labels are independently numbered, so equal numbers do not imply a
-  pairing. Reference Sheet audio creates standalone `ref_audio_N` entries; it
-  does not yet create video-paired soundtrack entries or analyze waveforms.
+  pairing. Audio Reference creates a paired `ref_video_audio_N` route only when
+  its optional Video Reference handle is explicitly connected.
 - Native Image to Video stretches a first frame to the target canvas and
   center-cover-crops a last frame. Match endpoint aspect ratio to output
   width/height when exact composition is important.
-- The Prompt Guide and Visual Reference chain prepare text, labels, and intended
-  routes; they do not wire native H3 inputs. Connect the actual media yourself
-  according to the final `routing_report` and label order.
-- For an external/general LLM node, send `rewrite_request` and use its response
-  as the candidate H3 prompt. The included Prompt Enhancer instead expects
-  `h3_prompt` plus `mode_report`.
+- Apply Reference Plan wires Plan v2 media automatically. Expert users may keep
+  the official native conditioning node and connect sockets manually according
+  to Prompt Merge's route report.
+- For an external/general LLM node, use the structured editable-prose contract
+  and Apply Structured Prose. A raw full-prompt rewrite can no longer be paired
+  safely with the native adapter unless it is represented by matching compiled
+  plan data.
 - The included enhancer can use the same MiniMax H3 CLIP as conditioning when the Generation Tail Loader is connected. Managed partial loading is designed to support sub-32-GB cards, but that hardware tier remains unverified and the 32B autoregressive pass can be substantially slower when weights stream from system RAM. Leave DynamicVRAM enabled and avoid `--highvram` / `--gpu-only` for that use case.
 - See [AUDIT_REPORT.md](AUDIT_REPORT.md) for the source-grounded findings,
   compatibility decisions, and remaining limitations.

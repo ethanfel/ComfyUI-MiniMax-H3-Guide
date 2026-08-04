@@ -1,0 +1,121 @@
+{
+  "id": "f5bea6b8-64d5-4bd3-8b70-c40b6c428f33",
+  "revision": 0,
+  "last_node_id": 4,
+  "last_link_id": 3,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "MiniMaxH3PlanV2ProjectSetup",
+      "pos": [0, 0],
+      "size": [430, 500],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [1], "slot_index": 0},
+        {"name": "h3_length", "type": "INT", "links": null, "slot_index": 1},
+        {"name": "project_preview", "type": "STRING", "links": null, "slot_index": 2}
+      ],
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2ProjectSetup"},
+      "widgets_values": [
+        "A single coherent cinematic scene with clear physical action and a resolved ending.",
+        6.0,
+        "cinematic, live-action",
+        "Coherent ambience and synchronized physical sounds.",
+        "N/A"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "MiniMaxH3PlanV2Shot",
+      "pos": [500, 0],
+      "size": [470, 390],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "link": 1}
+      ],
+      "outputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [2], "slot_index": 0},
+        {"name": "shot_preview", "type": "STRING", "links": null, "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2Shot"},
+      "widgets_values": [
+        0.0,
+        "Describe the visible action, setting, subject behavior, and ending of this one Shot.",
+        "A stable medium-wide composition with motivated camera movement.",
+        "Direct cut"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "MiniMaxH3PlanV2PromptMerge",
+      "pos": [1040, 0],
+      "size": [390, 210],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "link": 2}
+      ],
+      "outputs": [
+        {"name": "h3_prompt", "type": "STRING", "links": [3], "slot_index": 0},
+        {"name": "rewrite_request", "type": "STRING", "links": null, "slot_index": 1},
+        {"name": "plan_context", "type": "MINIMAX_H3_PLAN_V2", "links": null, "slot_index": 2},
+        {"name": "problems_report", "type": "STRING", "links": null, "slot_index": 3},
+        {"name": "h3_length", "type": "INT", "links": null, "slot_index": 4}
+      ],
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2PromptMerge"},
+      "widgets_values": []
+    },
+    {
+      "id": 4,
+      "type": "PreviewAny",
+      "pos": [1500, 0],
+      "size": [520, 360],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "source", "type": "*", "link": 3}
+      ],
+      "outputs": [
+        {"name": "STRING", "type": "STRING", "links": null, "slot_index": 0}
+      ],
+      "title": "Compiled MiniMax H3 Prompt",
+      "properties": {"Node name for S&R": "PreviewAny"},
+      "widgets_values": []
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "MINIMAX_H3_PLAN_V2"],
+    [2, 2, 0, 3, 0, "MINIMAX_H3_PLAN_V2"],
+    [3, 3, 0, 4, 0, "STRING"]
+  ],
+  "groups": [
+    {"id": 1, "title": "APP inputs", "bounding": [-30, -70, 1030, 610], "color": "#3f789e", "flags": {}},
+    {"id": 2, "title": "Validated output", "bounding": [1010, -70, 1040, 500], "color": "#3f789e", "flags": {}}
+  ],
+  "config": {},
+  "extra": {
+    "ds": {"scale": 0.8, "offset": [80, 120]},
+    "frontendVersion": "1.45.19",
+    "linearMode": true,
+    "linearData": {
+      "inputs": [
+        [1, "initial_prompt"],
+        [1, "duration_seconds"],
+        [1, "visual_style"],
+        [1, "overall_soundscape"],
+        [1, "non_diegetic_music"],
+        [2, "description"],
+        [2, "camera_direction"]
+      ],
+      "outputs": [4]
+    }
+  },
+  "version": 0.4
+}

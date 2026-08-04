@@ -2,13 +2,14 @@
 
 Research date: 2026-08-04
 Development branches: `dev/reference-workflow-ux`,
-`dev/reference-workflow-ux-phase2`
+`dev/reference-workflow-ux-phase2`, `dev/reference-workflow-ux-phase3`
 
-Implementation status: Phase 1 is implemented as the isolated
-`MINIMAX_H3_PLAN_V2` compiler and eight Plan v2 planning nodes. Phase 2 adds the
-interaction extension, hard-locked full-context structured enhancer, and
-manual Apply Structured Prose node. Phase 3 native-adapter and onboarding work
-remain intentionally separate.
+Implementation status: Phase 1 provides the isolated `MINIMAX_H3_PLAN_V2`
+compiler and eight Plan v2 planning nodes. Phase 2 adds the interaction
+extension, hard-locked full-context structured enhancer, and manual Apply
+Structured Prose node. Phase 3 adds the native Apply Reference Plan adapter,
+workflow onboarding assets, direct Reference Sheet audio output, and an
+explicit legacy migration path.
 
 ## Recommendation
 
@@ -695,6 +696,15 @@ before accepting it. Invalid responses fall back to the deterministic draft.
    document a manual migration map.
 4. Consider the Composer UI only after the plan schema and adapter have proven
    stable in real workflows.
+
+Implemented on `dev/reference-workflow-ux-phase3`. Apply Reference Plan verifies
+that the final prompt and compiled context are the same package, translates the
+compiler's canonical routes into the installed native H3 call, and delegates to
+ComfyUI's own conditioning implementation. The compatibility layer checks both
+native signatures without loading weights. Workflow templates, an APP-mode
+prompt preset, direct saved-audio selection, Legacy library labels, and a manual
+migration map complete the onboarding layer. A Composer UI remains deliberately
+deferred until this graph workflow has real-world use.
 
 ## Acceptance cases
 

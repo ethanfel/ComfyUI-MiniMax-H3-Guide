@@ -2998,7 +2998,7 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxH3TargetTiming": MiniMaxH3TargetTiming,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "MiniMaxH3PromptGuide": "MiniMax H3 Prompt Guide",
-    "MiniMaxH3Shot": "MiniMax H3 Shot",
-    "MiniMaxH3TargetTiming": "MiniMax H3 Target Timing",
+    "MiniMaxH3PromptGuide": "MiniMax H3 Prompt Guide (Legacy)",
+    "MiniMaxH3Shot": "MiniMax H3 Shot (Legacy)",
+    "MiniMaxH3TargetTiming": "MiniMax H3 Target Timing (Legacy)",
 }

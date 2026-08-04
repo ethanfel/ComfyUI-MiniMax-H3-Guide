@@ -1370,5 +1370,5 @@ NODE_CLASS_MAPPINGS = {
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3GenerationTailLoader": "MiniMax H3 Generation Tail Loader",
-    "MiniMaxH3PromptEnhancer": "MiniMax H3 Prompt Enhancer (Qwen3-VL)",
+    "MiniMaxH3PromptEnhancer": "MiniMax H3 Prompt Enhancer (Legacy Qwen3-VL)",
 }

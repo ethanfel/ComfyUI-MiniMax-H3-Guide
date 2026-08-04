@@ -1225,6 +1225,6 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxH3EnhancerVisualReference": MiniMaxH3EnhancerVisualReference,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "MiniMaxH3VisualReferenceRole": "MiniMax H3 Visual Reference Role",
-    "MiniMaxH3EnhancerVisualReference": "MiniMax H3 Enhancer Visual Reference",
+    "MiniMaxH3VisualReferenceRole": "MiniMax H3 Visual Reference Role (Legacy)",
+    "MiniMaxH3EnhancerVisualReference": "MiniMax H3 Enhancer Visual Reference (Legacy)",
 }

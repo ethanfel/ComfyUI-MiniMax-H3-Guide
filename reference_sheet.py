@@ -1081,13 +1081,19 @@ class MiniMaxH3ReferenceSheet:
 
     CATEGORY = "MiniMax H3/Reference Sheets"
     FUNCTION = "manage"
-    RETURN_TYPES = (REFERENCE_SHEET_TYPE, "IMAGE", "STRING")
-    RETURN_NAMES = ("reference_sheet", "selected_image", "sheet_report")
+    RETURN_TYPES = (REFERENCE_SHEET_TYPE, "IMAGE", "STRING", "AUDIO")
+    RETURN_NAMES = (
+        "reference_sheet",
+        "selected_image",
+        "sheet_report",
+        "selected_audio",
+    )
     OUTPUT_NODE = True
     OUTPUT_TOOLTIPS = (
-        "Carries the selected saved image/audio to the role-aware Reference Sheet use nodes.",
-        "The image currently selected in the embedded gallery. Connect it directly to the native H3 ref_image_N input listed by the role node.",
+        "Carries the selected saved image/audio for legacy Guide workflows that still use the Reference Sheet role nodes.",
+        "The image currently selected in the embedded gallery. Connect it to a Plan v2 Image Reference and choose its exact workflow relationship there.",
         "Saved location, media inventory, and currently selected gallery items.",
+        "The audio clip currently selected in the embedded gallery. Connect it directly to a Plan v2 Audio Reference node, where its exact workflow role is declared.",
     )
     DESCRIPTION = (
         "One integrated Reference Sheet. Connect ordinary Load Image/Load Audio nodes, save the sheet, "
@@ -1201,6 +1207,10 @@ class MiniMaxH3ReferenceSheet:
         if sheet["selected_image_key"]:
             _manifest, _asset, selected_path = _sheet_asset(sheet, None, "image")
             selected_image = _load_image(selected_path)
+        selected_audio = None
+        if sheet["selected_audio_key"]:
+            _manifest, _asset, selected_path = _sheet_asset(sheet, None, "audio")
+            selected_audio = _load_audio(selected_path)
         return {
             "ui": {
                 "saved_sheet": [option],
@@ -1208,7 +1218,7 @@ class MiniMaxH3ReferenceSheet:
                 "selected_image_key": [sheet["selected_image_key"]],
                 "selected_audio_key": [sheet["selected_audio_key"]],
             },
-            "result": (sheet, selected_image, report),
+            "result": (sheet, selected_image, report, selected_audio),
         }
 
     @classmethod
@@ -1626,6 +1636,6 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3ReferenceSheet": "MiniMax H3 Reference Sheet",
-    "MiniMaxH3ReferenceSheetVisualReference": "MiniMax H3 Reference Sheet Visual Reference",
-    "MiniMaxH3ReferenceSheetAudioReference": "MiniMax H3 Reference Sheet Audio Reference",
+    "MiniMaxH3ReferenceSheetVisualReference": "MiniMax H3 Reference Sheet Visual Reference (Legacy)",
+    "MiniMaxH3ReferenceSheetAudioReference": "MiniMax H3 Reference Sheet Audio Reference (Legacy)",
 }
