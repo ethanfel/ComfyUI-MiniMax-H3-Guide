@@ -782,7 +782,8 @@ def _routing_report(entries: list[dict], routing_mode: str, hint: str) -> str:
             "autogrow input."
         )
     lines.append(
-        "Connect only the final reference_context output to Prompt Enhancer.reference_context."
+        "Fan out only the final reference_context output to Prompt Guide.reference_context and "
+        "Prompt Enhancer.reference_context."
     )
     return "\n".join(lines)
 
@@ -795,7 +796,7 @@ class MiniMaxH3VisualReferenceRole:
     RETURN_TYPES = (ROLE_CHAIN_TYPE, "STRING")
     RETURN_NAMES = ("role_bindings", "role_preview")
     OUTPUT_TOOLTIPS = (
-        "Connect to another Visual Reference Role.previous_roles input, or connect the final chain to a Visual Reference.role_bindings input.",
+        "Connect to another Visual Reference Role.previous_roles input, or connect the final chain to a Visual Reference.role_bindings input. The role chain belongs to one media asset; the Visual Reference node adds it to the ordered context used by the Guide and Enhancer.",
         "Readable preview of every role, retention relation, content group, shot scope, and note for this media.",
     )
     DESCRIPTION = (
@@ -826,7 +827,9 @@ class MiniMaxH3VisualReferenceRole:
                             "How strongly H3 should retain this role. Auto is conservative: exact "
                             "endpoints and motion are fully_preserved, while style/storyboard/camera "
                             "are weak_reference. Select attribute_transfer explicitly and identify "
-                            "both its source and destination groups."
+                            "both its source and destination groups. Bindings merged into the same "
+                            "content_group must resolve to one shared retention marker because H3 "
+                            "allows one retention row per tracked Subject."
                         ),
                     },
                 ),
@@ -837,7 +840,8 @@ class MiniMaxH3VisualReferenceRole:
                         "placeholder": "Example: hero, red car, coastal environment",
                         "tooltip": (
                             "Optional reusable-content key. Give related roles on different assets the same "
-                            "value when they jointly define one <Subject N>. Direct frame/video roles cannot use it."
+                            "value when they jointly define one <Subject N>. Those merged bindings must "
+                            "also use the same retention marker. Direct frame/video roles cannot use it."
                         ),
                     },
                 ),
@@ -923,7 +927,7 @@ class MiniMaxH3EnhancerVisualReference:
     RETURN_TYPES = (REFERENCE_CONTEXT_TYPE, "IMAGE", "STRING")
     RETURN_NAMES = ("reference_context", "h3_media", "routing_report")
     OUTPUT_TOOLTIPS = (
-        "Chain into the next Visual Reference, or connect the final context to Prompt Enhancer.reference_context.",
+        "Chain into the next Visual Reference. Fan the final context out to both Prompt Guide.reference_context and Prompt Enhancer.reference_context so their labels, roles, grouping, retention, and mode remain identical.",
         "Original endpoint/reference picture, or video resampled and aligned to native H3's 24-FPS 17k+5 contract. Follow routing_report for the exact destination socket.",
         "Exact semantic labels, mode family, native input routes, and effective video duration after native alignment/truncation.",
     )
@@ -1059,9 +1063,11 @@ class MiniMaxH3EnhancerVisualReference:
                     {
                         "forceInput": True,
                         "tooltip": (
-                            "Recommended for videos: connect Prompt Guide.h3_length. Native H3 first "
-                            "truncates each reference video to this target length, then aligns it downward "
-                            "to 17k+5; this node mirrors that behavior before Qwen analysis."
+                            "Recommended for videos: connect MiniMax H3 Target Timing.h3_length. Native "
+                            "H3 first truncates each reference video to this target length, then aligns it "
+                            "downward to 17k+5; this node mirrors that behavior before Qwen analysis. Do "
+                            "not feed Prompt Guide.h3_length backward when this reference_context also "
+                            "feeds the Guide, because that would create a graph cycle."
                         ),
                     },
                 ),

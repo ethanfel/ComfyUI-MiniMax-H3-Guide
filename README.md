@@ -10,12 +10,31 @@ The node is based on MiniMax's official [base prompt guide](https://huggingface.
 
 `MiniMax H3 Prompt Guide` appears under `MiniMax H3/Prompting`. It produces:
 
-1. `h3_prompt` — a deterministic, structured pre-LLM draft. It is useful as a starting point; run it through the enhancer when the creative notes are short or the reference relationships are complex.
+1. `h3_prompt` — a deterministic, structured pre-LLM draft. When a final Visual Reference `reference_context` is connected, the Guide derives role-correct Subject grouping, direct Picture/Video rows, retention relationships, and the H3 family from that context. Run the draft through the enhancer when the creative notes are short or visual analysis would help.
 2. `rewrite_request` — a self-contained instruction for an LLM or Context-IR-style rewrite step. This is recommended when the starting notes are short because the official guide expects a detailed chronological description.
 3. `mode_report` — the selected mode and checkpoint, the reason for the selection, Ref2VA limits, and warnings about contradictory options.
-4. `h3_length` — the requested duration rounded upward to native ComfyUI's `17k+5` frame grid at 24 FPS. Connect it to the official H3 node's `length` input and to every Visual Reference node that carries video.
+4. `h3_length` — the requested duration rounded upward to native ComfyUI's `17k+5` frame grid at 24 FPS. In a simple workflow it can feed the official H3 node directly. When a final Visual Reference context returns to the Guide, use the upstream Target Timing node described below; the Guide then echoes the same resolved value without creating a graph cycle.
 
 No model, API key, or extra Python dependency is required for the guide itself.
+
+### MiniMax H3 Target Timing
+
+Use **MiniMax H3 Target Timing** whenever a final Visual Reference
+`reference_context` will feed the Prompt Guide. It is especially important for
+video references because it resolves duration before video preparation and
+exposes:
+
+1. `timing_context` — connect to `Prompt Guide.timing_context`; it carries the
+   requested/effective duration and any connected Shot chain.
+2. `h3_length` — connect to every video Visual Reference `h3_length` input and
+   to the official H3 node's `length` input.
+3. `timing_report` — the selected timing source and native `17k+5` result.
+
+This keeps every edge pointing downstream: Target Timing prepares the length,
+video references use it to trim their analysis/native batches, and only then
+does the final reference context reach the Guide. Do not feed
+`Prompt Guide.h3_length` back into a video Visual Reference that contributes to
+the Guide's own `reference_context`.
 
 ### MiniMax H3 Prompt Enhancer (Qwen3-VL)
 
@@ -25,14 +44,19 @@ accepts either a complete generation-capable Qwen3-VL model or MiniMax H3's
 normal 50-layer conditioning CLIP plus the optional 50–63 generation tail:
 
 ```text
-MiniMax H3 Prompt Guide
-    h3_prompt ─────┐
-    mode_report ───┼─> MiniMax H3 Prompt Enhancer ─> enhanced_prompt
-    h3_length ─────┼────────────────────────────────> native H3.length
-standard CLIPLoader ┤                              ├─> system_prompt
-Visual Reference chain ─> reference_context       ├─> llm_prompt
-legacy optional IMAGE ┤
-Generation Tail Loader ─> clip_tail               └─> enhancer_report
+MiniMax H3 Target Timing
+    timing_context ──────────────────────> Prompt Guide.timing_context
+    h3_length ─────┬─────────────────────> each video Visual Reference.h3_length
+                  └─────────────────────> native H3.length
+
+final Visual Reference.reference_context ─┬─> Prompt Guide.reference_context
+                                          └─> Prompt Enhancer.reference_context
+
+Prompt Guide.h3_prompt ────┐
+Prompt Guide.mode_report ──┼─> MiniMax H3 Prompt Enhancer ─> enhanced_prompt
+standard CLIPLoader.CLIP ──┤                              ├─> system_prompt
+legacy optional IMAGE ─────┤                              ├─> llm_prompt
+Generation Tail Loader ────┘                              └─> enhancer_report
 ```
 
 It produces:
@@ -116,17 +140,22 @@ assigns one or more semantic jobs to a single media file:
 Role: identity ─> Role: clothing ─> Visual Reference.role_bindings
                                        │ media: Picture
 Previous Visual Reference.context ─────┤
-                                       ├─ reference_context ─> next reference / Enhancer
+                                       ├─ reference_context ─> next Visual Reference.previous_context
                                        └─ h3_media ─────────> socket recommended by routing_report
+
+final Visual Reference.reference_context ─┬─> Prompt Guide.reference_context
+                                          └─> Prompt Enhancer.reference_context
 ```
 
 New Visual Reference nodes start with `Unassigned - choose a reference role`.
 Before running, either select one simple role in the compatibility
 `reference_role` dropdown or connect a completed `role_bindings` chain. Use
 role nodes when one asset has several roles, when several assets should provide
-evidence for one Subject, or when retention/shot mapping must be explicit. Qwen
-performs the final Subject construction; the chain supplies authoritative
-evidence rather than deterministically writing the final Subject rows.
+evidence for one Subject, or when retention/shot mapping must be explicit. Fan
+the final Visual Reference `reference_context` out to both the Prompt Guide and
+Prompt Enhancer. The Guide deterministically writes the role-correct Subject or
+direct Picture/Video rows; Qwen then analyzes the supplied pixels and expands
+the creative description without being asked to invent the role mapping.
 
 The role fields mean:
 
@@ -134,7 +163,7 @@ The role fields mean:
 | --- | --- |
 | `reference_role` | What content the asset provides: endpoint, identity, object, scene, style, keyframe, storyboard, motion, temporal structure, edit source, or continuation source. The `Unassigned - choose a reference role` new-node default must be replaced before execution. |
 | `retention` | One official visible marker: `fully_preserved`, `partially_preserved`, `attribute_transfer`, or `weak_reference`. Auto chooses a role-safe non-transfer default. |
-| `content_group` | A stable user key for reusable visible content. Give bindings on different files the same key when Qwen should combine them as evidence for one `<Subject N>`. |
+| `content_group` | A stable user key for reusable visible content. Give bindings on different files the same key when the Guide should combine them as evidence for one `<Subject N>`. |
 | `transfer_target` | Required only for explicit `attribute_transfer`; names a different content group that receives the attribute or motion. |
 | `shot_scope` | Optional explicit location such as `Shot 2` or `Shots 1-3`. Leave blank when the location is not known instead of inventing Shot 1. |
 | `notes` | What to preserve, transfer, ignore, or change for this binding. |
@@ -162,7 +191,9 @@ The media paths deliberately have different representations:
 - **Video passed to H3:** the source batch is resampled to 24 FPS, optionally
   truncated to connected `h3_length`, and rounded downward to native H3's
   `17k+5` reference grid. Set `source_fps` to the real batch rate and connect
-  the Guide's `h3_length` to every video reference node.
+  Target Timing's `h3_length` to every video reference node when the final
+  context also feeds the Guide. Use the Guide's output only in a legacy path
+  where doing so cannot form a cycle.
 - **Generic-Qwen analysis:** a reduced long-edge copy with configurable
   `analysis_fps` and frame cap, sampled only from the effective native clip.
 - **MiniMax-Qwen analysis:** a separate fixed-2-FPS sequence, matching native
@@ -176,35 +207,45 @@ discarded events, so review the candidate prompt when the source was trimmed. A
 samples at 0.0, 0.5, 1.0, and 1.5 seconds.
 
 H3's `<Subject N>` is reusable visible content, not a synonym for a person. It
-may represent an object, environment, style, action, expression, or pose. The
-built-in instructions ask Qwen to cite a picture/video used only as a Subject
-source inside that Subject's definition without adding an unnecessary standalone
-definition/retention row. Concrete frames should remain `<Picture N>`;
-edit/continuation/whole-video temporal sources should remain `<Video N>`. These
-are LLM output requirements, so review `enhancer_report` and the candidate text.
-Audio analysis is intentionally outside this visual chain for now.
+may represent an object, environment, style, action, expression, or pose. From
+the connected context, the Guide cites a picture/video used only as reusable
+Subject evidence inside that Subject's definition without adding an unnecessary
+standalone definition/retention row. Concrete frames remain `<Picture N>`;
+edit/continuation/whole-video temporal sources remain `<Video N>`. The enhancer
+can expand those definitions from visual evidence and checks the resulting
+structure, but the explicit bindings remain authoritative. Review
+`enhancer_report` and the candidate text before generation. Audio analysis is
+intentionally outside this visual chain for now.
 
 ### Planning multiple shots
 
-Add one **MiniMax H3 Shot** node per shot. Connect each `shot_plan` output to
-the next node's `previous_shots` input, then connect only the last node to the
-Prompt Guide's optional `shot_plan` input:
+Add one **MiniMax H3 Shot** node per shot and connect each `shot_plan` output to
+the next node's `previous_shots` input. With a chained Visual Reference context,
+connect the final Shot to Target Timing so the complete plan stays upstream:
 
 ```text
 MiniMax H3 Shot (0.000–2.500)
     shot_plan ─> MiniMax H3 Shot (2.500–4.250)
                     shot_plan ─> MiniMax H3 Shot (4.250–6.000)
-                                    shot_plan ─> Prompt Guide.shot_plan
+                                    shot_plan ─> Target Timing.shot_plan
+
+Target Timing.timing_context ─> Prompt Guide.timing_context
+Target Timing.h3_length ──────┬─> every video Visual Reference.h3_length
+                              └─> native H3.length
 ```
+
+Without a connected `reference_context`, the older direct route remains valid:
+connect the final Shot to `Prompt Guide.shot_plan`, and use
+`Prompt Guide.h3_length` downstream.
 
 Each node has float `start_time` and `end_time` controls with millisecond
 steps, a shot description, per-shot camera direction, and transition. The
 chain rejects gaps, overlaps, reversed ranges, a first shot that does not start
 at zero, and times above 15 seconds. Its final `end_time` is the requested
-duration. The Guide rounds that duration to native H3 frames and extends the
-last described shot through the effective playback end. Camera instructions
-are written as natural shot prose, never as a `Camera direction:` metadata
-label.
+duration. Target Timing—or the Guide in the legacy direct path—rounds that
+duration to native H3 frames and extends the last described shot through the
+effective playback end. Camera instructions are written as natural shot prose,
+never as a `Camera direction:` metadata label.
 
 The Prompt Guide's `shot_and_timing_plan` text widget remains available under
 advanced controls for old workflows or a quick manual plan. It now parses the
@@ -254,9 +295,10 @@ With per-asset role nodes, the equivalent explicit mapping is:
 
 To combine rather than transfer evidence, give bindings the same group. For
 example, Picture 1 `Identity or appearance` and Video 1 `Motion or action` can
-both use `hero`; Qwen can then define one Subject whose appearance comes from
+both use `hero`; the Guide then defines one Subject whose appearance comes from
 the picture and whose motion evidence comes from the video, without inventing
-an unrelated second Subject.
+an unrelated second Subject. The enhancer may add details found in the media,
+but it receives the same fixed grouping.
 
 ## Reference inventory
 
@@ -277,18 +319,25 @@ category order. Unlabelled lines are retained as additional reference notes.
 Inventory text describes expected files; it does not decide their role. A
 listed Picture with image role `No image`, for example, stays unused and
 produces a warning instead of silently becoming an appearance reference or
-Subject. Once a role is selected, the text-only Guide may synthesize a required
-placeholder label to keep the draft structurally complete, including Picture 2
-when a partially listed first-and-last-frame task needs it. A placeholder is not
-a media file: `mode_report` calls it out, and you must verify that every generated
-label has a real downstream connection.
+Subject. In the legacy dropdown path, selecting a role may make the text-only
+Guide synthesize a required placeholder label to keep the draft structurally
+complete, including Picture 2 when a partially listed first-and-last-frame task
+needs it. A placeholder is not a media file: `mode_report` calls it out, and you
+must verify that every generated label has a real downstream connection.
 
-The Guide's global role dropdowns are convenient for one role per media type.
-For actual multi-file enhancement, the Visual Reference Role chain is the
-authoritative evidence model. If the guide draft and chain disagree, the
-enhancer resolves and reports the family from the chain and instructs Qwen to
-reconcile the draft. Final Subject grouping and task-prefix choices remain LLM
-output and should be reviewed rather than assumed.
+The Guide's global image/video role dropdowns remain a legacy shortcut when no
+`reference_context` is connected. In that path they select one role per media
+type and may create structurally required placeholder labels, exactly as older
+workflows expect.
+
+For chained references, the final Visual Reference `reference_context` is the
+single authoritative visual model. Connect it to both the Guide and Enhancer.
+The Guide ignores its legacy image/video role dropdowns, derives Subject
+grouping, direct Picture/Video rows, retention, task prefix, and H3 family from
+the explicit bindings, and uses matching inventory lines only as descriptions.
+The enhancer analyzes and expands that already aligned draft instead of
+reconciling two conflicting role models. Audio still uses the Guide's audio
+dropdown and inventory because audio is outside the visual chain.
 
 ## Example: edit a video and keep its soundtrack
 
@@ -316,10 +365,10 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/ethanfel/ComfyUI-MiniMax-H3-Guide
 ```
 
-Then add **MiniMax H3 Prompt Guide**, **MiniMax H3 Shot**, **MiniMax H3 Visual
-Reference Role**, **MiniMax H3 Enhancer Visual Reference**, **MiniMax H3
-Generation Tail Loader**, and **MiniMax H3 Prompt Enhancer (Qwen3-VL)** from
-**MiniMax H3 → Prompting** as needed.
+Then add **MiniMax H3 Prompt Guide**, **MiniMax H3 Shot**, **MiniMax H3 Target
+Timing**, **MiniMax H3 Visual Reference Role**, **MiniMax H3 Enhancer Visual
+Reference**, **MiniMax H3 Generation Tail Loader**, and **MiniMax H3 Prompt
+Enhancer (Qwen3-VL)** from **MiniMax H3 → Prompting** as needed.
 
 This release expects a ComfyUI build containing native MiniMax H3 support
 (introduced by ComfyUI commit `57500fc5bc92`). Update ComfyUI if the official

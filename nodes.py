@@ -12,6 +12,45 @@ import math
 import re
 from typing import Iterable
 
+if __package__:
+    from .media_context import (
+        CAMERA_ROLE,
+        CONCRETE_KEYFRAME_ROLE,
+        CONTINUE_ROLE,
+        EDIT_ROLE,
+        IDENTITY_ROLE,
+        ITEM_ROLE,
+        KEYFRAME_ROLE,
+        MOTION_ROLE,
+        REFERENCE_CONTEXT_TYPE,
+        SCENE_ROLE,
+        STORYBOARD_ROLE,
+        STYLE_ROLE,
+        SUBJECT_ROLES,
+        TRANSFER_RELATION,
+        reference_entries,
+        reference_inventory,
+    )
+else:  # Allows direct imports from the repository during tests.
+    from media_context import (
+        CAMERA_ROLE,
+        CONCRETE_KEYFRAME_ROLE,
+        CONTINUE_ROLE,
+        EDIT_ROLE,
+        IDENTITY_ROLE,
+        ITEM_ROLE,
+        KEYFRAME_ROLE,
+        MOTION_ROLE,
+        REFERENCE_CONTEXT_TYPE,
+        SCENE_ROLE,
+        STORYBOARD_ROLE,
+        STYLE_ROLE,
+        SUBJECT_ROLES,
+        TRANSFER_RELATION,
+        reference_entries,
+        reference_inventory,
+    )
+
 
 AUTO_GOAL = "Auto - decide from the reference roles"
 TEXT_GOAL = "Create a video from text only"
@@ -104,6 +143,7 @@ FIDELITIES = [
 AUTO_VISUAL_STYLE = "Auto - derive from references and intent"
 
 SHOT_PLAN_TYPE = "MINIMAX_H3_SHOT_PLAN"
+TIMING_CONTEXT_TYPE = "MINIMAX_H3_TARGET_TIMING"
 SHOT_TRANSITIONS = ["Direct cut", "Cross-dissolve", "Fade", "Wipe"]
 H3_FPS = 24
 H3_FRAME_MODULUS = 17
@@ -141,6 +181,13 @@ class ReferenceItem:
     kind: str
     role: str
     description: str
+    retention: str = ""
+    shot_scope: str = ""
+    transfer_target: str = ""
+    roles: tuple[str, ...] = ()
+    role_scopes: tuple[tuple[str, str], ...] = ()
+    definition: str = ""
+    from_context: bool = False
 
 
 def _clean(text: str, fallback: str = "") -> str:
@@ -390,6 +437,89 @@ def _shots_from_plan(shot_plan) -> list[dict]:
     if not shots:
         raise ValueError("shot_plan contains no shots.")
     return shots
+
+
+def _build_timing_context(
+    duration_seconds: float,
+    shot_plan=None,
+    manual_shot_plan: str = "",
+) -> dict:
+    """Resolve target timing once so upstream media preparation cannot form a graph cycle."""
+
+    connected_shots = _shots_from_plan(shot_plan) if shot_plan is not None else []
+    manual_shots = (
+        _parse_manual_shots(manual_shot_plan, duration_seconds)
+        if not connected_shots and manual_shot_plan.strip()
+        else []
+    )
+    planned_shots = connected_shots or manual_shots
+    requested_duration = (
+        planned_shots[-1]["end_time"] if planned_shots else float(duration_seconds)
+    )
+    if not math.isfinite(requested_duration) or not 4.0 <= requested_duration <= 15.0:
+        if planned_shots and requested_duration < 4.0:
+            raise ValueError(
+                "The shot plan ends before H3's 4-second minimum. Extend the final shot "
+                "so its end_time is at least 4.000 seconds."
+            )
+        raise ValueError("MiniMax H3 target duration must be a finite value from 4 to 15 seconds.")
+    h3_length = _native_frame_count(requested_duration)
+    return {
+        "version": 1,
+        "source": "shot_plan" if connected_shots else "manual_shot_plan" if manual_shots else "duration",
+        "requested_duration": requested_duration,
+        "h3_length": h3_length,
+        "effective_duration": h3_length / H3_FPS,
+        "shots": [dict(shot) for shot in planned_shots],
+    }
+
+
+def _validated_timing_context(timing_context) -> dict:
+    """Validate and copy a Target Timing payload connected to the Guide."""
+
+    if not isinstance(timing_context, dict) or timing_context.get("version") != 1:
+        raise ValueError("timing_context must come from a MiniMax H3 Target Timing node.")
+    source = timing_context.get("source")
+    if source not in {"duration", "shot_plan"}:
+        raise ValueError("Target Timing contains an unsupported timing source.")
+    try:
+        requested_duration = float(timing_context["requested_duration"])
+        effective_duration = float(timing_context["effective_duration"])
+        h3_length = timing_context["h3_length"]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("Target Timing contains invalid duration or frame-count data.") from error
+    if (
+        not math.isfinite(requested_duration)
+        or not 4.0 <= requested_duration <= 15.0
+        or not math.isfinite(effective_duration)
+    ):
+        raise ValueError("Target Timing durations must remain finite and within H3's 4-15s range.")
+    if isinstance(h3_length, bool) or not isinstance(h3_length, int):
+        raise ValueError("Target Timing h3_length must be an integer.")
+    expected_length = _native_frame_count(requested_duration)
+    if h3_length != expected_length or not math.isclose(
+        effective_duration, h3_length / H3_FPS, abs_tol=0.0005
+    ):
+        raise ValueError("Target Timing contains stale or inconsistent native H3 timing data.")
+    raw_shots = timing_context.get("shots")
+    if not isinstance(raw_shots, (list, tuple)):
+        raise ValueError("Target Timing shots must be a list.")
+    shots = _shots_from_plan({"shots": raw_shots}) if raw_shots else []
+    if source == "shot_plan":
+        if not shots or not math.isclose(
+            shots[-1]["end_time"], requested_duration, abs_tol=0.0005
+        ):
+            raise ValueError("Target Timing shot_plan does not end at its requested duration.")
+    elif shots:
+        raise ValueError("Duration-only Target Timing cannot contain a shot plan.")
+    return {
+        "version": 1,
+        "source": source,
+        "requested_duration": requested_duration,
+        "h3_length": h3_length,
+        "effective_duration": effective_duration,
+        "shots": shots,
+    }
 
 
 def _shot_body(shot: dict) -> str:
@@ -711,7 +841,353 @@ def _build_reference_items(
     return items
 
 
+_CONTEXT_SUBJECT_PHRASES = {
+    IDENTITY_ROLE: "identity or appearance",
+    ITEM_ROLE: "object, prop, clothing, interface, or effect",
+    SCENE_ROLE: "scene or environment",
+    STYLE_ROLE: "visual style",
+    MOTION_ROLE: "motion or action",
+}
+_CONTEXT_DIRECT_DEFINITIONS = {
+    CONCRETE_KEYFRAME_ROLE: "a concrete Ref2VA keyframe or composition anchor",
+    STORYBOARD_ROLE: "a storyboard or shot-planning reference",
+    KEYFRAME_ROLE: "a storyboard or keyframe reference (legacy combined role)",
+    CAMERA_ROLE: "the reference video whose camera movement, cuts, rhythm, and temporal structure are tracked",
+    EDIT_ROLE: "the source video for the target video edit",
+    CONTINUE_ROLE: "the source video whose ending starts the target continuation",
+}
+_CONTEXT_INTERNAL_ROLES = {
+    CONCRETE_KEYFRAME_ROLE: "concrete keyframe",
+    STORYBOARD_ROLE: "storyboard or shot-planning reference",
+    KEYFRAME_ROLE: "concrete keyframe (legacy combined role)",
+    CAMERA_ROLE: "camera, cut, and rhythm structure",
+    EDIT_ROLE: "source video editing",
+    CONTINUE_ROLE: "continuation starting point",
+}
+
+
+def _joined_phrases(values: list[str]) -> str:
+    values = [value for value in values if value]
+    if not values:
+        return ""
+    if len(values) == 1:
+        return values[0]
+    if len(values) == 2:
+        return f"{values[0]} and {values[1]}"
+    return ", ".join(values[:-1]) + f", and {values[-1]}"
+
+
+def _context_binding_clause(entry: dict, binding: dict, description: str) -> str:
+    role_phrase = _CONTEXT_SUBJECT_PHRASES[binding["role"]]
+    clause = f"the {role_phrase} supplied by {entry['label']}"
+    detail = _clean(description).rstrip(".!?")
+    if detail:
+        clause += f", described as {detail}"
+    notes = _clean(binding.get("notes", "")).rstrip(".!?")
+    if notes:
+        clause += f"; role instruction: {notes}"
+    media_notes = _clean(entry.get("notes", "")).rstrip(".!?")
+    if media_notes and media_notes != notes:
+        clause += f"; media instruction: {media_notes}"
+    scope = _clean(binding.get("shot_scope", "")).rstrip(".!?")
+    if scope:
+        clause += f"; applies to {scope}"
+    return clause
+
+
+def _one_context_retention(bindings: list[dict], tracked_label: str) -> str:
+    markers = {binding["retention"] for binding in bindings}
+    if len(markers) != 1:
+        raise ValueError(
+            f"{tracked_label} combines role bindings with different retention markers. "
+            "One H3 tracked item needs one retention_analysis relationship; use separate "
+            "content_group values or align the binding retention values."
+        )
+    return markers.pop()
+
+
+def _context_reference_items(entries: list[dict], parsed_assets: list[Asset]) -> list[ReferenceItem]:
+    """Build deterministic Ref2VA rows from authoritative visual-role bindings."""
+
+    descriptions = {
+        asset.label: asset.description
+        for asset in parsed_assets
+        if asset.kind in {"Picture", "Video"}
+    }
+    grouped_subjects: dict[tuple, dict] = {}
+    direct_entries: list[tuple[dict, list[dict]]] = []
+
+    for entry_index, entry in enumerate(entries):
+        direct_bindings = []
+        for binding_index, binding in enumerate(entry["bindings"]):
+            if binding["role"] in SUBJECT_ROLES:
+                content_group = binding.get("content_group", "")
+                key = (
+                    ("content_group", content_group)
+                    if content_group
+                    else ("binding", entry_index, binding_index)
+                )
+                bucket = grouped_subjects.setdefault(
+                    key,
+                    {
+                        "content_group": content_group,
+                        "sources": [],
+                    },
+                )
+                bucket["sources"].append((entry, binding))
+            else:
+                direct_bindings.append(binding)
+        if direct_bindings:
+            direct_entries.append((entry, direct_bindings))
+
+    subject_labels = {
+        key: f"<Subject {number}>"
+        for number, key in enumerate(grouped_subjects, start=1)
+    }
+    group_labels = {
+        bucket["content_group"]: subject_labels[key]
+        for key, bucket in grouped_subjects.items()
+        if bucket["content_group"]
+    }
+
+    items: list[ReferenceItem] = []
+    for key, bucket in grouped_subjects.items():
+        label = subject_labels[key]
+        sources = bucket["sources"]
+        bindings = [binding for _, binding in sources]
+        clauses = [
+            _context_binding_clause(entry, binding, descriptions.get(entry["label"], ""))
+            for entry, binding in sources
+        ]
+        content_group = bucket["content_group"]
+        if content_group:
+            definition = f"content group '{content_group}', combining {_joined_phrases(clauses)}"
+        else:
+            definition = clauses[0]
+        target_groups = {
+            binding["transfer_target"]
+            for binding in bindings
+            if binding.get("transfer_target")
+        }
+        if len(target_groups) > 1:
+            raise ValueError(
+                f"{label} transfers to more than one content group. Split the source roles into "
+                "separate content_group values so each tracked Subject has one destination."
+            )
+        target_group = next(iter(target_groups), "")
+        transfer_target = group_labels.get(target_group, "")
+        if target_group and not transfer_target:
+            raise ValueError(
+                f"{label} targets content_group={target_group!r}, but that group does not resolve "
+                "to a visible Subject in the final reference context."
+            )
+        scopes = list(
+            dict.fromkeys(
+                _clean(binding.get("shot_scope", ""))
+                for binding in bindings
+                if _clean(binding.get("shot_scope", ""))
+            )
+        )
+        items.append(
+            ReferenceItem(
+                label=label,
+                kind="Subject",
+                role="context subject",
+                description=definition,
+                retention=_one_context_retention(bindings, label),
+                shot_scope="; ".join(scopes),
+                transfer_target=transfer_target,
+                roles=tuple(binding["role"] for binding in bindings),
+                role_scopes=tuple(
+                    (binding["role"], _clean(binding.get("shot_scope", "")))
+                    for binding in bindings
+                ),
+                definition=definition,
+                from_context=True,
+            )
+        )
+
+    for entry, bindings in direct_entries:
+        label = entry["label"]
+        roles = tuple(binding["role"] for binding in bindings)
+        role_phrases = [_CONTEXT_DIRECT_DEFINITIONS[role] for role in roles]
+        if len(role_phrases) == 1:
+            definition = role_phrases[0]
+        else:
+            definition = (
+                f"a directly tracked {entry['kind']} reference used as "
+                + _joined_phrases(role_phrases)
+            )
+        description = _clean(descriptions.get(label, "")).rstrip(".!?")
+        if description:
+            definition += f": {description}"
+        binding_notes = [
+            f"{binding['role']}: {_clean(binding.get('notes', '')).rstrip('.!?')}"
+            for binding in bindings
+            if _clean(binding.get("notes", ""))
+        ]
+        media_notes = _clean(entry.get("notes", "")).rstrip(".!?")
+        if media_notes and media_notes not in {
+            _clean(binding.get("notes", "")).rstrip(".!?") for binding in bindings
+        }:
+            binding_notes.append(f"media instruction: {media_notes}")
+        if binding_notes:
+            definition += "; " + "; ".join(binding_notes)
+        scopes = list(
+            dict.fromkeys(
+                _clean(binding.get("shot_scope", ""))
+                for binding in bindings
+                if _clean(binding.get("shot_scope", ""))
+            )
+        )
+        primary_role = next(
+            (
+                _CONTEXT_INTERNAL_ROLES[role]
+                for role in (EDIT_ROLE, CONTINUE_ROLE, CAMERA_ROLE, CONCRETE_KEYFRAME_ROLE, STORYBOARD_ROLE, KEYFRAME_ROLE)
+                if role in roles
+            ),
+            "direct reference",
+        )
+        items.append(
+            ReferenceItem(
+                label=label,
+                kind="Picture" if entry["kind"] == "image" else "Video",
+                role=primary_role,
+                description=definition,
+                retention=_one_context_retention(bindings, label),
+                shot_scope="; ".join(scopes),
+                roles=roles,
+                role_scopes=tuple(
+                    (binding["role"], _clean(binding.get("shot_scope", "")))
+                    for binding in bindings
+                ),
+                definition=definition,
+                from_context=True,
+            )
+        )
+    return items
+
+
+def _context_task_types(entries: list[dict], audio_use: str) -> list[str]:
+    roles = {
+        binding["role"]
+        for entry in entries
+        for binding in entry["bindings"]
+    }
+    task_types: list[str] = []
+    if EDIT_ROLE in roles:
+        task_types.append("video editing")
+    if CONTINUE_ROLE in roles:
+        task_types.append("video continuation")
+    if roles & {CONCRETE_KEYFRAME_ROLE, KEYFRAME_ROLE}:
+        task_types.append("keyframe completion")
+    if roles & (SUBJECT_ROLES | {STORYBOARD_ROLE, CAMERA_ROLE}):
+        task_types.append("reference generation")
+    if audio_use in {COPY_ALL_AUDIO, COPY_PART_AUDIO}:
+        task_types.append("audio reuse")
+    elif audio_use in {REFERENCE_AUDIO, WEAK_AUDIO}:
+        task_types.append("audio reference")
+    return task_types or ["reference generation"]
+
+
+def _shot_numbers_from_scope(scope: str, shot_count: int) -> list[int] | None:
+    """Resolve common role scopes without guessing from arbitrary prose."""
+
+    value = _clean(scope).casefold()
+    if not value:
+        return []
+    if ";" in value:
+        combined = []
+        for part in value.split(";"):
+            resolved = _shot_numbers_from_scope(part, shot_count)
+            if resolved is None:
+                return None
+            combined.extend(resolved)
+        return list(dict.fromkeys(combined))
+    if value in {"all", "all shots", "every shot"}:
+        return list(range(1, shot_count + 1))
+    range_match = re.fullmatch(
+        r"shots?\s+(\d+)\s*(?:-|–|through|to)\s*(\d+)(?:\s+only)?",
+        value,
+    )
+    if range_match:
+        start, end = (int(part) for part in range_match.groups())
+        if start <= end and 1 <= start and end <= shot_count:
+            return list(range(start, end + 1))
+        return None
+    if re.fullmatch(r"shots?\s+[\d,\s]+(?:\s+only)?", value):
+        numbers = [int(number) for number in re.findall(r"\d+", value)]
+        if numbers and len(set(numbers)) == len(numbers) and all(
+            1 <= number <= shot_count for number in numbers
+        ):
+            return numbers
+        return None
+    return None
+
+
+def _context_item_directive(item: ReferenceItem, roles: tuple[str, ...]) -> str:
+    if item.kind == "Subject":
+        role_phrases = list(
+            dict.fromkeys(
+                _CONTEXT_SUBJECT_PHRASES[role]
+                for role in roles
+                if role in _CONTEXT_SUBJECT_PHRASES
+            )
+        )
+        role_text = _joined_phrases(role_phrases) or "reusable visible content"
+        return f"Apply {item.label}'s defined {role_text} in this shot."
+    role_phrases = list(
+        dict.fromkeys(
+            _CONTEXT_INTERNAL_ROLES[role]
+            for role in roles
+            if role in _CONTEXT_INTERNAL_ROLES
+        )
+    )
+    role_text = _joined_phrases(role_phrases) or item.role
+    return f"Use {item.label} in this shot as its defined {role_text}."
+
+
+def _apply_context_shot_scopes(
+    structured_shots: list[dict] | None,
+    items: list[ReferenceItem],
+) -> tuple[list[dict], str]:
+    """Place explicitly scoped reference labels in their declared Shot bodies."""
+
+    shot_count = len(structured_shots) if structured_shots else 1
+    directives: dict[int, list[str]] = {}
+    for item in items:
+        if not item.from_context:
+            continue
+        roles_by_shot: dict[int, list[str]] = {}
+        role_scopes = item.role_scopes or tuple((role, item.shot_scope) for role in item.roles)
+        for role, scope in role_scopes:
+            if scope:
+                numbers = _shot_numbers_from_scope(scope, shot_count)
+            elif role in {EDIT_ROLE, CONTINUE_ROLE}:
+                numbers = [1]
+            else:
+                numbers = []
+            for number in numbers or []:
+                roles_by_shot.setdefault(number, []).append(role)
+        for number, roles in roles_by_shot.items():
+            scoped_roles = tuple(dict.fromkeys(roles))
+            directives.setdefault(number, []).append(
+                _context_item_directive(item, scoped_roles)
+            )
+
+    if not structured_shots:
+        return [], " ".join(directives.get(1, []))
+    scoped_shots = [dict(shot) for shot in structured_shots]
+    for number, shot in enumerate(scoped_shots, start=1):
+        additions = directives.get(number)
+        if additions:
+            shot["description"] = f"{_sentence(shot['description'])} {' '.join(additions)}"
+    return scoped_shots, ""
+
+
 def _definition_line(item: ReferenceItem, final_shot_number: int = 1) -> str:
+    if item.definition:
+        return _sentence(f"{item.label} is {item.definition}")
     description = _clean(item.description)
     if item.kind == "Subject":
         return _sentence(f"{item.label} is {description}")
@@ -803,9 +1279,14 @@ def _retention_line(
         }[marker]
         return _sentence(f"{item.label}: {marker} - {explanation}")
 
-    marker = _visual_marker(fidelity, item.role, allow_attribute_transfer)
+    marker = item.retention or _visual_marker(fidelity, item.role, allow_attribute_transfer)
     if marker == "attribute_transfer":
-        explanation = "the referenced characteristics or motion are transferred to the identifiable target subject"
+        explanation = (
+            f"the defined characteristics or motion are transferred to {item.transfer_target} "
+            "without replacing its unrelated identity or attributes"
+            if item.transfer_target
+            else "the referenced characteristics or motion are transferred to the identifiable target subject"
+        )
     elif marker == "fully_preserved":
         explanation = "the defined appearance, composition, or reference role is retained"
     elif marker == "partially_preserved":
@@ -813,8 +1294,10 @@ def _retention_line(
     else:
         explanation = "only the requested broad structure, category, style, or atmosphere is retained"
 
-    if item.kind == "Subject":
-        context = " (appears in [Shot 1])" if shot_count == 1 else ""
+    if item.shot_scope:
+        context = f" ({item.shot_scope})"
+    elif item.kind == "Subject":
+        context = "" if item.from_context else " (appears in [Shot 1])" if shot_count == 1 else ""
     elif item.kind == "Picture":
         if item.role == "first frame":
             context = " ([Shot 1] first frame)"
@@ -831,10 +1314,26 @@ def _retention_line(
 
 def _role_sentences(items: list[ReferenceItem], video_use: str) -> str:
     parts: list[str] = []
-    if video_use == EDIT_VIDEO:
-        parts.append("The visible timeline begins from the source video and applies only the requested edits.")
-    elif video_use == CONTINUE_VIDEO:
-        parts.append("The new timeline begins from the ending state of the source video and continues naturally.")
+    edit_sources = [
+        item.label
+        for item in items
+        if item.role == "source video editing" or EDIT_ROLE in item.roles
+    ]
+    continuation_sources = [
+        item.label
+        for item in items
+        if item.role == "continuation starting point" or CONTINUE_ROLE in item.roles
+    ]
+    if video_use == EDIT_VIDEO or edit_sources:
+        source = edit_sources[0] if edit_sources else "the source video"
+        parts.append(
+            f"The visible timeline begins from {source} and applies only the requested edits."
+        )
+    elif video_use == CONTINUE_VIDEO or continuation_sources:
+        source = continuation_sources[0] if continuation_sources else "the source video"
+        parts.append(
+            f"The new timeline begins from the ending state of {source} and continues naturally."
+        )
 
     targets = [item.label for item in items if item.role == "motion target"]
     motions = [item.label for item in items if item.role == "motion source"]
@@ -843,7 +1342,15 @@ def _role_sentences(items: list[ReferenceItem], video_use: str) -> str:
             f"{targets[0]} keeps its visual identity while receiving the action, pose changes, timing, "
             f"and motion trajectory from {motions[0]}."
         )
-    elif items:
+    context_transfers = [
+        item for item in items if item.retention == TRANSFER_RELATION and item.transfer_target
+    ]
+    for source in context_transfers:
+        parts.append(
+            f"{source.label} supplies only the declared transferred attribute or motion to "
+            f"{source.transfer_target}; keep the destination's unrelated identity and attributes."
+        )
+    if not (targets and motions) and items:
         labels = ", ".join(item.label for item in items)
         parts.append(f"Apply the defined roles of {labels} at the points where they become visible or audible.")
     return " ".join(parts)
@@ -1051,15 +1558,33 @@ def _reference_prompt(
     reference_notes: list[str],
     structured_shots: list[dict] | None = None,
     final_shot_number: int = 1,
+    task_types: list[str] | None = None,
 ) -> str:
     definitions = "\n".join(_definition_line(item, final_shot_number) for item in items)
-    types = " + ".join(_task_types(goal, image_use, video_use, audio_use))
+    resolved_task_types = task_types or _task_types(goal, image_use, video_use, audio_use)
+    types = " + ".join(resolved_task_types)
     labels = ", ".join(item.label for item in items)
 
     if "video editing" in types:
-        summary_start = "The target video is an edited version of <Video 1>."
+        source = next(
+            (
+                item.label
+                for item in items
+                if item.role == "source video editing" or EDIT_ROLE in item.roles
+            ),
+            "<Video 1>",
+        )
+        summary_start = f"The target video is an edited version of {source}."
     elif "video continuation" in types:
-        summary_start = "The target video continues from the ending state of <Video 1>."
+        source = next(
+            (
+                item.label
+                for item in items
+                if item.role == "continuation starting point" or CONTINUE_ROLE in item.roles
+            ),
+            "<Video 1>",
+        )
+        summary_start = f"The target video continues from the ending state of {source}."
     else:
         summary_start = "The target video is generated from the defined reference relationships."
     reference_clause = f" The reference roles use {labels}." if labels else ""
@@ -1078,7 +1603,12 @@ def _reference_prompt(
         )
         for item in items
     )
-    role_sentences = _role_sentences(items, video_use)
+    has_context_items = any(item.from_context for item in items)
+    role_sentences = "" if has_context_items else _role_sentences(items, video_use)
+    scoped_shots, single_shot_directives = _apply_context_shot_scopes(
+        structured_shots,
+        items,
+    )
     complete_audio_label = next(
         (item.label for item in items if item.role == "complete synchronized audio reuse"),
         "",
@@ -1093,10 +1623,12 @@ def _reference_prompt(
         reference_notes,
         complete_audio_label,
     )
+    if single_shot_directives:
+        detail = f"{detail} {single_shot_directives}"
     style_sentence = _reference_style_sentence(visual_style)
     timeline = (
-        _render_structured_shots(structured_shots, detail)
-        if structured_shots
+        _render_structured_shots(scoped_shots, detail)
+        if scoped_shots
         else f"[Shot 1] {detail}"
     )
     sound, score = _reference_audio_sections(items, audio_use, soundscape, music)
@@ -1247,6 +1779,281 @@ def _warnings(
     return warnings
 
 
+def _context_mode_decision(reference_context: dict, entries: list[dict]) -> ModeDecision:
+    if not entries:
+        raise ValueError(
+            "The connected reference_context contains no visual references. Connect the final "
+            "output of a populated MiniMax H3 Enhancer Visual Reference chain."
+        )
+    route_families = {entry.get("route_family") for entry in entries}
+    if route_families == {"endpoint"}:
+        endpoint_inputs = {entry.get("h3_input") for entry in entries}
+        if endpoint_inputs == {"first_frame", "last_frame"}:
+            mode = "FL2VA"
+        elif endpoint_inputs == {"first_frame"}:
+            mode = "I2VA"
+        elif endpoint_inputs == {"last_frame"}:
+            mode = "L2VA"
+        else:
+            raise ValueError("The connected endpoint context has invalid first/last-frame routes.")
+    else:
+        mode = "Ref2VA"
+    if mode not in {"I2VA", "L2VA", "FL2VA", "Ref2VA"}:
+        raise ValueError(f"The connected reference_context has unsupported mode_hint={mode!r}.")
+    checkpoint = "H3-Base-Ref2VA" if mode == "Ref2VA" else "H3-Base-FL2VA"
+    return ModeDecision(
+        mode,
+        checkpoint,
+        "The connected Visual Reference chain is authoritative for the H3 family, labels, roles, and native routes.",
+    )
+
+
+def _context_reference_notes(entries: list[dict], parsed_assets: list[Asset]) -> list[str]:
+    descriptions = {
+        asset.label: asset.description
+        for asset in parsed_assets
+        if asset.kind in {"Picture", "Video"}
+    }
+    notes = []
+    for entry in entries:
+        parts = []
+        description = _clean(descriptions.get(entry["label"], ""))
+        if description:
+            parts.append(description)
+        media_notes = _clean(entry.get("notes", ""))
+        if media_notes:
+            parts.append(media_notes)
+        for binding in entry["bindings"]:
+            binding_notes = _clean(binding.get("notes", ""))
+            if binding_notes and binding_notes not in parts:
+                parts.append(f"{binding['role']}: {binding_notes}")
+        if parts:
+            notes.append(f"{entry['label']}: " + "; ".join(parts))
+    return notes
+
+
+def _context_warnings(
+    decision: ModeDecision,
+    goal: str,
+    image_use: str,
+    video_use: str,
+    audio_use: str,
+    reference_fidelity: str,
+    parsed_assets: list[Asset],
+    entries: list[dict],
+    target_description: str,
+    shot_count: int,
+    dialogue_and_text: str,
+    h3_length: int,
+    timing_is_connected: bool,
+) -> list[str]:
+    warnings: list[str] = []
+    if not target_description.strip():
+        warnings.append(
+            "Target description is empty. Describe the actual subject, action or edit, setting, "
+            "and ending before enhancement."
+        )
+
+    roles = {
+        binding["role"]
+        for entry in entries
+        for binding in entry["bindings"]
+    }
+    if EDIT_ROLE in roles and CONTINUE_ROLE in roles:
+        raise ValueError(
+            "One target cannot simultaneously use chained source-video edit and continuation roles. "
+            "Choose the intended operation in the Visual Reference Role chain."
+        )
+    for role, display in (
+        (EDIT_ROLE, "source-video edit"),
+        (CONTINUE_ROLE, "source-video continuation"),
+    ):
+        source_count = sum(
+            any(binding["role"] == role for binding in entry["bindings"])
+            for entry in entries
+        )
+        if source_count > 1:
+            raise ValueError(
+                f"The final reference_context contains {source_count} {display} sources. "
+                "The target summary can track exactly one direct source video for this operation."
+            )
+    if decision.mode != "Ref2VA" and audio_use != NO_AUDIO:
+        raise ValueError(
+            "Exact endpoint reference_context routes use MiniMax H3 Image to Video, while reference "
+            "audio requires MiniMax H3 Reference to Video. Remove the audio reference role or build "
+            "a separate Ref2VA workflow."
+        )
+
+    explicit_modes = {
+        TEXT_GOAL: "T2VA",
+        START_GOAL: "I2VA",
+        END_GOAL: "L2VA",
+        CONNECT_GOAL: "FL2VA",
+        REFERENCE_GOAL: "Ref2VA",
+        EDIT_GOAL: "Ref2VA",
+        CONTINUE_GOAL: "Ref2VA",
+        MOTION_GOAL: "Ref2VA",
+    }
+    explicit_mode = explicit_modes.get(goal)
+    if explicit_mode and explicit_mode != decision.mode:
+        warnings.append(
+            f"The goal dropdown suggests {explicit_mode}, but the connected reference_context "
+            f"authoritatively routes as {decision.mode}; the context takes priority."
+        )
+    if image_use != NO_IMAGE or video_use != NO_VIDEO:
+        warnings.append(
+            "The legacy image/video role dropdowns are ignored because reference_context is "
+            "connected; edit roles on the Visual Reference Role chain instead."
+        )
+    if reference_fidelity != AUTO_FIDELITY:
+        warnings.append(
+            "The global reference_fidelity widget is ignored for chained visuals; each role "
+            "binding's validated retention relationship takes priority."
+        )
+
+    context_labels = {entry["label"] for entry in entries}
+    ignored_visuals = [
+        asset.label
+        for asset in parsed_assets
+        if asset.kind in {"Picture", "Video"} and asset.label not in context_labels
+    ]
+    if ignored_visuals:
+        warnings.append(
+            "Visual inventory label(s) not present in the authoritative context are ignored: "
+            + ", ".join(ignored_visuals)
+            + "."
+        )
+    manual_subjects = [asset.label for asset in parsed_assets if asset.kind == "Subject"]
+    if manual_subjects:
+        warnings.append(
+            "Manual Subject inventory rows are ignored while reference_context is connected; "
+            "Subjects are derived only from explicit reusable-content role bindings: "
+            + ", ".join(manual_subjects)
+            + "."
+        )
+
+    audio_assets = [asset for asset in parsed_assets if asset.kind == "Audio"]
+    warnings.extend(_asset_label_warnings(audio_assets))
+    active_audio_count = len(audio_assets) if audio_use != NO_AUDIO else 0
+    if active_audio_count > 3:
+        warnings.append("Ref2VA accepts at most 3 reference audio clips.")
+    if audio_use == COPY_ALL_AUDIO and active_audio_count != 1:
+        warnings.append(
+            "Complete 1:1 audio reuse requires exactly one Audio label; use partial reuse when "
+            "mixing multiple source signals."
+        )
+    if audio_use == COPY_ALL_AUDIO and dialogue_and_text.strip():
+        warnings.append(
+            "Complete audio reuse cannot create a new spoken or sung signal. Treat dialogue/lyrics "
+            "as a transcription of the unchanged copied Audio track, or choose another audio role."
+        )
+    picture_count = sum(entry["kind"] == "image" for entry in entries)
+    video_entries = [entry for entry in entries if entry["kind"] == "video"]
+    video_count = len(video_entries)
+    if decision.mode == "Ref2VA" and picture_count + video_count + active_audio_count > 12:
+        warnings.append("Ref2VA accepts at most 12 media files in total, including audio.")
+    for entry in video_entries:
+        target_frame_count = entry.get("target_frame_count")
+        if target_frame_count is not None and target_frame_count != h3_length:
+            raise ValueError(
+                f"{entry['label']} was prepared for h3_length={target_frame_count}, but the Guide "
+                f"uses h3_length={h3_length}. Feed the same MiniMax H3 Target Timing.h3_length "
+                "to every video Visual Reference and the native H3 node."
+            )
+        if target_frame_count is None and entry.get("native_frame_count", 0) > h3_length:
+            prefix = (
+                "Target Timing is connected, but its h3_length is not connected to"
+                if timing_is_connected
+                else "Use MiniMax H3 Target Timing and connect its h3_length to"
+            )
+            warnings.append(
+                f"{prefix} {entry['label']}'s Visual Reference. Its current analysis includes "
+                "frames beyond the target duration that native H3 will discard."
+            )
+    if audio_use == NO_AUDIO and audio_assets:
+        warnings.append(
+            "Audio labels are listed in the reference inventory but their role is set to none, "
+            "so they are not used in the prompt."
+        )
+    if roles & {CONCRETE_KEYFRAME_ROLE, KEYFRAME_ROLE} and shot_count > 1:
+        if any(
+            binding["role"] in {CONCRETE_KEYFRAME_ROLE, KEYFRAME_ROLE}
+            and not binding.get("shot_scope")
+            for entry in entries
+            for binding in entry["bindings"]
+        ):
+            warnings.append(
+                "A chained concrete keyframe has no shot_scope in a multi-shot plan. Set its "
+                "Visual Reference Role.shot_scope or cite its Picture label in the intended shot."
+            )
+    if KEYFRAME_ROLE in roles:
+        warnings.append(
+            "A legacy combined storyboard/keyframe binding is treated as a concrete keyframe. "
+            "Choose the dedicated storyboard role when the picture only plans shots."
+        )
+    invalid_scopes = [
+        f"{entry['label']} ({binding['shot_scope']})"
+        for entry in entries
+        for binding in entry["bindings"]
+        if binding.get("shot_scope")
+        and _shot_numbers_from_scope(binding["shot_scope"], shot_count) is None
+    ]
+    if invalid_scopes:
+        invalid_numbered_scopes = [
+            value
+            for value in invalid_scopes
+            if re.search(r"\bshots?\s+\d", value, re.IGNORECASE)
+        ]
+        if invalid_numbered_scopes:
+            raise ValueError(
+                "Role shot_scope refers to a Shot that does not exist in the current plan: "
+                + ", ".join(invalid_numbered_scopes)
+                + ". Update the scope or connect the intended Shot chain."
+            )
+        warnings.append(
+            "These role shot_scope values cannot be mapped to the current Shot plan and remain "
+            "global constraints: " + ", ".join(invalid_scopes) + ". Use forms such as 'Shot 2', "
+            "'Shots 1-3', or 'all shots'."
+        )
+    return warnings
+
+
+def _context_mode_report(
+    decision: ModeDecision,
+    entries: list[dict],
+    audio_use: str,
+    task_types: list[str],
+    warnings: list[str],
+) -> str:
+    lines = [
+        f"Recommended mode: {decision.mode}",
+        f"Checkpoint: {decision.checkpoint}",
+        f"Why: {decision.reason}",
+        "Visual role source: connected reference_context (authoritative).",
+        f"Resolved audio role: {audio_use}",
+    ]
+    if decision.mode == "Ref2VA":
+        lines.append(f"Task-type prefix: [{' + '.join(task_types)}]")
+        lines.append(
+            "Ref2VA limits: up to 9 images, 3 videos, 3 audio clips, and 12 media files total; "
+            "video/audio clips are 2-15 seconds and total up to 15 seconds."
+        )
+    else:
+        lines.append(f"Frame routing: connected context declares {decision.mode} endpoints.")
+    lines.append("Authoritative visual bindings:")
+    for entry in entries:
+        bindings = ", ".join(
+            f"{binding['role']} [{binding['retention']}]" for binding in entry["bindings"]
+        )
+        lines.append(f"- {entry['label']}: {bindings} -> {entry['h3_node']}.{entry['h3_input']}")
+    if warnings:
+        lines.append("Warnings:")
+        lines.extend(f"- {warning}" for warning in warnings)
+    else:
+        lines.append("Warnings: none.")
+    return "\n".join(lines)
+
+
 def _mode_report(
     decision: ModeDecision,
     goal: str,
@@ -1327,12 +2134,13 @@ class MiniMaxH3Shot:
     RETURN_TYPES = (SHOT_PLAN_TYPE, "STRING")
     RETURN_NAMES = ("shot_plan", "shot_plan_preview")
     OUTPUT_TOOLTIPS = (
-        "Connect to the next MiniMax H3 Shot.previous_shots input, or connect the last shot to Prompt Guide.shot_plan.",
+        "Connect to the next MiniMax H3 Shot.previous_shots input. For a role-aware reference workflow, connect the final shot to Target Timing.shot_plan; connect directly to Prompt Guide.shot_plan only in the simple legacy timing path.",
         "Readable list of the accumulated float ranges and descriptions. Connect to a text viewer to inspect the complete chain.",
     )
     DESCRIPTION = (
         "Defines one H3 shot with an exact float time range. Chain nodes in playback order, then "
-        "connect the final shot_plan output to MiniMax H3 Prompt Guide."
+        "connect the final shot_plan to Target Timing for a reference-context workflow, or directly "
+        "to Prompt Guide when no context feeds back into it."
     )
 
     @classmethod
@@ -1361,8 +2169,9 @@ class MiniMaxH3Shot:
                         "step": 0.001,
                         "tooltip": (
                             "End time in seconds; it must be greater than start_time. The final node's "
-                            "end_time becomes the requested duration when connected to Prompt Guide; "
-                            "the guide may extend it slightly to native H3's frame grid."
+                            "end_time becomes the requested duration when connected to Target Timing "
+                            "or directly to Prompt Guide; the resolved timeline may extend slightly "
+                            "to native H3's frame grid."
                         ),
                     },
                 ),
@@ -1435,6 +2244,71 @@ class MiniMaxH3Shot:
         return ({"version": 1, "shots": validated}, _shot_plan_preview(validated))
 
 
+class MiniMaxH3TargetTiming:
+    """Resolve target duration before both reference preparation and prompt writing."""
+
+    CATEGORY = "MiniMax H3/Prompting"
+    FUNCTION = "resolve"
+    RETURN_TYPES = (TIMING_CONTEXT_TYPE, "INT", "STRING")
+    RETURN_NAMES = ("timing_context", "h3_length", "timing_report")
+    OUTPUT_TOOLTIPS = (
+        "Connect to Prompt Guide.timing_context. This keeps timing upstream when a final visual reference_context also feeds the Guide.",
+        "Connect to every video Visual Reference.h3_length and the official H3 conditioning node.length input.",
+        "Resolved requested duration, native 17k+5 length, effective duration, and whether a connected Shot chain overrode the duration widget.",
+    )
+    DESCRIPTION = (
+        "Resolves the target duration once, before visual-reference video trimming and prompt writing. "
+        "Use it whenever the final Visual Reference context is connected to the Prompt Guide, so the "
+        "workflow remains a directed graph instead of feeding Guide.h3_length back into an upstream node."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "duration_seconds": (
+                    "FLOAT",
+                    {
+                        "default": 6.0,
+                        "min": 4.0,
+                        "max": 15.0,
+                        "step": 0.01,
+                        "tooltip": (
+                            "Target playback duration when no Shot chain is connected. It is rounded "
+                            "upward to native H3's 17k+5 frame grid at 24 FPS."
+                        ),
+                    },
+                )
+            },
+            "optional": {
+                "shot_plan": (
+                    SHOT_PLAN_TYPE,
+                    {
+                        "tooltip": (
+                            "Connect the final MiniMax H3 Shot node. Its last end_time replaces "
+                            "duration_seconds and the complete plan travels to the Prompt Guide inside "
+                            "timing_context."
+                        )
+                    },
+                )
+            },
+        }
+
+    def resolve(self, duration_seconds: float, shot_plan=None):
+        context = _build_timing_context(duration_seconds, shot_plan=shot_plan)
+        source = (
+            f"connected Shot chain ({len(context['shots'])} shot(s))"
+            if context["source"] == "shot_plan"
+            else "duration_seconds"
+        )
+        report = (
+            f"Timing source: {source}. Requested duration: "
+            f"{context['requested_duration']:.3f}s. Native duration: {context['h3_length']} "
+            f"frames at {H3_FPS} FPS = {context['effective_duration']:.3f}s."
+        )
+        return (context, context["h3_length"], report)
+
+
 class MiniMaxH3PromptGuide:
     """Select an H3 mode and turn a rough audiovisual idea into guided prompts."""
 
@@ -1446,12 +2320,13 @@ class MiniMaxH3PromptGuide:
         "Structured pre-LLM H3 draft. Connect it to MiniMax H3 Prompt Enhancer.manual_prompt for the recommended detailed, source-grounded rewrite; use it directly only after reviewing every reference and timeline detail.",
         "Self-contained instructions for a different LLM node. It includes the selected H3 format, fixed labels, rules, and this structured draft.",
         "Read this first when results look wrong. It shows the chosen H3 mode/checkpoint, resolved media roles, task prefix, input limits, and conflicts to fix.",
-        "Native ComfyUI H3 frame count on the required 17k+5 grid at 24 FPS. Connect this directly to the official H3 conditioning node's length input so prompt timing and generation duration agree.",
+        "Native ComfyUI H3 frame count on the required 17k+5 grid at 24 FPS. Connect it to the official H3 conditioning node when using the Guide alone. With a Visual Reference context feeding back into this Guide, use Target Timing.h3_length upstream instead and never create a backward cycle.",
     )
     DESCRIPTION = (
         "Start here: describe the intended video and explain what each supplied image, video, or audio file does. "
         "The node selects T2VA/I2VA/FL2VA/L2VA/Ref2VA, prepares the correct prompt structure, "
-        "and reports mismatched choices before generation. Hover each field for examples."
+        "and reports mismatched choices before generation. For role-chained media, connect the final "
+        "Visual Reference.reference_context here as the authoritative role source."
     )
 
     @classmethod
@@ -1492,7 +2367,8 @@ class MiniMaxH3PromptGuide:
                             "Choose the image's job. First frame = exact image at 0.00s (I2VA). Last frame = exact final composition (L2VA). "
                             "First + last = continuous path between two exact frames (FL2VA). Appearance/scene/style guides generation but is not an exact frame. "
                             "Concrete keyframe anchors an exact internal composition and uses keyframe completion. Storyboard only plans viewpoint, placement, or shot order "
-                            "and uses reference generation. Motion target is the subject that receives motion from a video. The combined storyboard/keyframe choice remains only for old workflows."
+                            "and uses reference generation. Motion target is the subject that receives motion from a video. The combined storyboard/keyframe choice remains only for old workflows. "
+                            "This whole dropdown is a legacy one-role shortcut and is ignored when reference_context is connected."
                         ),
                     },
                 ),
@@ -1503,7 +2379,8 @@ class MiniMaxH3PromptGuide:
                         "tooltip": (
                             "Choose the video's job. Direct edit modifies its existing frames/content. Continue creates new footage after its ending. "
                             "Transfer motion copies action, pose timing, or trajectory to another subject without editing the source clip. "
-                            "Camera/cuts/rhythm borrows only temporal structure. Subject/scene/style reuses visible reference content. All use Ref2VA."
+                            "Camera/cuts/rhythm borrows only temporal structure. Subject/scene/style reuses visible reference content. All use Ref2VA. "
+                            "This whole dropdown is a legacy one-role shortcut and is ignored when reference_context is connected."
                         ),
                     },
                 ),
@@ -1538,8 +2415,9 @@ class MiniMaxH3PromptGuide:
                         "tooltip": (
                             "Inventory the actual downstream media in label order, one per line: 'Picture 1: red ceramic robot', "
                             "'Video 1: dancer performing a spin', 'Audio 1: calm voice timbre'. Angle brackets are optional. "
-                            "Use Subject N only when you already know the reusable visible unit. Unlabelled lines become extra notes. "
-                            "The text node does not load these files; connect the real media to the official H3 node in the same order."
+                            "Use Subject N only in a legacy text-only workflow. Unlabelled lines become extra notes. "
+                            "When reference_context is connected, its visual labels/roles are authoritative; matching Picture/Video lines here add descriptions only, "
+                            "unmatched visual labels and manual Subject rows are ignored, and Audio lines remain active."
                         ),
                     },
                 ),
@@ -1636,7 +2514,29 @@ class MiniMaxH3PromptGuide:
                         "tooltip": (
                             "Recommended for multiple shots: connect the final MiniMax H3 Shot node. "
                             "The guide writes real [Shot N] markers, validates contiguous float ranges, "
-                            "and uses the last end_time as the target duration. This overrides the manual shot field."
+                            "and uses the last end_time as the target duration. This overrides the manual shot field. "
+                            "When timing_context is connected, its embedded Shot plan takes priority instead."
+                        )
+                    },
+                ),
+                "timing_context": (
+                    TIMING_CONTEXT_TYPE,
+                    {
+                        "tooltip": (
+                            "Recommended with chained references: connect MiniMax H3 Target Timing.timing_context. "
+                            "It overrides duration_seconds and carries any connected Shot plan. Its upstream h3_length "
+                            "can safely feed video Visual References and native H3 without creating a graph cycle."
+                        )
+                    },
+                ),
+                "reference_context": (
+                    REFERENCE_CONTEXT_TYPE,
+                    {
+                        "tooltip": (
+                            "Connect the final MiniMax H3 Enhancer Visual Reference.reference_context. "
+                            "It becomes authoritative for mode, labels, per-asset roles, Subject grouping, retention, "
+                            "shot scope, and native routes; legacy image/video role dropdowns no longer create generic Subjects. "
+                            "Fan this same final context out to Prompt Enhancer.reference_context."
                         )
                     },
                 )
@@ -1660,63 +2560,121 @@ class MiniMaxH3PromptGuide:
         overall_soundscape: str,
         non_diegetic_music: str,
         shot_plan=None,
+        timing_context=None,
+        reference_context=None,
     ):
-        connected_shots = _shots_from_plan(shot_plan) if shot_plan is not None else []
-        manual_shots = (
-            _parse_manual_shots(shot_and_timing_plan, duration_seconds)
-            if not connected_shots and shot_and_timing_plan.strip()
-            else []
-        )
-        planned_shots = connected_shots or manual_shots
-        requested_duration = (
-            planned_shots[-1]["end_time"] if planned_shots else float(duration_seconds)
-        )
-        if planned_shots and requested_duration < 4.0:
-            raise ValueError(
-                "The shot plan ends before H3's 4-second minimum. Extend the final shot "
-                "so its end_time is at least 4.000 seconds."
+        timing_is_connected = timing_context is not None
+        if timing_is_connected:
+            timing = _validated_timing_context(timing_context)
+            connected_shots = timing["shots"] if timing["source"] == "shot_plan" else []
+            manual_shots = []
+        else:
+            timing = _build_timing_context(
+                duration_seconds,
+                shot_plan=shot_plan,
+                manual_shot_plan=shot_and_timing_plan,
             )
-        h3_length = _native_frame_count(requested_duration)
-        effective_duration = h3_length / H3_FPS
+            connected_shots = timing["shots"] if timing["source"] == "shot_plan" else []
+            manual_shots = (
+                timing["shots"] if timing["source"] == "manual_shot_plan" else []
+            )
+        planned_shots = timing["shots"]
+        requested_duration = timing["requested_duration"]
+        h3_length = timing["h3_length"]
+        effective_duration = timing["effective_duration"]
         structured_shots = _extend_final_shot(planned_shots, effective_duration)
         final_shot_number = len(structured_shots) or 1
         parsed_assets, notes = parse_assets(reference_assets)
-        effective_image_use, effective_video_use = _resolve_roles(
-            what_do_you_want,
-            how_images_are_used,
-            how_video_is_used,
-        )
         effective_audio_use = how_audio_is_used
-        decision = choose_mode(
-            what_do_you_want,
-            effective_image_use,
-            effective_video_use,
-            effective_audio_use,
+        context_entries = (
+            reference_entries(reference_context) if reference_context is not None else []
         )
-        assets = _assets_with_defaults(
-            parsed_assets,
-            effective_image_use,
-            effective_video_use,
-            effective_audio_use,
-        )
-        _validate_active_asset_labels(
-            assets,
-            effective_image_use,
-            effective_video_use,
-            effective_audio_use,
-        )
-        warnings = _warnings(
-            decision,
-            what_do_you_want,
-            effective_image_use,
-            effective_video_use,
-            effective_audio_use,
-            assets,
-            target_description,
-            reference_fidelity,
-            len(structured_shots) or 1,
-            dialogue_lyrics_and_visible_text,
-        )
+        if reference_context is not None:
+            decision = _context_mode_decision(reference_context, context_entries)
+            effective_image_use = NO_IMAGE
+            effective_video_use = NO_VIDEO
+            task_types = _context_task_types(context_entries, effective_audio_use)
+            audio_assets = [asset for asset in parsed_assets if asset.kind == "Audio"]
+            assets = _assets_with_defaults(
+                audio_assets,
+                NO_IMAGE,
+                NO_VIDEO,
+                effective_audio_use,
+            )
+            _validate_active_asset_labels(assets, NO_IMAGE, NO_VIDEO, effective_audio_use)
+            warnings = _context_warnings(
+                decision,
+                what_do_you_want,
+                how_images_are_used,
+                how_video_is_used,
+                effective_audio_use,
+                reference_fidelity,
+                parsed_assets,
+                context_entries,
+                target_description,
+                len(structured_shots) or 1,
+                dialogue_lyrics_and_visible_text,
+                h3_length,
+                timing_is_connected,
+            )
+            context_notes = _context_reference_notes(context_entries, parsed_assets)
+            if decision.mode != "Ref2VA":
+                notes = [*notes, *context_notes]
+            rewrite_inventory = reference_inventory(context_entries)
+            context_labels = {entry["label"] for entry in context_entries}
+            supplemental_inventory = [
+                f"{asset.label}: {asset.description}"
+                for asset in parsed_assets
+                if (
+                    asset.kind in {"Picture", "Video"}
+                    and asset.label in context_labels
+                )
+                or (asset.kind == "Audio" and effective_audio_use != NO_AUDIO)
+            ]
+            if supplemental_inventory:
+                rewrite_inventory += (
+                    "\n\nUSER-SUPPLIED LABEL DESCRIPTIONS\n"
+                    + "\n".join(supplemental_inventory)
+                )
+        else:
+            task_types = None
+            effective_image_use, effective_video_use = _resolve_roles(
+                what_do_you_want,
+                how_images_are_used,
+                how_video_is_used,
+            )
+            decision = choose_mode(
+                what_do_you_want,
+                effective_image_use,
+                effective_video_use,
+                effective_audio_use,
+            )
+            assets = _assets_with_defaults(
+                parsed_assets,
+                effective_image_use,
+                effective_video_use,
+                effective_audio_use,
+            )
+            _validate_active_asset_labels(
+                assets,
+                effective_image_use,
+                effective_video_use,
+                effective_audio_use,
+            )
+            warnings = _warnings(
+                decision,
+                what_do_you_want,
+                effective_image_use,
+                effective_video_use,
+                effective_audio_use,
+                assets,
+                target_description,
+                reference_fidelity,
+                len(structured_shots) or 1,
+                dialogue_lyrics_and_visible_text,
+            )
+            rewrite_inventory = reference_assets
+
         declared_asset_keys = {(asset.kind, asset.number) for asset in parsed_assets}
         placeholder_labels = [
             asset.label
@@ -1731,15 +2689,24 @@ class MiniMaxH3PromptGuide:
                 + ". A placeholder is not an attached file; connect real media to every corresponding "
                 "native H3 input."
             )
-        report = _mode_report(
-            decision,
-            what_do_you_want,
-            effective_image_use,
-            effective_video_use,
-            effective_audio_use,
-            assets,
-            warnings,
-        )
+        if reference_context is not None:
+            report = _context_mode_report(
+                decision,
+                context_entries,
+                effective_audio_use,
+                task_types,
+                warnings,
+            )
+        else:
+            report = _mode_report(
+                decision,
+                what_do_you_want,
+                effective_image_use,
+                effective_video_use,
+                effective_audio_use,
+                assets,
+                warnings,
+            )
         report += (
             f"\nNative duration: {h3_length} frames at {H3_FPS} FPS = "
             f"{effective_duration:.3f} seconds."
@@ -1749,7 +2716,21 @@ class MiniMaxH3PromptGuide:
                 f" Requested {requested_duration:.3f} seconds was snapped upward to ComfyUI's "
                 f"17k+5 frame grid; connect h3_length={h3_length} to the native H3 node."
             )
-        if connected_shots:
+        if timing_is_connected:
+            source = (
+                f"embedded {len(structured_shots)}-shot plan"
+                if connected_shots
+                else "duration_seconds"
+            )
+            report += (
+                f"\nTarget Timing: using its {source}; the Guide's duration and direct shot inputs "
+                "are legacy fallbacks."
+            )
+            if shot_plan is not None:
+                report += "\nDirect shot_plan input: ignored because timing_context is connected."
+            if shot_and_timing_plan.strip():
+                report += "\nManual shot fallback: ignored because timing_context is connected."
+        elif connected_shots:
             report += (
                 f"\nShot chain: {len(structured_shots)} shot(s), 00:00.000–"
                 f"{_format_timestamp(requested_duration)} planned; final end_time overrides "
@@ -1774,12 +2755,22 @@ class MiniMaxH3PromptGuide:
             )
 
         if decision.mode == "Ref2VA":
-            items = _build_reference_items(
-                assets,
-                effective_image_use,
-                effective_video_use,
-                effective_audio_use,
-            )
+            if reference_context is not None:
+                visual_items = _context_reference_items(context_entries, parsed_assets)
+                audio_items = _build_reference_items(
+                    assets,
+                    NO_IMAGE,
+                    NO_VIDEO,
+                    effective_audio_use,
+                )
+                items = [*visual_items, *audio_items]
+            else:
+                items = _build_reference_items(
+                    assets,
+                    effective_image_use,
+                    effective_video_use,
+                    effective_audio_use,
+                )
             draft = _reference_prompt(
                 what_do_you_want,
                 effective_duration,
@@ -1798,6 +2789,7 @@ class MiniMaxH3PromptGuide:
                 notes,
                 structured_shots,
                 final_shot_number,
+                task_types,
             )
         else:
             draft = _base_prompt(
@@ -1820,7 +2812,7 @@ class MiniMaxH3PromptGuide:
             draft,
             report,
             target_description,
-            reference_assets,
+            rewrite_inventory,
         )
         return (draft, rewrite, report, h3_length)
 
@@ -1828,8 +2820,10 @@ class MiniMaxH3PromptGuide:
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3PromptGuide": MiniMaxH3PromptGuide,
     "MiniMaxH3Shot": MiniMaxH3Shot,
+    "MiniMaxH3TargetTiming": MiniMaxH3TargetTiming,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3PromptGuide": "MiniMax H3 Prompt Guide",
     "MiniMaxH3Shot": "MiniMax H3 Shot",
+    "MiniMaxH3TargetTiming": "MiniMax H3 Target Timing",
 }

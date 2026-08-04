@@ -21,14 +21,34 @@ from nodes import (
     REFERENCE_AUDIO,
     STORYBOARD_IMAGE,
     STORYBOARD_REFERENCE_IMAGE,
+    REFERENCE_CONTEXT_TYPE,
+    TIMING_CONTEXT_TYPE,
     TRANSFER_FIDELITY,
     MiniMaxH3PromptGuide,
     MiniMaxH3Shot,
+    MiniMaxH3TargetTiming,
     choose_mode,
     parse_assets,
 )
 
 import pytest
+import torch
+
+from media_context import (
+    CONCRETE_KEYFRAME_ROLE,
+    EDIT_ROLE,
+    FIRST_FRAME_ROLE,
+    FULL_RELATION,
+    IDENTITY_ROLE,
+    ITEM_ROLE,
+    MOTION_ROLE,
+    PICTURE_MEDIA,
+    STORYBOARD_ROLE,
+    TRANSFER_RELATION,
+    VIDEO_MEDIA,
+    MiniMaxH3EnhancerVisualReference,
+    MiniMaxH3VisualReferenceRole,
+)
 
 
 def build(**overrides):
@@ -570,3 +590,619 @@ def test_rewrite_request_carries_dialogue_continuity_and_voiceover_rules():
     assert "<scenetrans>" in rewrite
     assert "<cutoff>" in rewrite
     assert "lips remain completely closed" in rewrite
+
+
+def test_connected_item_role_replaces_legacy_generic_subject_in_guide_draft():
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        media=torch.zeros(1, 32, 32, 3),
+        media_type=PICTURE_MEDIA,
+        reference_role=ITEM_ROLE,
+        notes="Use only the wristwatch",
+        source_fps=24.0,
+        analysis_fps=1.0,
+        max_analysis_frames=16,
+        analysis_long_edge=768,
+    )
+
+    prompt, rewrite, report, _ = build(
+        how_images_are_used=APPEARANCE_IMAGE,
+        reference_assets="Picture 1: a silver wristwatch",
+        reference_context=context,
+    )
+
+    assert (
+        "<Subject 1> is the object, prop, clothing, interface, or effect supplied by "
+        "<Picture 1>, described as a silver wristwatch"
+    ) in prompt
+    assert "the target visible subject or scene defined by" not in prompt
+    assert "<Picture 1> is a picture reference" not in prompt
+    assert "connected reference_context (authoritative)" in report
+    assert "legacy image/video role dropdowns are ignored" in report
+    assert "role=Object, prop, clothing, interface, or effect" in rewrite
+
+
+def test_connected_concrete_keyframe_is_tracked_as_picture_without_subject():
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        media=torch.zeros(1, 32, 32, 3),
+        media_type=PICTURE_MEDIA,
+        reference_role=CONCRETE_KEYFRAME_ROLE,
+        notes="Exact table composition",
+        source_fps=24.0,
+        analysis_fps=1.0,
+        max_analysis_frames=16,
+        analysis_long_edge=768,
+    )
+
+    prompt, _, report, _ = build(
+        reference_assets="Picture 1: the letter centered on a wooden table",
+        reference_context=context,
+    )
+
+    assert "<Picture 1> is a concrete Ref2VA keyframe or composition anchor" in prompt
+    assert "<Subject 1>" not in prompt
+    assert "Task-type prefix: [keyframe completion]" in report
+
+
+def test_connected_edit_video_stays_video_and_never_becomes_subject():
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        media=torch.zeros(48, 32, 48, 3),
+        media_type=VIDEO_MEDIA,
+        reference_role=EDIT_ROLE,
+        notes="Replace only the car color",
+        source_fps=24.0,
+        analysis_fps=1.0,
+        max_analysis_frames=16,
+        analysis_long_edge=768,
+    )
+
+    prompt, _, report, _ = build(
+        reference_assets="Video 1: the source road clip",
+        reference_context=context,
+    )
+
+    assert "<Video 1> is the source video for the target video edit" in prompt
+    assert "<Subject 1>" not in prompt
+    assert "[video editing]" in prompt
+    assert "Task-type prefix: [video editing]" in report
+
+
+def test_connected_shared_content_group_combines_sources_into_one_subject():
+    role_node = MiniMaxH3VisualReferenceRole()
+    identity, _ = role_node.append_role(
+        IDENTITY_ROLE,
+        FULL_RELATION,
+        "hero",
+        "",
+        "all shots",
+        "Preserve the face",
+    )
+    item, _ = role_node.append_role(
+        ITEM_ROLE,
+        FULL_RELATION,
+        "hero",
+        "",
+        "all shots",
+        "Preserve the red coat",
+    )
+    reference_node = MiniMaxH3EnhancerVisualReference()
+    first, _, _ = reference_node.add_reference(
+        torch.zeros(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        IDENTITY_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+        role_bindings=identity,
+    )
+    context, _, _ = reference_node.add_reference(
+        torch.ones(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        ITEM_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+        previous_context=first,
+        role_bindings=item,
+    )
+
+    prompt, _, _, _ = build(reference_context=context)
+
+    assert "<Subject 1> is content group 'hero'" in prompt
+    assert "<Picture 1>" in prompt
+    assert "<Picture 2>" in prompt
+    assert "<Subject 2>" not in prompt
+    assert "<Picture 1> is" not in prompt
+    assert "<Picture 2> is" not in prompt
+
+
+def test_connected_attribute_transfer_resolves_the_destination_subject_label():
+    role_node = MiniMaxH3VisualReferenceRole()
+    source_role, _ = role_node.append_role(
+        ITEM_ROLE,
+        TRANSFER_RELATION,
+        "jacket",
+        "hero",
+        "all shots",
+        "Transfer only the jacket",
+    )
+    target_role, _ = role_node.append_role(
+        IDENTITY_ROLE,
+        FULL_RELATION,
+        "hero",
+        "",
+        "all shots",
+        "Keep the person's identity",
+    )
+    reference_node = MiniMaxH3EnhancerVisualReference()
+    source, _, _ = reference_node.add_reference(
+        torch.zeros(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        ITEM_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+        role_bindings=source_role,
+    )
+    context, _, _ = reference_node.add_reference(
+        torch.ones(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        IDENTITY_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+        previous_context=source,
+        role_bindings=target_role,
+    )
+
+    prompt, _, _, _ = build(reference_context=context)
+
+    assert "<Subject 1> (all shots): attribute_transfer" in prompt
+    assert "transferred to <Subject 2>" in prompt
+    assert "<Subject 2> (all shots): fully_preserved" in prompt
+
+
+def test_connected_endpoint_context_selects_base_mode_without_subject_sections():
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        media=torch.zeros(1, 32, 48, 3),
+        media_type=PICTURE_MEDIA,
+        reference_role=FIRST_FRAME_ROLE,
+        notes="Use the exact opening",
+        source_fps=24.0,
+        analysis_fps=1.0,
+        max_analysis_frames=16,
+        analysis_long_edge=768,
+    )
+
+    prompt, _, report, _ = build(
+        what_do_you_want=REFERENCE_GOAL,
+        reference_context=context,
+    )
+
+    assert prompt.startswith("For the target video, at 0.00 seconds")
+    assert "subject_definitions:" not in prompt
+    assert "Recommended mode: I2VA" in report
+    assert "context takes priority" in report
+
+
+def test_target_timing_is_upstream_and_overrides_guide_timing_fallbacks():
+    shot_plan, _ = MiniMaxH3Shot().append_shot(
+        0.0,
+        7.25,
+        "A continuous tracking shot follows the runner",
+        "",
+        "Direct cut",
+    )
+    timing, h3_length, timing_report = MiniMaxH3TargetTiming().resolve(
+        10.0,
+        shot_plan=shot_plan,
+    )
+    _, _, report, guide_length = build(
+        duration_seconds=10.0,
+        timing_context=timing,
+    )
+
+    assert h3_length == 175
+    assert guide_length == 175
+    assert "7.292 seconds" in report
+    assert "connected Shot chain" in timing_report
+    assert "Target Timing: using its embedded 1-shot plan" in report
+
+
+def test_guide_schema_exposes_authoritative_context_and_cycle_safe_timing_inputs():
+    schema = MiniMaxH3PromptGuide.INPUT_TYPES()["optional"]
+    assert list(schema)[0] == "shot_plan"
+    assert schema["reference_context"][0] == REFERENCE_CONTEXT_TYPE
+    assert schema["timing_context"][0] == TIMING_CONTEXT_TYPE
+    assert MiniMaxH3TargetTiming.RETURN_TYPES[:2] == (TIMING_CONTEXT_TYPE, "INT")
+
+
+def test_unmatched_visual_inventory_is_reported_but_never_sent_to_the_llm():
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        torch.zeros(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        ITEM_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+    )
+    prompt, rewrite, report, _ = build(
+        reference_context=context,
+        reference_assets=(
+            "Picture 1: a silver wristwatch\n"
+            "Picture 2: stale description that is not connected"
+        ),
+    )
+
+    assert "a silver wristwatch" in prompt
+    assert "stale description" not in prompt
+    assert "stale description" not in rewrite
+    assert "<Picture 2>" in report
+
+
+def test_context_path_reports_more_than_three_active_audio_labels():
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        torch.zeros(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        ITEM_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+    )
+    _, _, report, _ = build(
+        reference_context=context,
+        how_audio_is_used=REFERENCE_AUDIO,
+        reference_assets="\n".join(
+            f"Audio {number}: source {number}" for number in range(1, 5)
+        ),
+    )
+
+    assert "at most 3 reference audio clips" in report
+
+
+def test_context_rejects_multiple_direct_edit_sources():
+    reference_node = MiniMaxH3EnhancerVisualReference()
+    first, _, _ = reference_node.add_reference(
+        torch.zeros(48, 32, 32, 3),
+        VIDEO_MEDIA,
+        EDIT_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+    )
+    context, _, _ = reference_node.add_reference(
+        torch.ones(48, 32, 32, 3),
+        VIDEO_MEDIA,
+        EDIT_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+        previous_context=first,
+    )
+
+    with pytest.raises(ValueError, match="2 source-video edit sources"):
+        build(reference_context=context)
+
+
+def test_context_shot_scope_places_the_role_in_the_declared_shot():
+    roles, _ = MiniMaxH3VisualReferenceRole().append_role(
+        ITEM_ROLE,
+        FULL_RELATION,
+        "watch",
+        "",
+        "Shot 2",
+        "Use only the watch",
+    )
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        torch.zeros(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        ITEM_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+        role_bindings=roles,
+    )
+    shot_node = MiniMaxH3Shot()
+    first, _ = shot_node.append_shot(0.0, 3.0, "An empty desk", "", "Direct cut")
+    shots, _ = shot_node.append_shot(
+        3.0,
+        8.0,
+        "A hand reaches into view",
+        "",
+        "Direct cut",
+        previous_shots=first,
+    )
+
+    prompt, _, _, _ = build(reference_context=context, shot_plan=shots)
+    shot_one = prompt.split("[Shot 1]", 1)[1].split("[Shot 2]", 1)[0]
+    shot_two = prompt.split("[Shot 2]", 1)[1]
+
+    assert "Apply <Subject 1>" not in shot_one
+    assert "Apply <Subject 1>'s defined object" in shot_two
+    assert "Additional reference notes:" not in prompt
+
+
+@pytest.mark.parametrize("duration", [3.0, 16.0, float("nan")])
+def test_guide_rejects_forged_out_of_range_timing_context(duration):
+    if duration != duration:
+        h3_length = 5
+        effective = 5 / 24
+    else:
+        frame_request = max(5, int(duration * 24))
+        h3_length = frame_request + (5 - frame_request % 17) % 17
+        effective = h3_length / 24
+    forged = {
+        "version": 1,
+        "source": "duration",
+        "requested_duration": duration,
+        "h3_length": h3_length,
+        "effective_duration": effective,
+        "shots": [],
+    }
+    with pytest.raises(ValueError, match="finite and within"):
+        build(timing_context=forged)
+
+
+def test_video_context_must_match_target_timing_length():
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        torch.zeros(240, 32, 48, 3),
+        VIDEO_MEDIA,
+        EDIT_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+        h3_length=158,
+    )
+    timing, _, _ = MiniMaxH3TargetTiming().resolve(4.0)
+
+    with pytest.raises(ValueError, match="prepared for h3_length=158"):
+        build(reference_context=context, timing_context=timing)
+
+
+def test_motion_transfer_video_becomes_a_subject_source_not_a_video_row():
+    role_node = MiniMaxH3VisualReferenceRole()
+    motion_role, _ = role_node.append_role(
+        MOTION_ROLE,
+        TRANSFER_RELATION,
+        "reference-motion",
+        "hero",
+        "all shots",
+        "Transfer only the running rhythm",
+    )
+    target_role, _ = role_node.append_role(
+        IDENTITY_ROLE,
+        FULL_RELATION,
+        "hero",
+        "",
+        "all shots",
+        "Keep the robot identity",
+    )
+    reference_node = MiniMaxH3EnhancerVisualReference()
+    source, _, _ = reference_node.add_reference(
+        torch.zeros(48, 32, 48, 3),
+        VIDEO_MEDIA,
+        MOTION_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+        role_bindings=motion_role,
+    )
+    context, _, _ = reference_node.add_reference(
+        torch.ones(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        IDENTITY_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+        previous_context=source,
+        role_bindings=target_role,
+    )
+
+    prompt, _, _, _ = build(reference_context=context)
+
+    assert "the motion or action supplied by <Video 1>" in prompt
+    assert "<Video 1> is" not in prompt
+    assert "<Subject 1> (all shots): attribute_transfer" in prompt
+    assert "transferred to <Subject 2>" in prompt
+
+
+def test_one_picture_can_supply_both_subject_content_and_a_direct_keyframe():
+    role_node = MiniMaxH3VisualReferenceRole()
+    identity, _ = role_node.append_role(
+        IDENTITY_ROLE,
+        FULL_RELATION,
+        "hero",
+        "",
+        "all shots",
+        "Preserve the character",
+    )
+    roles, _ = role_node.append_role(
+        CONCRETE_KEYFRAME_ROLE,
+        FULL_RELATION,
+        "",
+        "",
+        "Shot 1",
+        "Use the exact composition",
+        previous_roles=identity,
+    )
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        torch.zeros(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        IDENTITY_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+        role_bindings=roles,
+    )
+
+    prompt, _, report, _ = build(reference_context=context)
+
+    assert "<Subject 1> is content group 'hero'" in prompt
+    assert "<Picture 1> is a concrete Ref2VA keyframe" in prompt
+    assert prompt.count("<Subject 1> (all shots): fully_preserved") == 1
+    assert prompt.count("<Picture 1> (Shot 1): fully_preserved") == 1
+    assert "keyframe completion + reference generation" in report
+
+
+def test_storyboard_role_stays_a_picture_reference_not_a_subject():
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        torch.zeros(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        STORYBOARD_ROLE,
+        "Plan the camera order only",
+        24.0,
+        1.0,
+        16,
+        768,
+    )
+
+    prompt, _, report, _ = build(reference_context=context)
+
+    assert "<Picture 1> is a storyboard or shot-planning reference" in prompt
+    assert "<Subject 1>" not in prompt
+    assert "Task-type prefix: [reference generation]" in report
+
+
+def test_grouped_subject_combines_distinct_valid_shot_scopes():
+    role_node = MiniMaxH3VisualReferenceRole()
+    first_role, _ = role_node.append_role(
+        IDENTITY_ROLE,
+        FULL_RELATION,
+        "hero",
+        "",
+        "Shot 1",
+        "Preserve the face",
+    )
+    roles, _ = role_node.append_role(
+        ITEM_ROLE,
+        FULL_RELATION,
+        "hero",
+        "",
+        "Shot 2",
+        "Preserve the coat",
+        previous_roles=first_role,
+    )
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        torch.zeros(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        IDENTITY_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+        role_bindings=roles,
+    )
+    shot_node = MiniMaxH3Shot()
+    first, _ = shot_node.append_shot(0.0, 3.0, "The hero enters", "", "Direct cut")
+    shots, _ = shot_node.append_shot(
+        3.0,
+        8.0,
+        "The hero turns",
+        "",
+        "Direct cut",
+        previous_shots=first,
+    )
+
+    prompt, _, report, _ = build(reference_context=context, shot_plan=shots)
+
+    assert "<Subject 1> (Shot 1; Shot 2): fully_preserved" in prompt
+    assert prompt.count("Apply <Subject 1>") == 2
+    shot_1_body, shot_2_body = prompt.split("[Shot 1]", 1)[1].split("[Shot 2]", 1)
+    assert "defined identity" in shot_1_body
+    assert "object, prop, clothing" not in shot_1_body
+    assert "defined object, prop, clothing" in shot_2_body
+    assert "identity" not in shot_2_body
+    assert "cannot be mapped" not in report
+
+
+def test_numbered_shot_scope_must_exist_in_the_connected_plan():
+    roles, _ = MiniMaxH3VisualReferenceRole().append_role(
+        ITEM_ROLE,
+        FULL_RELATION,
+        "watch",
+        "",
+        "Shot 3",
+        "Use the watch",
+    )
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        torch.zeros(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        ITEM_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+        role_bindings=roles,
+    )
+    shots, _ = MiniMaxH3Shot().append_shot(
+        0.0,
+        8.0,
+        "Only one shot exists",
+        "",
+        "Direct cut",
+    )
+
+    with pytest.raises(ValueError, match="Shot that does not exist"):
+        build(reference_context=context, shot_plan=shots)
+
+
+def test_one_subject_group_requires_one_retention_marker():
+    role_node = MiniMaxH3VisualReferenceRole()
+    first_role, _ = role_node.append_role(
+        IDENTITY_ROLE,
+        FULL_RELATION,
+        "hero",
+        "",
+        "all shots",
+        "Preserve the face",
+    )
+    roles, _ = role_node.append_role(
+        ITEM_ROLE,
+        "partially_preserved",
+        "hero",
+        "",
+        "all shots",
+        "Allow changes to the coat",
+        previous_roles=first_role,
+    )
+    context, _, _ = MiniMaxH3EnhancerVisualReference().add_reference(
+        torch.zeros(1, 32, 32, 3),
+        PICTURE_MEDIA,
+        IDENTITY_ROLE,
+        "",
+        24.0,
+        1.0,
+        16,
+        768,
+        role_bindings=roles,
+    )
+
+    with pytest.raises(ValueError, match="different retention markers"):
+        build(reference_context=context)
