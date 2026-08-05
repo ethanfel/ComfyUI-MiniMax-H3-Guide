@@ -466,6 +466,49 @@ def test_each_nonverbal_audio_role_gets_its_own_definition(
     assert f"<Audio 1>: {expected_retention}" in prompt
 
 
+def test_inline_sound_effect_tag_controls_shot_placement_without_global_duplicate():
+    plan = project(soundscape="Truck engine and road vibration.")
+    plan, _handle, _image, _preview = image_reference(plan)
+    plan, _audio, preview = audio_reference(
+        plan,
+        use=AUDIO_SFX,
+        name="suction texture",
+        layer="the synchronized suction event",
+        instructions="Use the supplied wet suction texture.",
+        scope="2",
+    )
+    plan = shot(plan, 0.0, "<Subject 1> sits inside the moving truck.")
+    placement = (
+        "Each visible downward movement produces the suction texture referenced by "
+        "<Audio 1>, synchronized at the point of contact."
+    )
+    plan = shot(plan, 3.0, placement)
+
+    prompt, _rewrite, _report, _compiled, _length = compile_h3_plan(plan)
+
+    assert "insert that tag in the intended Shot sound sentence" in preview
+    assert f"[Shot 2] At 00:03.000, cut directly to {placement[0].lower() + placement[1:]}" in prompt
+    assert "<Audio 1> is the sound-effect texture reference" in prompt
+    assert "overall_soundscape:\nTruck engine and road vibration." in prompt
+    assert "Apply <Audio 1> only according to its declared sound-effect texture role." not in prompt
+
+
+def test_untagged_sound_effect_keeps_global_soundscape_fallback():
+    plan = project(soundscape="Truck engine and road vibration.")
+    plan, _handle, _image, _preview = image_reference(plan)
+    plan, _audio, _preview = audio_reference(
+        plan,
+        use=AUDIO_SFX,
+        name="suction texture",
+        layer="the synchronized suction event",
+    )
+    plan = shot(plan, 0.0, "<Subject 1> sits inside the moving truck.")
+
+    prompt, _rewrite, _report, _compiled, _length = compile_h3_plan(plan)
+
+    assert "Apply <Audio 1> only according to its declared sound-effect texture role." in prompt
+
+
 def test_irrelevant_audio_metadata_is_removed_when_the_exact_role_changes():
     plan = project()
     plan, _handle, _image, _preview = image_reference(plan)

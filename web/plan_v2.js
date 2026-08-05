@@ -554,9 +554,12 @@ function labelSuggestions(catalog) {
         });
     }
     for (const node of catalog.audios) {
+        const use = clean(widget(node, "audio_use")?.value);
+        const event = clean(widget(node, "target_layer_or_event")?.value);
+        const name = clean(widget(node, "reference_name")?.value) || "audio reference";
         suggestions.push({
             token: catalog.audioLabels.get(node.id),
-            detail: clean(widget(node, "reference_name")?.value) || "audio reference",
+            detail: [use, event || name, "insert in sound sentence"].filter(Boolean).join(" · "),
         });
     }
     return suggestions;
@@ -579,7 +582,7 @@ function createShotEditor(node) {
         "font-size:11px",
     ].join(";");
     const hint = document.createElement("div");
-    hint.textContent = "Shot description · type < to insert an upstream H3 label";
+    hint.textContent = "Shot description · type < to insert a Subject or media tag; place <Audio N> in the exact sound sentence";
     const editor = document.createElement("textarea");
     editor.value = String(hidden.value || "");
     editor.rows = 6;

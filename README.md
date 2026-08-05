@@ -67,6 +67,20 @@ box with an editor that opens an upstream reference menu when `<` is typed.
 These conveniences do not replace Python validation and are not required in
 API/headless mode.
 
+For exact sound placement, choose the relationship on the upstream Audio
+Reference, then type `<` in the Shot editor and select its `<Audio N>` tag.
+Write the tag inside the sentence at the moment the sound occurs, for example:
+
+```text
+Each visible impact produces the texture referenced by <Audio 1>, synchronized with contact.
+```
+
+`shot_scope` validates which Shots may use the audio; it does not decide sentence
+placement. A nonverbal audio tag placed in Shot prose suppresses the compiler's
+generic `overall_soundscape` fallback for that reference, so the authored Shot
+sentence remains its exact temporal location. Untagged references retain the
+global fallback for backward compatibility.
+
 The optional **Structured Prompt Enhancer (Plan v2)** gives Qwen the complete
 compiled scene in one request: the valid H3 context, all references and roles,
 every Shot, audio metadata/transcripts, timing, routes, and the compiler report.

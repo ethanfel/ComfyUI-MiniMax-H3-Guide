@@ -793,6 +793,26 @@ def _shot_mentions_label(
     return False
 
 
+def _shot_prose_mentions_label(plan: dict, label: str) -> bool:
+    """Return whether the author placed one reference label in visible Shot prose."""
+
+    shots = plan["shots"]
+    fields = (
+        [
+            field
+            for shot in shots
+            for field in (shot["description"], shot["camera_direction"])
+        ]
+        if shots
+        else [plan["project"]["initial_prompt"]]
+    )
+    return any(
+        _canonical_token(match) == label
+        for field in fields
+        for match in _REFERENCE_TOKEN_RE.finditer(field or "")
+    )
+
+
 def _validate_scopes(plan: dict, catalog: dict) -> None:
     shot_count = len(plan["shots"])
     for group in catalog["subject_groups"]:
@@ -837,7 +857,8 @@ def _validate_scopes(plan: dict, catalog: dict) -> None:
         if missing:
             raise ValueError(
                 f"{label} is scoped to {_scope_text(missing)}, but those Shots neither cite it "
-                "nor contain its bound vocal event."
+                "nor contain its bound vocal event. For a sound effect, insert the Audio label "
+                "inside the exact Shot sound sentence where it should be heard."
             )
 
 
@@ -1473,7 +1494,7 @@ def _audio_sections(plan: dict, catalog: dict) -> tuple[str, str]:
             AUDIO_CONTINUITY,
             AUDIO_COPY_PARTIAL,
             AUDIO_BROAD,
-        }:
+        } and not _shot_prose_mentions_label(plan, label):
             sound_references.append(
                 f"Apply {label} only according to its declared {relationship['use'].lower()} role."
             )
@@ -2434,7 +2455,11 @@ class MiniMaxH3PlanV2AudioReference:
                     {
                         "default": "",
                         "placeholder": "Examples: 1, 2-3, all",
-                        "tooltip": "Optional numeric Shot scope for this audio relationship.",
+                        "tooltip": (
+                            "Optional numeric Shot scope for this audio relationship. For a sound "
+                            "effect, also insert its <Audio N> tag inside the exact Shot sentence "
+                            "where the sound occurs; scope validates placement but does not write it."
+                        ),
                     },
                 ),
             },
@@ -2570,7 +2595,8 @@ class MiniMaxH3PlanV2AudioReference:
         )
         preview = (
             f"{asset['reference_name']}: {audio_use} [{relationship['retention']}], "
-            f"{duration:.3f}s; {route}. Final <Audio N> follows native presentation order."
+            f"{duration:.3f}s; {route}. Final <Audio N> follows native presentation order; "
+            "insert that tag in the intended Shot sound sentence for exact placement."
         )
         return updated, audio, preview
 
@@ -2639,8 +2665,9 @@ class MiniMaxH3PlanV2Shot:
                         "dynamicPrompts": False,
                         "placeholder": "Visible and audible events during this Shot only.",
                         "tooltip": (
-                            "Describe the intended entity directly with its upstream H3 label. "
-                            "The browser UI adds the < autocomplete menu."
+                            "Describe visible and audible events in chronological order. Insert an "
+                            "upstream <Audio N> label directly in the sentence where its sound is "
+                            "heard. The browser UI adds the < autocomplete menu."
                         ),
                     },
                 ),
