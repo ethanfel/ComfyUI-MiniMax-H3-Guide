@@ -268,7 +268,7 @@ def test_replacing_one_valid_label_with_another_is_still_rejected():
         apply_editable_prose(plan, json.dumps(payload))
 
 
-def test_qwen_receives_the_full_compiled_scene_in_one_request():
+def test_qwen_receives_full_scene_context_with_locked_dialogue_masked():
     plan = compiled_scene()
     clip = FakeClip(enhanced_json(plan))
 
@@ -286,10 +286,12 @@ def test_qwen_receives_the_full_compiled_scene_in_one_request():
         **enhancer_kwargs(),
     )
 
-    assert "VALID COMPILED H3 DRAFT" in llm_prompt
+    assert "VALID COMPILED H3 CONTEXT" in llm_prompt
     assert "[Shot 1]" in llm_prompt
     assert "[Shot 2] At 00:00.400" in llm_prompt
-    assert "Thanks for the ride." in llm_prompt
+    assert "A compiler-managed dialogue event occurs here" in llm_prompt
+    assert "Thanks for the ride." not in llm_prompt
+    assert "<d>" not in llm_prompt
     assert "<Audio 1>" in llm_prompt
     assert "EDITABLE PROSE JSON" in llm_prompt
     assert "PRODUCTION DETAIL TARGET" in llm_prompt
@@ -303,6 +305,30 @@ def test_qwen_receives_the_full_compiled_scene_in_one_request():
     assert "LOCKED OUTPUT CONTRACT" in effective_system
     assert "text metadata only" in report
     assert "images" not in clip.tokenize_calls[0]["kwargs"]
+
+
+def test_structured_enhancer_repairs_copied_compiler_dialogue_once():
+    plan = compiled_scene()
+    payload = json.loads(enhanced_json(plan))
+    payload["shots"][1]["description"] += (
+        " <Subject 1> (S1) speaks using the voice referenced from <Audio 1>: "
+        "<d>[English] Thanks for the ride.</d>. Delivery: warmly."
+    )
+    clip = FakeClip(json.dumps(payload))
+
+    prompt, prose, _enhanced_plan, *_rest, report = (
+        MiniMaxH3PlanV2PromptEnhancer().enhance_plan(
+            clip,
+            plan,
+            **enhancer_kwargs(),
+        )
+    )
+
+    assert "Structured enhancement fallback" not in report
+    assert "copied 1 compiler-owned dialogue segment" in report
+    assert prompt.count("<d>[English] Thanks for the ride.</d>") == 1
+    assert "physically continuous motion" in prompt
+    assert "<d>" not in json.dumps(json.loads(prose))
 
 
 def test_structured_enhancer_accepts_comfy_qwen35_clip():

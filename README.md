@@ -68,9 +68,11 @@ These conveniences do not replace Python validation and are not required in
 API/headless mode.
 
 The optional **Structured Prompt Enhancer (Plan v2)** gives Qwen the complete
-compiled scene in one request: the valid H3 draft, all references and roles,
-every Shot, exact dialogue, audio metadata/transcripts, timing, routes, and the
-compiler report. When visual analysis is enabled, the same request also
+compiled scene in one request: the valid H3 context, all references and roles,
+every Shot, audio metadata/transcripts, timing, routes, and the compiler report.
+Compiler-owned dialogue lines are represented by locked placeholders instead
+of copyable H3 markup; Python restores their exact speaker, wording, voice, and
+delivery afterward. When visual analysis is enabled, the same request also
 contains image pixels and timestamped video samples. Audio waveforms are never
 presented as something Qwen can understand; audio meaning remains explicit
 metadata.

@@ -94,7 +94,7 @@ Enhancement standard:
 
 Rules:
 - Never add, remove, rename, renumber, paraphrase, or reinterpret a reference label such as <Subject 1>, <Picture 1>, <Video 1>, or <Audio 1>.
-- Never write H3 section names, [Shot N] markers, cut timestamps, <d> dialogue tags, speaker IDs, task types, retention markers, or native routes. Python reconstructs them from locked data.
+- Never write H3 section names, [Shot N] markers, cut timestamps, H3 dialogue-tag markup, speaker IDs, task types, retention markers, or native routes. Python reconstructs them from locked data.
 - Preserve every requested identity, object, action, state change, relationship, setting, visible text, dialogue intent, and negative constraint. Do not make a creative request safer, stronger, more sexual, more violent, or otherwise different.
 - Treat attached visual media only as evidence for the exact declared image/video role. Never infer audio, speech, music, or personality from pixels.
 - Audio meaning comes only from supplied metadata and transcripts. Never claim to have listened to audio.
@@ -225,6 +225,97 @@ def _clean_model_json(text: str) -> str:
     if fence:
         value = fence.group(1).strip()
     return value
+
+
+def _mask_compiler_dialogue_lines(prompt: str) -> str:
+    """Keep full-scene context while hiding markup Qwen must not copy."""
+
+    replacement = (
+        "A compiler-managed dialogue event occurs here. Its exact speaker, wording, "
+        "voice reference, and delivery are locked and omitted from editable prose."
+    )
+    lines = []
+    dropping = False
+    for line in str(prompt or "").splitlines():
+        lowered = line.casefold()
+        if not dropping and "<d>" not in lowered:
+            lines.append(line)
+            continue
+        if not dropping:
+            lines.append(replacement)
+        dropping = "</d>" not in lowered
+    return "\n".join(lines)
+
+
+def _strip_dialogue_tagged_sentences(value: str) -> tuple[str, int]:
+    """Remove model-copied dialogue sentences that the compiler will restore."""
+
+    text = str(value)
+    removed = 0
+    while True:
+        opening = re.search(r"<d>", text, flags=re.IGNORECASE)
+        if opening is None:
+            break
+        closing = re.search(r"</d>", text[opening.end() :], flags=re.IGNORECASE)
+        closing_end = (
+            opening.end() + closing.end() if closing is not None else len(text)
+        )
+
+        start = 0
+        for boundary in re.finditer(r"[.!?](?:\s+)|\n+", text[: opening.start()]):
+            start = boundary.end()
+
+        end = closing_end
+        boundary = re.search(r"[.!?](?:\s+|$)|\n+", text[closing_end:])
+        if boundary is not None:
+            end = closing_end + boundary.end()
+
+        delivery = re.match(r"Delivery\s*:", text[end:], flags=re.IGNORECASE)
+        if delivery is not None:
+            delivery_end = end + delivery.end()
+            boundary = re.search(r"[.!?](?:\s+|$)|\n+", text[delivery_end:])
+            end = delivery_end + boundary.end() if boundary is not None else len(text)
+
+        text = text[:start] + text[end:]
+        removed += 1
+
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip(), removed
+
+
+def _repair_model_dialogue_leak(text: str) -> tuple[str, int]:
+    """Repair only compiler-owned dialogue markup inside otherwise valid JSON."""
+
+    cleaned = _clean_model_json(text)
+    try:
+        payload = json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError):
+        return text, 0
+    if not isinstance(payload, dict):
+        return text, 0
+
+    removed = 0
+    for key in (
+        "visual_style",
+        "initial_prompt",
+        "overall_soundscape",
+        "non_diegetic_music",
+    ):
+        if isinstance(payload.get(key), str):
+            payload[key], count = _strip_dialogue_tagged_sentences(payload[key])
+            removed += count
+    if isinstance(payload.get("shots"), list):
+        for shot in payload["shots"]:
+            if not isinstance(shot, dict):
+                continue
+            for key in ("description", "camera_direction"):
+                if isinstance(shot.get(key), str):
+                    shot[key], count = _strip_dialogue_tagged_sentences(shot[key])
+                    removed += count
+    if not removed:
+        return text, 0
+    return json.dumps(payload, ensure_ascii=False), removed
 
 
 def _require_exact_keys(value: dict, expected: set[str], location: str) -> None:
@@ -563,7 +654,10 @@ def _effective_system_prompt(base_prompt: str, plan_context: Any) -> str:
         "camera_direction.\n"
         + "- Empty strings are structurally valid. You may fill blank descriptive fields with "
         "non-conflicting production detail, but preserve explicit N/A, silence, static-camera, "
-        "and other negative constraints."
+        "and other negative constraints.\n"
+        + "- Compiler-managed dialogue lines are masked in the read-only scene context. Never "
+        "reconstruct dialogue wording, H3 dialogue-tag markup, speaker IDs, voice-reference clauses, or "
+        "delivery clauses inside editable prose."
     )
 
 
@@ -602,8 +696,9 @@ REFERENCE INVENTORY
 LOCKED COMPILER REPORT
 {compiler_report}
 
-VALID COMPILED H3 DRAFT
-{base_prompt}
+VALID COMPILED H3 CONTEXT
+Dialogue lines are replaced by compiler-managed placeholders so they cannot leak into editable prose.
+{_mask_compiler_dialogue_lines(base_prompt)}
 
 EDITABLE PROSE JSON
 {editable_prose_json(plan_context)}"""
@@ -968,13 +1063,39 @@ class MiniMaxH3PlanV2PromptEnhancer:
 
         collapse = generation_collapse_reason(raw_output)
         fallback_reason = collapse or ""
+        repair_note = ""
         if not fallback_reason:
             try:
                 enhanced_prompt, enhanced_plan, apply_report, _length, canonical = (
                     apply_editable_prose(base_compiled, raw_output)
                 )
             except (ValueError, RuntimeError) as error:
-                fallback_reason = str(error)
+                if "<d> dialogue tags" not in str(error):
+                    fallback_reason = str(error)
+                else:
+                    repaired_output, removed = _repair_model_dialogue_leak(raw_output)
+                    if not removed:
+                        fallback_reason = str(error)
+                    else:
+                        try:
+                            (
+                                enhanced_prompt,
+                                enhanced_plan,
+                                apply_report,
+                                _length,
+                                canonical,
+                            ) = apply_editable_prose(base_compiled, repaired_output)
+                        except (ValueError, RuntimeError) as repair_error:
+                            fallback_reason = (
+                                f"{error} Automatic dialogue-leak repair also failed: "
+                                f"{repair_error}"
+                            )
+                        else:
+                            repair_note = (
+                                f" Qwen copied {removed} compiler-owned dialogue segment(s); "
+                                "the node removed them before validation and the locked compiler "
+                                "restored the exact dialogue once."
+                            )
 
         if fallback_reason:
             enhanced_prompt = base_prompt
@@ -997,7 +1118,7 @@ class MiniMaxH3PlanV2PromptEnhancer:
                 if tail_name is not None
                 else " The connected complete CLIP generated the prose patch."
             )
-            report = apply_report + media_note + tail_note
+            report = apply_report + media_note + tail_note + repair_note
 
         offload_note = _clip_offload_report(clip_offload_status)
         if offload_note:
