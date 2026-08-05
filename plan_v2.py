@@ -954,30 +954,33 @@ def _validate_final_plan(plan: dict, catalog: dict, mode: str) -> None:
     _validate_complete_audio_copy(plan, catalog)
 
 
-def _binding_role_phrase(content_type: str) -> str:
+def _binding_role_grammar(content_type: str) -> tuple[str, bool]:
+    """Return one exact role phrase and whether it is grammatically singular."""
+
     return {
-        CONTENT_IDENTITY: "identity and appearance",
-        CONTENT_OBJECT: "object, prop, clothing, interface, or visible-effect appearance",
-        CONTENT_SCENE: "scene and environment",
-        CONTENT_STYLE: "visual style",
-        CONTENT_ACTION: "pose, expression, action, or motion",
+        CONTENT_IDENTITY: ("identity and appearance", False),
+        CONTENT_OBJECT: ("visible object appearance", True),
+        CONTENT_SCENE: ("scene and environment", False),
+        CONTENT_STYLE: ("visual style", True),
+        CONTENT_ACTION: ("pose and movement", False),
     }[content_type]
 
 
 def _subject_definition(group: dict, catalog: dict) -> str:
-    sources: list[str] = []
-    roles: list[str] = []
+    definition_clauses: list[str] = []
     transfer_clauses: list[str] = []
     for binding in group["bindings"]:
         asset_id = binding["asset_id"]
         label = catalog["picture_labels"].get(asset_id) or catalog["video_labels"].get(
             asset_id
         )
-        if label and label not in sources:
-            sources.append(label)
-        phrase = _binding_role_phrase(binding["content_type"])
-        if phrase not in roles:
-            roles.append(phrase)
+        phrase, singular = _binding_role_grammar(binding["content_type"])
+        clause = (
+            f"The {phrase} of {group['label']} "
+            f"{'is' if singular else 'are'} defined by {label}."
+        )
+        if clause not in definition_clauses:
+            definition_clauses.append(clause)
         target_alias = binding.get("transfer_target_subject", "")
         if binding["retention"] == RETENTION_TRANSFER and target_alias:
             target = catalog["subjects_by_alias"].get(_alias_key(target_alias))
@@ -985,19 +988,13 @@ def _subject_definition(group: dict, catalog: dict) -> str:
             clause = f"Transfer the {phrase} defined by {label} to {target_text}."
             if clause not in transfer_clauses:
                 transfer_clauses.append(clause)
-    source_text = (
-        sources[0]
-        if len(sources) == 1
-        else f"{', '.join(sources[:-1])}, and {sources[-1]}"
+    return " ".join(
+        (
+            f"{group['label']} is {group['subject_name']}.",
+            *definition_clauses,
+            *transfer_clauses,
+        )
     )
-    role_text = roles[0] if len(roles) == 1 else ", ".join(roles)
-    definition = (
-        f"{group['label']} is {group['subject_name']}, the reusable visible subject or scene, "
-        f"with {role_text} defined by {source_text}."
-    )
-    if transfer_clauses:
-        definition += " " + " ".join(transfer_clauses)
-    return definition
 
 
 def _direct_picture_definition(asset: dict, label: str, plan: dict) -> str | None:
@@ -1212,11 +1209,27 @@ def _subject_retention_line(group: dict, plan: dict, catalog: dict) -> str:
         else " (appears wherever cited in the Shot plan)"
     )
     marker = next(iter(markers))
+    role_grammar = list(
+        dict.fromkeys(
+            _binding_role_grammar(binding["content_type"])
+            for binding in group["bindings"]
+        )
+    )
+    if len(role_grammar) == 1:
+        phrase, singular = role_grammar[0]
+    else:
+        phrase, singular = "visual properties", False
+    subject = f"the defined {phrase}"
     explanation = {
-        RETENTION_FULL: "the defined visible identity, appearance, or composition is preserved",
-        RETENTION_PARTIAL: "the reference remains identifiable while requested edits are applied",
-        RETENTION_TRANSFER: "the declared attribute, pose, action, or motion is transferred",
-        RETENTION_WEAK: "only broad visual inspiration is retained",
+        RETENTION_FULL: f"{subject} {'is' if singular else 'are'} preserved",
+        RETENTION_PARTIAL: (
+            f"{subject} {'remains' if singular else 'remain'} recognizable while "
+            "requested changes are applied"
+        ),
+        RETENTION_TRANSFER: f"{subject} {'is' if singular else 'are'} transferred",
+        RETENTION_WEAK: (
+            f"{subject} {'guides' if singular else 'guide'} the result without exact preservation"
+        ),
     }[marker]
     if marker == RETENTION_TRANSFER:
         targets = []

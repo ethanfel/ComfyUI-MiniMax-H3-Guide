@@ -685,14 +685,56 @@ def test_reusable_video_action_auto_retention_accepts_and_names_transfer_target(
     prompt, _rewrite, _report, _compiled, _length = compile_h3_plan(plan)
 
     assert (
-        "Transfer the pose, expression, action, or motion defined by <Video 1> "
-        "to <Subject 1>"
+        "Transfer the pose and movement defined by <Video 1> to <Subject 1>"
     ) in prompt
     assert (
         "<Subject 2> (appears wherever cited in the Shot plan): attribute_transfer"
         in prompt
     )
-    assert "is transferred to <Subject 1>" in prompt
+    assert "are transferred to <Subject 1>" in prompt
+
+
+def test_subject_definitions_and_retention_use_exact_selected_roles():
+    plan = project("A woman carries a referenced object through the scene.")
+    plan, _woman_handle, _image, _preview = image_reference(
+        plan,
+        scope="1",
+    )
+    plan, _object_handle, _image, _preview = image_reference(
+        plan,
+        name="silver watch",
+        description="A square silver wristwatch.",
+        content_type=CONTENT_OBJECT,
+        subject="watch",
+        scope="1",
+    )
+    plan = shot(
+        plan,
+        0.0,
+        "<Subject 1> enters while carrying <Subject 2>.",
+    )
+
+    prompt, _rewrite, _report, _compiled, _length = compile_h3_plan(plan)
+
+    assert (
+        "<Subject 1> is woman. The identity and appearance of <Subject 1> "
+        "are defined by <Picture 1>."
+    ) in prompt
+    assert (
+        "<Subject 2> is watch. The visible object appearance of <Subject 2> "
+        "is defined by <Picture 2>."
+    ) in prompt
+    assert (
+        "<Subject 1> (appears in [Shot 1]): fully_preserved - "
+        "the defined identity and appearance are preserved."
+    ) in prompt
+    assert (
+        "<Subject 2> (appears in [Shot 1]): fully_preserved - "
+        "the defined visible object appearance is preserved."
+    ) in prompt
+    assert "reusable visible subject or scene" not in prompt
+    assert "object, prop, clothing, interface" not in prompt
+    assert "identity, appearance, or composition" not in prompt
 
 
 def test_references_cannot_be_appended_after_the_first_shot():
