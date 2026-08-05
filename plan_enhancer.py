@@ -79,24 +79,26 @@ PROSE_SCHEMA_VERSION = 1
 VISUAL_ANALYSIS_DISABLED = "Text metadata only (no visual analysis)"
 VISUAL_ANALYSIS_ENABLED = "Analyze reference images and sampled video"
 VISUAL_ANALYSIS_MODES = [VISUAL_ANALYSIS_DISABLED, VISUAL_ANALYSIS_ENABLED]
+ENHANCEMENT_MODE_INTENT_LOCKED = "Intent-locked expansion"
+ENHANCEMENT_MODE_CREATIVE = "Creative expansion"
+ENHANCEMENT_MODES = [ENHANCEMENT_MODE_INTENT_LOCKED, ENHANCEMENT_MODE_CREATIVE]
 
 PLAN_ENHANCER_SYSTEM_PROMPT = """You are a descriptive-prose editor for a compiled MiniMax H3 audiovisual plan.
 
 You do not write an H3 prompt. You return only the JSON object requested by the user message. Improve clarity, chronology, physical observability, composition, lighting, motion, camera language, ambience, and synchronized action sounds while preserving the user's intent.
 
 Enhancement standard:
-- Perform a material production-detail rewrite, not a summary, paraphrase, or light copy-edit. Do not simply return the supplied prose unless it is already production-ready.
-- Expand each Shot with concrete composition and blocking, spatial relationships, environment and lighting, observable motion, continuity from its opening state to its ending state, and relevant synchronized physical sounds.
-- Add non-conflicting presentation detail such as framing, lens feel, depth of field, camera placement or movement, material response, atmosphere, and micro-motion. Presentation detail must clarify the supplied event rather than create a new event.
+- Follow the authoritative enhancement-mode contract appended to this prompt. It determines whether strings are addenda or complete rewrites.
+- Add only grounded production detail: concrete blocking, spatial relationships, observable motion, continuity from opening state to ending state, and relevant synchronized physical sounds.
 - Do not create new story facts such as characters, props, locations, actions, state changes, dialogue, lyrics, visible text, or independent audio sources. A visible attribute may be added only when supported by the supplied prose or visual evidence assigned to that exact role.
-- Normally aim for 80-140 useful words per Shot description. Prefer information density over padding, repetition, ornamental adjectives, or restating the global premise.
-- Use camera_direction for a concise, motivated shot-specific camera plan. When it is blank, you may supply one unless the request establishes a static camera or another conflicting constraint.
+- Prefer information density over padding, repetition, ornamental adjectives, generic cinematic atmosphere, or restating the global premise.
 
 Rules:
-- Never add, remove, rename, renumber, paraphrase, or reinterpret a reference label such as <Subject 1>, <Picture 1>, <Video 1>, or <Audio 1>.
+- Never introduce, remove, rename, renumber, paraphrase, move, or reinterpret a reference label such as <Subject 1>, <Picture 1>, <Video 1>, or <Audio 1>. An existing label may repeat naturally inside the same editable field.
 - Never write H3 section names, [Shot N] markers, cut timestamps, H3 dialogue-tag markup, speaker IDs, task types, retention markers, or native routes. Python reconstructs them from locked data.
-- Preserve every requested identity, object, action, state change, relationship, setting, visible text, dialogue intent, and negative constraint. Do not make a creative request safer, stronger, more sexual, more violent, or otherwise different.
-- Treat attached visual media only as evidence for the exact declared image/video role. Never infer audio, speech, music, or personality from pixels.
+- Preserve the original creative emphasis and intensity as well as every requested identity, object, action, state change, relationship, setting, visible text, dialogue intent, and negative constraint. Never euphemize, sanitize, soften, intensify, moralize, or otherwise reinterpret it.
+- Describe only observable audiovisual facts. Do not add motivation, judgment, emotional interpretation, or phrases such as an intimate atmosphere unless the source explicitly requests them.
+- Treat attached visual media only as supplementary evidence for the exact declared image/video role. Textual scene intent is authoritative; pixels may clarify assigned identity or appearance but never override the requested action, emphasis, framing, or tone. Never infer audio, speech, music, or personality from pixels.
 - Audio meaning comes only from supplied metadata and transcripts. Never claim to have listened to audio.
 - Keep exact reference labels present in the same shot prose where they currently occur. They may be woven into a clearer sentence, but may not be removed or moved to another shot.
 - Return valid UTF-8 JSON with double-quoted keys and strings. Do not use Markdown fences, comments, trailing commas, explanations, or additional keys."""
@@ -167,6 +169,111 @@ def editable_prose_json(plan_context: Any) -> str:
         ensure_ascii=False,
         indent=2,
     )
+
+
+def intent_addenda_payload(plan_context: Any) -> dict:
+    """Return the intent-locked schema whose strings are additions, not rewrites."""
+
+    source = editable_prose_payload(plan_context)
+    return {
+        "schema_version": PROSE_SCHEMA_VERSION,
+        "visual_style": "",
+        "initial_prompt": "",
+        "shots": [
+            {
+                "shot_number": shot["shot_number"],
+                "description": "",
+                "camera_direction": "",
+            }
+            for shot in source["shots"]
+        ],
+        "overall_soundscape": "",
+        "non_diegetic_music": "",
+    }
+
+
+def intent_addenda_json(plan_context: Any) -> str:
+    return json.dumps(
+        intent_addenda_payload(plan_context),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _without_verbatim_source(candidate: str, source: str) -> str:
+    """Tolerate a model copying the source before its requested addendum."""
+
+    value = str(candidate or "").strip()
+    original = str(source or "").strip()
+    if original and value.startswith(original):
+        return value[len(original) :].lstrip(" \t\r\n-–—:;.")
+    return value
+
+
+def _append_prose(source: str, addendum: str) -> str:
+    original = str(source or "").strip()
+    addition = _without_verbatim_source(addendum, original)
+    if not addition:
+        return original
+    if not original:
+        return addition
+    separator = " " if original[-1] in ".!?" else ". "
+    return original + separator + addition
+
+
+def _compose_intent_locked_prose(
+    plan_context: Any, model_output: str
+) -> tuple[str, str]:
+    """Append model addenda while keeping every original creative field intact."""
+
+    source = editable_prose_payload(plan_context)
+    addenda = parse_editable_prose(model_output, plan_context)
+    combined = json.loads(json.dumps(source, ensure_ascii=False))
+    applied = 0
+    ignored = []
+
+    for key in ("visual_style", "initial_prompt", "non_diegetic_music"):
+        if str(addenda[key]).strip():
+            ignored.append(key)
+
+    for source_shot, addendum_shot, combined_shot in zip(
+        source["shots"], addenda["shots"], combined["shots"]
+    ):
+        description_addendum = _without_verbatim_source(
+            addendum_shot["description"], source_shot["description"]
+        )
+        if description_addendum:
+            combined_shot["description"] = _append_prose(
+                source_shot["description"], description_addendum
+            )
+            applied += 1
+
+        camera_addendum = _without_verbatim_source(
+            addendum_shot["camera_direction"], source_shot["camera_direction"]
+        )
+        if camera_addendum and source_shot["camera_direction"].strip():
+            combined_shot["camera_direction"] = _append_prose(
+                source_shot["camera_direction"], camera_addendum
+            )
+            applied += 1
+        elif camera_addendum:
+            ignored.append(f"Shot {source_shot['shot_number']} camera_direction")
+
+    soundscape_addendum = _without_verbatim_source(
+        addenda["overall_soundscape"], source["overall_soundscape"]
+    )
+    if soundscape_addendum and source["overall_soundscape"].strip().casefold() != "n/a":
+        combined["overall_soundscape"] = _append_prose(
+            source["overall_soundscape"], soundscape_addendum
+        )
+        applied += 1
+    elif soundscape_addendum:
+        ignored.append("overall_soundscape")
+
+    report = f"Intent lock preserved every original prose field and applied {applied} addendum(s)."
+    if ignored:
+        report += " Ignored model edits to locked field(s): " + ", ".join(ignored) + "."
+    return json.dumps(combined, ensure_ascii=False), report
 
 
 def _editable_prose_fields(payload: dict) -> list[str]:
@@ -461,8 +568,10 @@ def _reference_label_signature(plan: dict) -> dict:
     def labels(value: Any) -> tuple[str, ...]:
         return tuple(
             sorted(
-                match.group(0)
-                for match in _REFERENCE_LABEL_RE.finditer(str(value or ""))
+                {
+                    match.group(0)
+                    for match in _REFERENCE_LABEL_RE.finditer(str(value or ""))
+                }
             )
         )
 
@@ -526,6 +635,30 @@ def apply_editable_prose(
         + compiler_report
     )
     return prompt, compiled, report, h3_length, canonical_json
+
+
+def _apply_generated_prose(
+    plan_context: Any,
+    model_output: str,
+    enhancement_mode: str,
+) -> tuple[str, dict, str, int, str, str]:
+    """Apply either a complete creative rewrite or intent-locked addenda."""
+
+    enhancement_mode = _validate_enhancement_mode(enhancement_mode)
+    if enhancement_mode == ENHANCEMENT_MODE_INTENT_LOCKED:
+        editable_prose, mode_report = _compose_intent_locked_prose(
+            plan_context, model_output
+        )
+    else:
+        editable_prose = model_output
+        mode_report = (
+            "Creative expansion accepted Qwen's complete prose rewrite, subject to "
+            "the structural and reference-label locks."
+        )
+    prompt, compiled, report, length, canonical = apply_editable_prose(
+        plan_context, editable_prose
+    )
+    return prompt, compiled, report, length, canonical, mode_report
 
 
 def _analysis_entries(
@@ -639,9 +772,47 @@ def _plan_inventory(plan_context: Any) -> str:
     return "\n".join(lines) or "No reference media."
 
 
-def _effective_system_prompt(base_prompt: str, plan_context: Any) -> str:
+def _validate_enhancement_mode(enhancement_mode: str) -> str:
+    if enhancement_mode not in ENHANCEMENT_MODES:
+        raise ValueError("Choose a supported enhancement_mode.")
+    return enhancement_mode
+
+
+def _effective_system_prompt(
+    base_prompt: str,
+    plan_context: Any,
+    enhancement_mode: str = ENHANCEMENT_MODE_INTENT_LOCKED,
+) -> str:
+    enhancement_mode = _validate_enhancement_mode(enhancement_mode)
     payload = editable_prose_payload(plan_context)
     shot_numbers = [shot["shot_number"] for shot in payload["shots"]]
+    if enhancement_mode == ENHANCEMENT_MODE_INTENT_LOCKED:
+        mode_contract = (
+            "\n\nINTENT-LOCKED MODE CONTRACT:\n"
+            "- Every returned string is an addendum only, never a replacement or paraphrase. "
+            "Python preserves the original prose separately.\n"
+            "- Keep visual_style, initial_prompt, and non_diegetic_music empty.\n"
+            "- For each Shot description, add only 30-70 useful words of grounded, observable "
+            "production detail. Do not restate the source or alter its emphasis.\n"
+            "- Keep camera_direction empty when the original camera_direction is empty. When "
+            "the original contains a camera request, return only a compatible addendum.\n"
+            "- overall_soundscape may contain only compatible ambience or synchronized physical-"
+            "sound additions; never add dialogue, vocals, or music.\n"
+            "- Do not invent colors, weather, lighting effects, lenses, atmosphere, motivations, "
+            "or emotional interpretations unless supported by the original text or visual evidence "
+            "assigned to that exact role."
+        )
+    else:
+        mode_contract = (
+            "\n\nCREATIVE EXPANSION MODE CONTRACT:\n"
+            "- Return complete rewritten strings rather than addenda.\n"
+            "- Perform a material production-detail rewrite and normally aim for 80-140 useful "
+            "words per Shot description.\n"
+            "- You may add a concise motivated camera_direction when it is blank, unless the "
+            "source establishes a static camera or another conflicting constraint.\n"
+            "- Presentation choices may be added only when they preserve every source fact, "
+            "emphasis, intensity, role, and negative constraint."
+        )
     return (
         base_prompt.strip()
         + "\n\nLOCKED OUTPUT CONTRACT — these instructions take precedence over any "
@@ -657,7 +828,7 @@ def _effective_system_prompt(base_prompt: str, plan_context: Any) -> str:
         "and other negative constraints.\n"
         + "- Compiler-managed dialogue lines are masked in the read-only scene context. Never "
         "reconstruct dialogue wording, H3 dialogue-tag markup, speaker IDs, voice-reference clauses, or "
-        "delivery clauses inside editable prose."
+        "delivery clauses inside editable prose." + mode_contract
     )
 
 
@@ -666,7 +837,9 @@ def _llm_user_prompt(
     base_prompt: str,
     compiler_report: str,
     visual_analysis: str,
+    enhancement_mode: str = ENHANCEMENT_MODE_INTENT_LOCKED,
 ) -> str:
+    enhancement_mode = _validate_enhancement_mode(enhancement_mode)
     visual_note = (
         "Reference images and timestamped video samples are attached. Use them only according "
         "to REFERENCE INVENTORY."
@@ -674,18 +847,36 @@ def _llm_user_prompt(
         else "No pixels are attached. Use text metadata only."
     )
     shot_count = len(editable_prose_payload(plan_context)["shots"])
-    detail_target = (
-        f"Materially expand all {shot_count} Shot descriptions. Aim for 80-140 useful words per "
-        "Shot plus one concise camera_direction per Shot, unless the supplied prose is already "
-        "equally specific."
-        if shot_count
-        else "Materially expand the global scene prose without inventing a new event."
-    )
+    if enhancement_mode == ENHANCEMENT_MODE_INTENT_LOCKED:
+        detail_target = (
+            f"Write addenda for all {shot_count} Shot descriptions. Aim for 30-70 useful words "
+            "per Shot without restating, replacing, softening, or intensifying the locked source."
+        )
+        output_material = f"""LOCKED ORIGINAL PROSE — context only; Python preserves it verbatim
+{editable_prose_json(plan_context)}
+
+ADDENDA JSON TEMPLATE — return this exact schema with additions only
+{intent_addenda_json(plan_context)}"""
+    else:
+        detail_target = (
+            f"Materially expand all {shot_count} Shot descriptions. Aim for 80-140 useful words per "
+            "Shot plus one concise camera_direction per Shot, unless the supplied prose is already "
+            "equally specific."
+            if shot_count
+            else "Materially expand the global scene prose without inventing a new event."
+        )
+        output_material = (
+            "EDITABLE PROSE JSON — return the complete rewritten object\n"
+            + editable_prose_json(plan_context)
+        )
     return f"""Improve the editable prose JSON below, then return the complete JSON object only.
+
+ENHANCEMENT MODE
+{enhancement_mode}
 
 PRODUCTION DETAIL TARGET
 {detail_target}
-This is a production-detail pass, not a summary or light copy-edit. Preserve story facts while adding concrete visual, spatial, motion, camera, lighting, continuity, and synchronized-sound detail.
+This is a production-detail pass, not a summary. Preserve textual intent over optional visual evidence.
 
 VISUAL EVIDENCE
 {visual_note}
@@ -700,8 +891,7 @@ VALID COMPILED H3 CONTEXT
 Dialogue lines are replaced by compiler-managed placeholders so they cannot leak into editable prose.
 {_mask_compiler_dialogue_lines(base_prompt)}
 
-EDITABLE PROSE JSON
-{editable_prose_json(plan_context)}"""
+{output_material}"""
 
 
 class MiniMaxH3PlanV2ApplyProse:
@@ -785,17 +975,18 @@ class MiniMaxH3PlanV2PromptEnhancer:
         "enhancer_report",
     )
     OUTPUT_TOOLTIPS = (
-        "Final prompt rebuilt and validated by Python; falls back to the deterministic draft if Qwen returns an invalid patch.",
-        "Valid editable JSON only. Connect through a text editor to Apply Structured Prose for manual refinement.",
+        "Final prompt rebuilt and validated by Python. Intent-locked mode preserves the source wording and appends only accepted details.",
+        "Complete validated prose JSON after the selected mode is applied. Connect it to Apply Structured Prose for manual refinement.",
         "Recompiled locked plan matching enhanced_prompt.",
         "Editable system instructions exactly as resolved from the widget.",
-        "Actual system instructions sent to Qwen: base prompt plus the non-editable schema contract.",
+        "Actual system instructions sent to Qwen: base prompt plus the selected mode and non-editable schema contract.",
         "Complete Qwen chat template for debugging or use in another compatible LLM node.",
-        "Generation, visual-analysis, fallback, validation, tail, and CLIP-residency safety status.",
+        "Selected-mode, generation, visual-analysis, fallback, validation, tail, and CLIP-residency safety status.",
     )
     DESCRIPTION = (
-        "Structured Plan v2 production-detail enhancer. Qwen materially expands editable scene "
-        "prose; Python restores and validates every H3 structural field."
+        "Structured Plan v2 production-detail enhancer. Intent-locked mode keeps every original "
+        "prose field and appends Qwen details; Creative mode permits a full rewrite. Python "
+        "restores and validates every H3 structural field."
     )
 
     @classmethod
@@ -942,6 +1133,18 @@ class MiniMaxH3PlanV2PromptEnhancer:
                         ),
                     },
                 ),
+                "enhancement_mode": (
+                    ENHANCEMENT_MODES,
+                    {
+                        "default": ENHANCEMENT_MODE_INTENT_LOCKED,
+                        "tooltip": (
+                            "Intent-locked expansion (recommended) preserves your original prose "
+                            "verbatim and lets Qwen append only compatible production detail. "
+                            "Creative expansion lets Qwen rewrite the editable prose while Python "
+                            "still locks references, timing, dialogue, roles, and routes."
+                        ),
+                    },
+                ),
             },
         }
 
@@ -966,18 +1169,22 @@ class MiniMaxH3PlanV2PromptEnhancer:
         thinking: bool,
         clip_tail=None,
         offload_after_generation: bool = False,
+        enhancement_mode: str = ENHANCEMENT_MODE_INTENT_LOCKED,
     ):
         if clip is None:
             raise RuntimeError("A generation-capable CLIP input is required.")
         if visual_analysis not in VISUAL_ANALYSIS_MODES:
             raise ValueError("Choose a supported visual_analysis mode.")
+        enhancement_mode = _validate_enhancement_mode(enhancement_mode)
 
         base_prompt, compiler_report, base_compiled, _h3_length = _base_package(
             plan_context
         )
         fallback_json = editable_prose_json(base_compiled)
         base_system = str(system_prompt or "").strip() or PLAN_ENHANCER_SYSTEM_PROMPT
-        effective_system = _effective_system_prompt(base_system, base_compiled)
+        effective_system = _effective_system_prompt(
+            base_system, base_compiled, enhancement_mode
+        )
         tail_name = _resolve_tail_name(clip_tail)
         validate_clip_compatibility(clip, tail_name)
         minimax_clip = _is_minimax_h3_tokenizer(clip)
@@ -1001,6 +1208,7 @@ class MiniMaxH3PlanV2PromptEnhancer:
             base_prompt,
             compiler_report,
             visual_analysis,
+            enhancement_mode,
         )
         if visual_map and not minimax_clip:
             user_prompt += "\n\nGENERIC QWEN VISUAL ORDER\n" + visual_map
@@ -1023,7 +1231,8 @@ class MiniMaxH3PlanV2PromptEnhancer:
                 base_system,
                 effective_system,
                 llm_prompt,
-                f"Structured enhancement skipped. {compatibility_issue}",
+                f"Structured enhancement skipped in {enhancement_mode}. "
+                f"{compatibility_issue}",
             )
 
         tokenize_options = {
@@ -1066,9 +1275,14 @@ class MiniMaxH3PlanV2PromptEnhancer:
         repair_note = ""
         if not fallback_reason:
             try:
-                enhanced_prompt, enhanced_plan, apply_report, _length, canonical = (
-                    apply_editable_prose(base_compiled, raw_output)
-                )
+                (
+                    enhanced_prompt,
+                    enhanced_plan,
+                    apply_report,
+                    _length,
+                    canonical,
+                    mode_report,
+                ) = _apply_generated_prose(base_compiled, raw_output, enhancement_mode)
             except (ValueError, RuntimeError) as error:
                 if "<d> dialogue tags" not in str(error):
                     fallback_reason = str(error)
@@ -1084,7 +1298,10 @@ class MiniMaxH3PlanV2PromptEnhancer:
                                 apply_report,
                                 _length,
                                 canonical,
-                            ) = apply_editable_prose(base_compiled, repaired_output)
+                                mode_report,
+                            ) = _apply_generated_prose(
+                                base_compiled, repaired_output, enhancement_mode
+                            )
                         except (ValueError, RuntimeError) as repair_error:
                             fallback_reason = (
                                 f"{error} Automatic dialogue-leak repair also failed: "
@@ -1102,7 +1319,7 @@ class MiniMaxH3PlanV2PromptEnhancer:
             enhanced_plan = base_compiled
             canonical = fallback_json
             report = (
-                "Structured enhancement fallback: "
+                f"Structured enhancement fallback in {enhancement_mode}: "
                 + fallback_reason
                 + " The deterministic compiler draft and valid original prose JSON were returned."
             )
@@ -1118,7 +1335,14 @@ class MiniMaxH3PlanV2PromptEnhancer:
                 if tail_name is not None
                 else " The connected complete CLIP generated the prose patch."
             )
-            report = apply_report + media_note + tail_note + repair_note
+            report = (
+                mode_report
+                + "\n\n"
+                + apply_report
+                + media_note
+                + tail_note
+                + repair_note
+            )
 
         offload_note = _clip_offload_report(clip_offload_status)
         if offload_note:

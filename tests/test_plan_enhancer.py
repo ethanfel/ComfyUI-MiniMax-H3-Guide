@@ -6,6 +6,8 @@ import pytest
 import torch
 
 from plan_enhancer import (
+    ENHANCEMENT_MODE_CREATIVE,
+    ENHANCEMENT_MODE_INTENT_LOCKED,
     PLAN_ENHANCER_SYSTEM_PROMPT,
     VISUAL_ANALYSIS_DISABLED,
     VISUAL_ANALYSIS_ENABLED,
@@ -16,6 +18,7 @@ from plan_enhancer import (
     _plan_inventory,
     apply_editable_prose,
     editable_prose_json,
+    intent_addenda_payload,
     parse_editable_prose,
 )
 from plan_v2 import (
@@ -156,6 +159,7 @@ def enhancer_kwargs(**overrides):
         "seed": 9,
         "thinking": False,
         "offload_after_generation": False,
+        "enhancement_mode": ENHANCEMENT_MODE_CREATIVE,
     }
     values.update(overrides)
     return values
@@ -268,6 +272,18 @@ def test_replacing_one_valid_label_with_another_is_still_rejected():
         apply_editable_prose(plan, json.dumps(payload))
 
 
+def test_repeating_an_existing_label_in_the_same_field_is_allowed():
+    plan = compiled_scene()
+    payload = json.loads(editable_prose_json(plan))
+    payload["shots"][0]["description"] += (
+        " <Subject 1> remains identifiable throughout the movement."
+    )
+
+    prompt, *_rest = apply_editable_prose(plan, json.dumps(payload))
+
+    assert prompt.count("<Subject 1>") > 2
+
+
 def test_qwen_receives_full_scene_context_with_locked_dialogue_masked():
     plan = compiled_scene()
     clip = FakeClip(enhanced_json(plan))
@@ -300,11 +316,60 @@ def test_qwen_receives_full_scene_context_with_locked_dialogue_masked():
     assert json.loads(prose)["shots"][1]["shot_number"] == 2
     assert enhanced_plan["compiled"] == plan["compiled"]
     assert base_system == PLAN_ENHANCER_SYSTEM_PROMPT
-    assert "material production-detail rewrite" in base_system
-    assert "When it is blank, you may supply" in base_system
+    assert "Follow the authoritative enhancement-mode contract" in base_system
     assert "LOCKED OUTPUT CONTRACT" in effective_system
+    assert "CREATIVE EXPANSION MODE CONTRACT" in effective_system
     assert "text metadata only" in report
     assert "images" not in clip.tokenize_calls[0]["kwargs"]
+
+
+def test_intent_locked_mode_preserves_source_and_composes_only_addenda():
+    plan = compiled_scene()
+    plan["shots"][0]["camera_direction"] = ""
+    original = json.loads(editable_prose_json(plan))
+    addenda = intent_addenda_payload(plan)
+    addenda["visual_style"] = "an unsupported replacement style"
+    addenda["initial_prompt"] = "an unsupported replacement premise"
+    addenda["shots"][0]["description"] = (
+        "The door follows a continuous hinge arc while <Subject 1> keeps one hand "
+        "on its edge and shifts her weight into the cab."
+    )
+    addenda["shots"][1]["description"] = (
+        "Her weight settles into the cushion as the vehicle's vibration continues "
+        "through the seat and surrounding trim."
+    )
+    addenda["shots"][0]["camera_direction"] = (
+        "The move stays aligned with the door's travel."
+    )
+    addenda["overall_soundscape"] = (
+        "The door hinge and seat cushion remain synchronized with the visible motion."
+    )
+    addenda["non_diegetic_music"] = "an unsupported music replacement"
+    clip = FakeClip(json.dumps(addenda))
+
+    prompt, prose, enhanced_plan, _base, effective, llm_prompt, report = (
+        MiniMaxH3PlanV2PromptEnhancer().enhance_plan(
+            clip,
+            plan,
+            **enhancer_kwargs(enhancement_mode=ENHANCEMENT_MODE_INTENT_LOCKED),
+        )
+    )
+    result = json.loads(prose)
+
+    assert original["shots"][0]["description"] in prompt
+    assert addenda["shots"][0]["description"] in prompt
+    assert result["visual_style"] == original["visual_style"]
+    assert result["initial_prompt"] == original["initial_prompt"]
+    assert result["non_diegetic_music"] == original["non_diegetic_music"]
+    assert result["shots"][0]["camera_direction"] == ""
+    assert enhanced_plan["compiled"] == plan["compiled"]
+    assert "INTENT-LOCKED MODE CONTRACT" in effective
+    assert "LOCKED ORIGINAL PROSE" in llm_prompt
+    assert "ADDENDA JSON TEMPLATE" in llm_prompt
+    assert "Aim for 30-70 useful words" in llm_prompt
+    assert "Intent lock preserved every original prose field" in report
+    assert "visual_style, initial_prompt, non_diegetic_music" in report
+    assert "Shot 1 camera_direction" in report
 
 
 def test_structured_enhancer_repairs_copied_compiler_dialogue_once():
@@ -429,6 +494,15 @@ def test_phase_two_node_contract():
     ][1]
     assert offload["default"] is False
     assert "never explicitly unloads" in offload["tooltip"]
+    enhancement = MiniMaxH3PlanV2PromptEnhancer.INPUT_TYPES()["optional"][
+        "enhancement_mode"
+    ]
+    assert enhancement[0] == [
+        ENHANCEMENT_MODE_INTENT_LOCKED,
+        ENHANCEMENT_MODE_CREATIVE,
+    ]
+    assert enhancement[1]["default"] == ENHANCEMENT_MODE_INTENT_LOCKED
+    assert "preserves your original prose verbatim" in enhancement[1]["tooltip"]
     required = MiniMaxH3PlanV2PromptEnhancer.INPUT_TYPES()["required"]
     assert required["max_analysis_frames"][1]["default"] == 8
     assert required["max_new_tokens"][1]["default"] == 1200

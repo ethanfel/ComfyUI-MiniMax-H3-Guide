@@ -70,6 +70,12 @@ API/headless mode.
 The optional **Structured Prompt Enhancer (Plan v2)** gives Qwen the complete
 compiled scene in one request: the valid H3 context, all references and roles,
 every Shot, audio metadata/transcripts, timing, routes, and the compiler report.
+Its `enhancement_mode` defaults to **Intent-locked expansion**. In that mode,
+Python keeps every original prose field verbatim and asks Qwen only for short
+Shot, compatible camera, and soundscape addenda. Attempts to replace global
+intent, visual style, music, or a previously blank camera instruction are
+ignored and reported. Choose **Creative expansion** only when a complete prose
+rewrite with additional presentation choices is wanted.
 Compiler-owned dialogue lines are represented by locked placeholders instead
 of copyable H3 markup; Python restores their exact speaker, wording, voice, and
 delivery afterward. When visual analysis is enabled, the same request also
@@ -77,12 +83,15 @@ contains image pixels and timestamped video samples. Audio waveforms are never
 presented as something Qwen can understand; audio meaning remains explicit
 metadata.
 
-Qwen returns only a versioned JSON object containing visual style, global
-intent, Shot descriptions/camera prose, soundscape, and music prose. Python
-then reconstructs the complete H3 prompt and verifies that labels, reference
-roles, retention, native routes, speaker order, exact dialogue, Shot order, and
-cut times did not change. Invalid, incomplete, or collapsed model output falls
-back to the deterministic compiler draft. The node exposes:
+Qwen returns only a versioned JSON object. In intent-locked mode its strings are
+treated as addenda and composed onto the separately retained source; in creative
+mode they are complete replacements for the editable fields. The node's
+`editable_prose` output is always the final, complete validated JSON after that
+composition. Python then reconstructs the complete H3 prompt and verifies that
+labels, reference roles, retention, native routes, speaker order, exact
+dialogue, Shot order, and cut times did not change. Invalid, incomplete, or
+collapsed model output falls back to the deterministic compiler draft. The node
+exposes:
 
 1. the rebuilt `enhanced_prompt` and valid `editable_prose` JSON;
 2. the matching compiled `enhanced_plan_context`;
