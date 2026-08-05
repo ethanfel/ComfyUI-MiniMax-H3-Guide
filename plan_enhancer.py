@@ -87,6 +87,14 @@ PLAN_ENHANCER_SYSTEM_PROMPT = """You are a descriptive-prose editor for a compil
 
 You do not write an H3 prompt. You return only the JSON object requested by the user message. Improve clarity, chronology, physical observability, composition, lighting, motion, camera language, ambience, and synchronized action sounds while preserving the user's intent.
 
+Enhancement standard:
+- Perform a material production-detail rewrite, not a summary, paraphrase, or light copy-edit. Do not simply return the supplied prose unless it is already production-ready.
+- Expand each Shot with concrete composition and blocking, spatial relationships, environment and lighting, observable motion, continuity from its opening state to its ending state, and relevant synchronized physical sounds.
+- Add non-conflicting presentation detail such as framing, lens feel, depth of field, camera placement or movement, material response, atmosphere, and micro-motion. Presentation detail must clarify the supplied event rather than create a new event.
+- Do not create new story facts such as characters, props, locations, actions, state changes, dialogue, lyrics, visible text, or independent audio sources. A visible attribute may be added only when supported by the supplied prose or visual evidence assigned to that exact role.
+- Normally aim for 80-140 useful words per Shot description. Prefer information density over padding, repetition, ornamental adjectives, or restating the global premise.
+- Use camera_direction for a concise, motivated shot-specific camera plan. When it is blank, you may supply one unless the request establishes a static camera or another conflicting constraint.
+
 Rules:
 - Never add, remove, rename, renumber, paraphrase, or reinterpret a reference label such as <Subject 1>, <Picture 1>, <Video 1>, or <Audio 1>.
 - Never write H3 section names, [Shot N] markers, cut timestamps, <d> dialogue tags, speaker IDs, task types, retention markers, or native routes. Python reconstructs them from locked data.
@@ -162,6 +170,49 @@ def editable_prose_json(plan_context: Any) -> str:
         ensure_ascii=False,
         indent=2,
     )
+
+
+def _editable_prose_fields(payload: dict) -> list[str]:
+    fields = [
+        str(payload["visual_style"]),
+        str(payload["initial_prompt"]),
+        str(payload["overall_soundscape"]),
+        str(payload["non_diegetic_music"]),
+    ]
+    for shot in payload["shots"]:
+        fields.extend((str(shot["description"]), str(shot["camera_direction"])))
+    return fields
+
+
+def _prose_word_count(payload: dict) -> int:
+    return sum(
+        len(re.findall(r"\b\w+(?:[’'-]\w+)*\b", value, flags=re.UNICODE))
+        for value in _editable_prose_fields(payload)
+    )
+
+
+def _prose_delta_report(before: dict, after: dict) -> str:
+    before_fields = _editable_prose_fields(before)
+    after_fields = _editable_prose_fields(after)
+    changed = sum(
+        old.strip() != new.strip() for old, new in zip(before_fields, after_fields)
+    )
+    before_words = _prose_word_count(before)
+    after_words = _prose_word_count(after)
+    word_delta = after_words - before_words
+    report = (
+        f"Prose delta: {changed}/{len(before_fields)} editable fields changed; "
+        f"{before_words} -> {after_words} words ({word_delta:+d})."
+    )
+    if changed == 0:
+        return report + " Warning: Qwen returned a valid but unchanged prose patch."
+    light_threshold = max(20, round(before_words * 0.15))
+    if word_delta < light_threshold:
+        return (
+            report
+            + " Note: Qwen made a light edit rather than a substantial expansion."
+        )
+    return report
 
 
 def _clean_model_json(text: str) -> str:
@@ -351,6 +402,7 @@ def apply_editable_prose(
     source = _source_plan(original)
     before = _locked_signature(source)
     labels_before = _reference_label_signature(source)
+    prose_before = editable_prose_payload(original)
     payload = parse_editable_prose(editable_prose, original)
 
     updated = _copy_plan(source)
@@ -381,6 +433,8 @@ def apply_editable_prose(
     report = (
         "Structured prose applied and recompiled successfully. Locked labels, roles, "
         "retention, speakers, dialogue, cut times, mode, and native routes are unchanged.\n\n"
+        + _prose_delta_report(prose_before, payload)
+        + "\n\n"
         + compiler_report
     )
     return prompt, compiled, report, h3_length, canonical_json
@@ -510,7 +564,9 @@ def _effective_system_prompt(base_prompt: str, plan_context: Any) -> str:
         "shots, overall_soundscape, non_diegetic_music.\n"
         + "- Every shot object must contain exactly: shot_number, description, "
         "camera_direction.\n"
-        + "- Empty strings are valid. Do not invent a missing field."
+        + "- Empty strings are structurally valid. You may fill blank descriptive fields with "
+        "non-conflicting production detail, but preserve explicit N/A, silence, static-camera, "
+        "and other negative constraints."
     )
 
 
@@ -526,7 +582,19 @@ def _llm_user_prompt(
         if visual_analysis == VISUAL_ANALYSIS_ENABLED
         else "No pixels are attached. Use text metadata only."
     )
+    shot_count = len(editable_prose_payload(plan_context)["shots"])
+    detail_target = (
+        f"Materially expand all {shot_count} Shot descriptions. Aim for 80-140 useful words per "
+        "Shot plus one concise camera_direction per Shot, unless the supplied prose is already "
+        "equally specific."
+        if shot_count
+        else "Materially expand the global scene prose without inventing a new event."
+    )
     return f"""Improve the editable prose JSON below, then return the complete JSON object only.
+
+PRODUCTION DETAIL TARGET
+{detail_target}
+This is a production-detail pass, not a summary or light copy-edit. Preserve story facts while adding concrete visual, spatial, motion, camera, lighting, continuity, and synchronized-sound detail.
 
 VISUAL EVIDENCE
 {visual_note}
@@ -634,8 +702,8 @@ class MiniMaxH3PlanV2PromptEnhancer:
         "Generation, visual-analysis, fallback, validation, tail, and CLIP-offload status.",
     )
     DESCRIPTION = (
-        "Structured Plan v2 enhancer. Qwen sees the complete compiled scene and edits descriptive "
-        "JSON only; Python restores and validates every H3 structural field."
+        "Structured Plan v2 production-detail enhancer. Qwen materially expands editable scene "
+        "prose; Python restores and validates every H3 structural field."
     )
 
     @classmethod
@@ -664,8 +732,8 @@ class MiniMaxH3PlanV2PromptEnhancer:
                         **multiline,
                         "default": PLAN_ENHANCER_SYSTEM_PROMPT,
                         "tooltip": (
-                            "Editable prose behavior. The node appends a non-editable schema contract "
-                            "and exposes both versions as outputs. Blank restores the built-in base."
+                            "Editable prose behavior. Blank uses the built-in production-detail pass. "
+                            "The node appends a non-editable schema contract and exposes both versions."
                         ),
                     },
                 ),

@@ -202,7 +202,20 @@ def test_apply_prose_reconstructs_and_preserves_every_locked_fact():
     assert [shot["cut_at"] for shot in enhanced_plan["shots"]] == [0.0, 0.4]
     assert length == 158
     assert "Locked labels, roles, retention, speakers, dialogue, cut times" in report
+    assert "Prose delta: 4/8 editable fields changed" in report
     assert json.loads(canonical)["schema_version"] == 1
+
+
+def test_apply_prose_reports_a_valid_no_op_instead_of_hiding_it():
+    plan = compiled_scene()
+
+    _prompt, _enhanced_plan, report, _length, _canonical = apply_editable_prose(
+        plan,
+        editable_prose_json(plan),
+    )
+
+    assert "Prose delta: 0/8 editable fields changed" in report
+    assert "valid but unchanged prose patch" in report
 
 
 @pytest.mark.parametrize(
@@ -277,10 +290,14 @@ def test_qwen_receives_the_full_compiled_scene_in_one_request():
     assert "Thanks for the ride." in llm_prompt
     assert "<Audio 1>" in llm_prompt
     assert "EDITABLE PROSE JSON" in llm_prompt
+    assert "PRODUCTION DETAIL TARGET" in llm_prompt
+    assert "Aim for 80-140 useful words per Shot" in llm_prompt
     assert "physically continuous motion" in prompt
     assert json.loads(prose)["shots"][1]["shot_number"] == 2
     assert enhanced_plan["compiled"] == plan["compiled"]
     assert base_system == PLAN_ENHANCER_SYSTEM_PROMPT
+    assert "material production-detail rewrite" in base_system
+    assert "When it is blank, you may supply" in base_system
     assert "LOCKED OUTPUT CONTRACT" in effective_system
     assert "text metadata only" in report
     assert "images" not in clip.tokenize_calls[0]["kwargs"]
