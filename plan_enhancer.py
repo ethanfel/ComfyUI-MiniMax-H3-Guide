@@ -647,7 +647,7 @@ class MiniMaxH3PlanV2PromptEnhancer:
                     "CLIP",
                     {
                         "tooltip": (
-                            "A complete generation-capable Qwen3-VL CLIP, or MiniMax H3's "
+                            "A complete generation-capable Qwen3-VL or Qwen3.5 CLIP, or MiniMax H3's "
                             "conditioning CLIP with Generation Tail Loader connected."
                         )
                     },

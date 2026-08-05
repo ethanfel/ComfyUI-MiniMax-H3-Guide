@@ -1,6 +1,6 @@
 # ComfyUI MiniMax H3 Prompt Guide
 
-A dependency-free ComfyUI node pack that turns a rough video idea into the prompt structure expected by MiniMax H3. It separates endpoint frames from full-reference media, assigns explicit roles instead of guessing from file type, stores reusable image/audio Reference Sheets under ComfyUI user data, selects the H3 prompt family, and can use ComfyUI's loaded Qwen3-VL CLIP to analyze visual references and enhance the result.
+A dependency-free ComfyUI node pack that turns a rough video idea into the prompt structure expected by MiniMax H3. It separates endpoint frames from full-reference media, assigns explicit roles instead of guessing from file type, stores reusable image/audio Reference Sheets under ComfyUI user data, selects the H3 prompt family, and can use a loaded Qwen3-VL or Qwen3.5 CLIP to analyze visual references and enhance the result.
 
 The node is based on MiniMax's official [base prompt guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md), [full-reference prompt guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md), and [H3 model card](https://huggingface.co/MiniMaxAI/MiniMax-H3).
 
@@ -154,11 +154,11 @@ does the final reference context reach the Guide. Do not feed
 `Prompt Guide.h3_length` back into a video Visual Reference that contributes to
 the Guide's own `reference_context`.
 
-### Legacy: MiniMax H3 Prompt Enhancer (Qwen3-VL)
+### Legacy: MiniMax H3 Prompt Enhancer (Qwen LLM)
 
 This node follows ComfyUI's native **Generate Text** execution model. Connect
 `h3_prompt` and optionally `mode_report` from the guide node. Its `CLIP` input
-accepts either a complete generation-capable Qwen3-VL model or MiniMax H3's
+accepts a complete generation-capable Qwen3-VL or Qwen3.5 model, or MiniMax H3's
 normal 50-layer conditioning CLIP plus the optional 50–63 generation tail:
 
 ```text
@@ -196,9 +196,10 @@ Reference chain below. Visual context helps Qwen write the prompt; it never
 silently turns a picture into an endpoint frame or replaces the media inputs
 on the native H3 node.
 
-For a complete generative Qwen3-VL CLIP, leave the enhancer's optional
-`clip_tail` socket disconnected. ComfyUI's supported full generative Qwen3-VL
-routes are normally the 4B/8B families. The native MiniMax 32B text encoder is
+For a complete generative Qwen3-VL or Qwen3.5 CLIP, leave the enhancer's
+optional `clip_tail` socket disconnected. Qwen3.5 uses ComfyUI's normal
+`CLIPLoader` and the native Generate Text contract; its 4B model is a practical
+general enhancer choice. The native MiniMax 32B text encoder is
 the deliberately truncated conditioning model described below; loading that
 checkpoint does not by itself create a complete 32B LLM.
 
@@ -398,8 +399,8 @@ edit/continuation/whole-video temporal sources remain `<Video N>`. The enhancer
 can expand those definitions from visual evidence and checks the resulting
 structure, but the explicit bindings remain authoritative. Review
 `enhancer_report` and the candidate text before generation. Reference Sheet
-audio uses a separate typed context because Qwen3-VL receives its saved text
-description rather than the waveform.
+audio uses a separate typed context because the enhancer model receives its
+saved text description rather than the waveform.
 
 ### Planning multiple shots
 

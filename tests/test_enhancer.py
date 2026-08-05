@@ -126,8 +126,12 @@ def enhancer_kwargs(**overrides):
 
 
 def test_user_prompt_reports_optional_image_state():
-    assert "No visual media is attached" in build_llm_user_prompt("draft", has_image=False)
-    assert "One legacy image is attached" in build_llm_user_prompt("draft", has_image=True)
+    assert "No visual media is attached" in build_llm_user_prompt(
+        "draft", has_image=False
+    )
+    assert "One legacy image is attached" in build_llm_user_prompt(
+        "draft", has_image=True
+    )
     chained = build_llm_user_prompt(
         "draft", has_image=True, reference_context="<Picture 1>: identity"
     )
@@ -286,8 +290,14 @@ def test_enhancer_tooltips_explain_outputs_and_optional_image_scope():
     assert "Legacy compatibility" in schema["optional"]["image"][1]["tooltip"]
     assert "reference_context" in schema["optional"]
     assert schema["optional"]["offload_after_generation"][1]["default"] is True
-    assert "explicitly moves" in schema["optional"]["offload_after_generation"][1]["tooltip"]
-    assert "Image to Video endpoint inputs" in schema["optional"]["reference_context"][1]["tooltip"]
+    assert (
+        "explicitly moves"
+        in schema["optional"]["offload_after_generation"][1]["tooltip"]
+    )
+    assert (
+        "Image to Video endpoint inputs"
+        in schema["optional"]["reference_context"][1]["tooltip"]
+    )
     assert "1000-1400" in schema["required"]["max_new_tokens"][1]["tooltip"]
     assert "upgraded automatically" in schema["required"]["system_prompt"][1]["tooltip"]
     assert "Cleaned candidate" in MiniMaxH3PromptEnhancer.OUTPUT_TOOLTIPS[0]
@@ -319,9 +329,7 @@ def test_enhancer_explicitly_offloads_managed_clip_after_decode(monkeypatch):
     patcher = SimpleNamespace(load_device="cuda:0", offload_device="cpu")
     clip = FakeClip(VALID_BASE_PROMPT)
     clip.patcher = patcher
-    _, _, _, report = MiniMaxH3PromptEnhancer().enhance(
-        clip=clip, **enhancer_kwargs()
-    )
+    _, _, _, report = MiniMaxH3PromptEnhancer().enhance(clip=clip, **enhancer_kwargs())
 
     assert calls == [
         (
@@ -416,8 +424,13 @@ def test_default_system_prompt_covers_official_high_risk_rules():
     assert "says in an off-screen voiceover" in DEFAULT_SYSTEM_PROMPT
     assert "<scenetrans>" in DEFAULT_SYSTEM_PROMPT
     assert "<cutoff>" in DEFAULT_SYSTEM_PROMPT
-    assert "Concrete target-frame anchors use keyframe completion" in DEFAULT_SYSTEM_PROMPT
-    assert "video editing only when a source video is directly modified" in DEFAULT_SYSTEM_PROMPT
+    assert (
+        "Concrete target-frame anchors use keyframe completion" in DEFAULT_SYSTEM_PROMPT
+    )
+    assert (
+        "video editing only when a source video is directly modified"
+        in DEFAULT_SYSTEM_PROMPT
+    )
     assert "complete final audio track" in DEFAULT_SYSTEM_PROMPT
 
 
@@ -461,7 +474,10 @@ def test_enhancer_analyzes_chained_pictures_and_video_with_generic_qwen():
     tokenized = clip.tokenize_calls[0]
     assert len(tokenized["kwargs"]["images"]) == 3
     assert llm_prompt.count("<|image_pad|>") == 3
-    assert "Binding 1: role=Identity or appearance; retention=fully_preserved" in llm_prompt
+    assert (
+        "Binding 1: role=Identity or appearance; retention=fully_preserved"
+        in llm_prompt
+    )
     assert "H3 label policy=derive the requested reusable visible content" in llm_prompt
     assert "Visual inputs 2-3 are chronological samples from <Video 1>" in llm_prompt
     assert "not a requirement to invent a <Subject N>" in system_prompt
@@ -501,7 +517,9 @@ def test_enhancer_inventory_renders_every_binding_for_one_asset():
 
     entries = reference_entries(context)
     inventory = enhancer_reference_inventory(entries)
-    assert "Binding 1: role=Identity or appearance; retention=fully_preserved" in inventory
+    assert (
+        "Binding 1: role=Identity or appearance; retention=fully_preserved" in inventory
+    )
     assert "content_group=hero" in inventory
     assert "notes=Preserve the face and coat." in inventory
     assert (
@@ -704,10 +722,14 @@ def test_enhancer_rejects_legacy_image_and_reference_chain_together():
         16,
         768,
     )
-    with pytest.raises(ValueError, match="either reference_context or the legacy image"):
+    with pytest.raises(
+        ValueError, match="either reference_context or the legacy image"
+    ):
         MiniMaxH3PromptEnhancer().enhance(
             clip=FakeClip("unused"),
-            **enhancer_kwargs(reference_context=context, image=torch.zeros(1, 32, 32, 3)),
+            **enhancer_kwargs(
+                reference_context=context, image=torch.zeros(1, 32, 32, 3)
+            ),
         )
 
 
@@ -741,21 +763,31 @@ def test_raw_generation_collapse_returns_manual_prompt(decoded, expected_reason)
 
 
 def test_generation_collapse_detection_keeps_normal_text():
-    assert generation_collapse_reason("," * 100) == "the output collapsed into punctuation"
+    assert (
+        generation_collapse_reason("," * 100) == "the output collapsed into punctuation"
+    )
     assert generation_collapse_reason(",") == "the output collapsed into punctuation"
     assert generation_collapse_reason("<think>unfinished") == (
         "the model ended inside an unfinished reasoning block"
     )
-    assert generation_collapse_reason("A coherent prompt with varied words and useful punctuation.") is None
+    assert (
+        generation_collapse_reason(
+            "A coherent prompt with varied words and useful punctuation."
+        )
+        is None
+    )
 
 
 def test_structural_validator_accepts_complete_base_and_ref2va_prompts():
     assert h3_structure_warnings(VALID_BASE_PROMPT, "T2VA") == []
-    assert h3_structure_warnings(
-        VALID_REFERENCE_PROMPT,
-        "Ref2VA",
-        ["<Picture 1>"],
-    ) == []
+    assert (
+        h3_structure_warnings(
+            VALID_REFERENCE_PROMPT,
+            "Ref2VA",
+            ["<Picture 1>"],
+        )
+        == []
+    )
 
 
 def test_structural_validator_warns_about_sections_from_the_wrong_mode():
@@ -774,7 +806,10 @@ overall_soundscape:
 non_diegetic_music:
 """
     warnings = h3_structure_warnings(empty_base, "T2VA")
-    assert "empty required section(s): integrated_multimodal_description, overall_soundscape, non_diegetic_music" in warnings
+    assert (
+        "empty required section(s): integrated_multimodal_description, overall_soundscape, non_diegetic_music"
+        in warnings
+    )
 
 
 def test_structural_validator_accepts_official_bare_fl2va_picture_labels_only():
@@ -788,21 +823,27 @@ Rain and distant footsteps.
 
 non_diegetic_music:
 N/A"""
-    assert h3_structure_warnings(
-        fl2va,
-        "FL2VA",
-        ["<Picture 1>", "<Picture 2>"],
-    ) == []
+    assert (
+        h3_structure_warnings(
+            fl2va,
+            "FL2VA",
+            ["<Picture 1>", "<Picture 2>"],
+        )
+        == []
+    )
 
     i2va_with_bare_label = fl2va.replace(
         "How the reference pictures align with the target video —",
         "For the target video, at 0.00 seconds into the target video,",
         1,
     )
-    assert "supplied reference label(s) are absent: <Picture 1>" in h3_structure_warnings(
-        i2va_with_bare_label,
-        "I2VA",
-        ["<Picture 1>"],
+    assert (
+        "supplied reference label(s) are absent: <Picture 1>"
+        in h3_structure_warnings(
+            i2va_with_bare_label,
+            "I2VA",
+            ["<Picture 1>"],
+        )
     )
 
 
@@ -858,7 +899,10 @@ def test_structural_validator_enforces_visual_and_audio_retention_markers():
         _retention_marker_prompt("fully_copy", "fully_preserved"),
         "Ref2VA",
     )
-    assert "invalid retention marker(s): <Subject 1>=fully_copy, <Audio 1>=fully_preserved" in invalid
+    assert (
+        "invalid retention marker(s): <Subject 1>=fully_copy, <Audio 1>=fully_preserved"
+        in invalid
+    )
 
     missing = _retention_marker_prompt("fully_preserved", "reference").replace(
         "<Subject 1> (appears in [Shot 1]): fully_preserved",
@@ -874,12 +918,21 @@ def test_structural_validator_enforces_fully_copy_audio_section_exclusivity():
         "Use the defined synchronized sound.",
         "<Audio 1> is reused 1:1 as the complete final audio track with no added layers.",
     )
-    assert not any("fully_copy audio" in warning for warning in h3_structure_warnings(valid, "Ref2VA"))
+    assert not any(
+        "fully_copy audio" in warning
+        for warning in h3_structure_warnings(valid, "Ref2VA")
+    )
 
     invalid = _retention_marker_prompt("fully_preserved", "fully_copy")
     warnings = h3_structure_warnings(invalid, "Ref2VA")
-    assert "fully_copy audio is not cited in every applicable audio section: <Audio 1>" in warnings
-    assert "fully_copy audio sections do not state that the copied track remains exclusive" in warnings
+    assert (
+        "fully_copy audio is not cited in every applicable audio section: <Audio 1>"
+        in warnings
+    )
+    assert (
+        "fully_copy audio sections do not state that the copied track remains exclusive"
+        in warnings
+    )
 
 
 def test_structural_validator_reports_malformed_ref2va_without_replacing_it():
@@ -940,7 +993,7 @@ def test_clip_compatibility_rejects_known_non_qwen_comfy_tokenizer_early():
     CLIPTokenizer.__module__ = "comfy.text_encoders.clip_l"
     clip = FakeClip(VALID_BASE_PROMPT)
     clip.tokenizer = CLIPTokenizer()
-    with pytest.raises(RuntimeError, match="formats Qwen3-VL chat"):
+    with pytest.raises(RuntimeError, match="formats Qwen chat"):
         MiniMaxH3PromptEnhancer().enhance(
             clip=clip,
             **enhancer_kwargs(reference_context={"not": "a valid context"}),
@@ -965,6 +1018,31 @@ def test_clip_compatibility_accepts_qwen_and_tail_backed_wrappers():
     validate_clip_compatibility(tail_backed, "generation_tail_50_63.safetensors")
     with pytest.raises(RuntimeError, match="missing generate"):
         validate_clip_compatibility(tail_backed)
+
+
+@pytest.mark.parametrize(
+    ("module_name", "class_name"),
+    [
+        ("comfy.text_encoders.qwen35", "Qwen35ImageTokenizer_"),
+        ("comfy.text_encoders.qwen3_5", "Qwen3_5Tokenizer"),
+    ],
+)
+def test_clip_compatibility_accepts_comfy_qwen35_tokenizers(module_name, class_name):
+    tokenizer_type = type(class_name, (), {})
+    tokenizer_type.__module__ = module_name
+    clip = FakeClip(VALID_BASE_PROMPT)
+    clip.tokenizer = tokenizer_type()
+
+    validate_clip_compatibility(clip)
+    enhanced, _system, llm_prompt, report = MiniMaxH3PromptEnhancer().enhance(
+        clip=clip,
+        **enhancer_kwargs(),
+    )
+
+    assert enhanced == VALID_BASE_PROMPT
+    assert llm_prompt.startswith("<|im_start|>system")
+    assert clip.generate_call is not None
+    assert "connected complete CLIP" in report
 
 
 def test_truncated_h3_conditioning_clip_is_rejected_before_generation():
@@ -998,7 +1076,9 @@ def test_truncated_h3_clip_uses_selected_tail(monkeypatch):
     transformer = SimpleNamespace(model=SimpleNamespace(config=Config()))
     inner = SimpleNamespace(transformer=transformer)
     stage = SimpleNamespace(clip="qwen", qwen=inner)
-    clip = FakeClip("integrated_multimodal_description: [Shot 1] Tail result.", minimax=True)
+    clip = FakeClip(
+        "integrated_multimodal_description: [Shot 1] Tail result.", minimax=True
+    )
     clip.cond_stage_model = stage
     calls = []
 
@@ -1010,9 +1090,7 @@ def test_truncated_h3_clip_uses_selected_tail(monkeypatch):
     enhanced, _, _, report = MiniMaxH3PromptEnhancer().enhance(
         clip=clip,
         **enhancer_kwargs(
-            clip_tail={
-                "tail_name": "MiniMax-H3/generation_tail_50_63_int8.safetensors"
-            }
+            clip_tail={"tail_name": "MiniMax-H3/generation_tail_50_63_int8.safetensors"}
         ),
     )
     assert enhanced.endswith("Tail result.")

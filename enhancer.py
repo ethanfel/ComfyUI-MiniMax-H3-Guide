@@ -1,4 +1,4 @@
-"""Qwen3-VL prompt enhancement using ComfyUI's loaded CLIP interface."""
+"""Qwen-family prompt enhancement using ComfyUI's loaded CLIP interface."""
 
 from __future__ import annotations
 
@@ -8,9 +8,17 @@ import re
 import traceback
 
 try:
-    from .media_context import REFERENCE_CONTEXT_TYPE, reference_entries, reference_inventory
+    from .media_context import (
+        REFERENCE_CONTEXT_TYPE,
+        reference_entries,
+        reference_inventory,
+    )
 except ImportError:
-    from media_context import REFERENCE_CONTEXT_TYPE, reference_entries, reference_inventory
+    from media_context import (
+        REFERENCE_CONTEXT_TYPE,
+        reference_entries,
+        reference_inventory,
+    )
 
 
 NO_TAIL = "[none — connected CLIP is already complete]"
@@ -182,7 +190,10 @@ def build_llm_user_prompt(
         )
     else:
         image_note = "No visual media is attached. Work only from the text and declared reference roles."
-    report = mode_report.strip() or "No separate mode report was supplied; infer the mode from the draft."
+    report = (
+        mode_report.strip()
+        or "No separate mode report was supplied; infer the mode from the draft."
+    )
     draft = manual_prompt.strip() or "No manual prompt was supplied."
     context = reference_context.strip() or "No chained reference context was supplied."
     return f"""Enhance the following MiniMax H3 prompt draft.
@@ -203,8 +214,20 @@ MANUAL H3 DRAFT
 def _is_minimax_h3_tokenizer(clip) -> bool:
     tokenizer = getattr(clip, "tokenizer", None)
     tokenizer_type = type(tokenizer)
-    return tokenizer_type.__name__ == "MiniMaxH3Tokenizer" or tokenizer_type.__module__.endswith(
-        ".minimax"
+    return (
+        tokenizer_type.__name__ == "MiniMaxH3Tokenizer"
+        or tokenizer_type.__module__.endswith(".minimax")
+    )
+
+
+def _is_supported_qwen_tokenizer(clip) -> bool:
+    """Recognize ComfyUI's generative Qwen3-VL and Qwen3.5 tokenizers."""
+
+    tokenizer = getattr(clip, "tokenizer", None)
+    tokenizer_type = type(tokenizer)
+    identity = f"{tokenizer_type.__module__}.{tokenizer_type.__name__}".casefold()
+    return any(
+        marker in identity for marker in ("qwen3vl", "qwen3_vl", "qwen35", "qwen3_5")
     )
 
 
@@ -217,23 +240,23 @@ def validate_clip_compatibility(clip, tail_name: str | None = None) -> None:
     missing = [name for name in required if not callable(getattr(clip, name, None))]
     if missing:
         raise RuntimeError(
-            "Prompt Enhancer needs a Qwen3-VL CLIP with callable "
+            "Prompt Enhancer needs a generative Qwen3-VL or Qwen3.5 CLIP with callable "
             f"{', '.join(required)} methods; the connected object is missing {', '.join(missing)}."
         )
 
     tokenizer = getattr(clip, "tokenizer", None)
     tokenizer_type = type(tokenizer)
     identity = f"{tokenizer_type.__module__}.{tokenizer_type.__name__}".casefold()
-    known_qwen = "qwen3vl" in identity or "qwen3_vl" in identity
+    known_qwen = _is_supported_qwen_tokenizer(clip)
     known_minimax = _is_minimax_h3_tokenizer(clip)
     # Unknown third-party/fake wrappers remain allowed. Reject only tokenizer
     # classes known to come from ComfyUI's non-Qwen text-encoder modules.
     known_comfy_tokenizer = identity.startswith("comfy.")
     if known_comfy_tokenizer and not (known_qwen or known_minimax):
         raise RuntimeError(
-            "Prompt Enhancer formats Qwen3-VL chat and vision tokens, but the connected CLIP uses "
+            "Prompt Enhancer formats Qwen chat and vision tokens, but the connected CLIP uses "
             f"{tokenizer_type.__module__}.{tokenizer_type.__name__}. Connect a complete "
-            "Qwen3-VL CLIP, or MiniMax H3's CLIP with its Generation Tail Loader."
+            "Qwen3-VL/Qwen3.5 CLIP, or MiniMax H3's CLIP with its Generation Tail Loader."
         )
 
 
@@ -284,7 +307,9 @@ def _prepare_reference_visuals(entries: list[dict], minimax_reference_payload: b
                 minimax_items.append({"type": "image", "data": media[:1]})
             else:
                 generic_images.append(media[:1])
-                visual_map.append(f"Visual input {len(generic_images)} is {entry['label']}.")
+                visual_map.append(
+                    f"Visual input {len(generic_images)} is {entry['label']}."
+                )
             continue
 
         timestamps = (
@@ -298,7 +323,9 @@ def _prepare_reference_visuals(entries: list[dict], minimax_reference_payload: b
             )
         else:
             start = len(generic_images) + 1
-            generic_images.extend(media[index : index + 1] for index in range(media.shape[0]))
+            generic_images.extend(
+                media[index : index + 1] for index in range(media.shape[0])
+            )
             end = len(generic_images)
             formatted_times = ", ".join(f"{timestamp:.3f}s" for timestamp in timestamps)
             visual_map.append(
@@ -377,10 +404,7 @@ def enhancer_reference_inventory(entries: list[dict]) -> str:
                 inventory_entry["bindings"] = aliased_bindings
         inventory_entries.append(inventory_entry)
     rendered = reference_inventory(inventory_entries)
-    if not entries or not any(
-        _entry_role_bindings(entry)
-        for entry in entries
-    ):
+    if not entries or not any(_entry_role_bindings(entry) for entry in entries):
         return rendered
 
     missing_lines = []
@@ -415,12 +439,14 @@ def clean_generated_prompt(text: str, fallback: str) -> str:
     """Remove common chat/fence residue without altering the H3 body."""
 
     value = (text or "").strip()
-    value = re.sub(
-        r"^<\|im_start\|>assistant\s*", "", value, flags=re.IGNORECASE
-    )
+    value = re.sub(r"^<\|im_start\|>assistant\s*", "", value, flags=re.IGNORECASE)
     value = re.sub(r"^(?:assistant\s*:?[\r\n]+)", "", value, flags=re.IGNORECASE)
     value = re.sub(r"^<think>.*?</think>\s*", "", value, flags=re.DOTALL)
-    fence = re.match(r"^```(?:text|markdown)?\s*\n?(.*?)\n?```$", value, flags=re.DOTALL | re.IGNORECASE)
+    fence = re.match(
+        r"^```(?:text|markdown)?\s*\n?(.*?)\n?```$",
+        value,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
     if fence:
         value = fence.group(1).strip()
     return value or fallback.strip()
@@ -593,7 +619,9 @@ def _shot_warnings(body: str) -> list[str]:
     return warnings
 
 
-def _expected_reference_label_is_present(text: str, label: str, expected_mode: str) -> bool:
+def _expected_reference_label_is_present(
+    text: str, label: str, expected_mode: str
+) -> bool:
     """Accept FL2VA's official bare Picture labels without weakening other modes."""
 
     if label in text:
@@ -646,7 +674,9 @@ def h3_structure_warnings(
         warnings.append("empty required section(s): " + ", ".join(empty))
 
     main_section = (
-        "detailed_description" if reference_mode else "integrated_multimodal_description"
+        "detailed_description"
+        if reference_mode
+        else "integrated_multimodal_description"
     )
     main_body = _section_body(value, main_section, matches)
     if main_body:
@@ -665,7 +695,9 @@ def h3_structure_warnings(
         if summary and not task_prefix:
             warnings.append("summary does not begin with a bracketed task-type prefix")
         elif task_prefix:
-            task_types = [item.strip().casefold() for item in task_prefix.group(1).split("+")]
+            task_types = [
+                item.strip().casefold() for item in task_prefix.group(1).split("+")
+            ]
             invalid = [item for item in task_types if item not in ALLOWED_TASK_TYPES]
             if invalid:
                 warnings.append(
@@ -725,7 +757,9 @@ def h3_structure_warnings(
             music = _section_body(value, "non_diegetic_music", matches)
             uncited = [label for label in fully_copy_labels if label not in soundscape]
             if music.strip().upper().rstrip(".") != "N/A":
-                uncited.extend(label for label in fully_copy_labels if label not in music)
+                uncited.extend(
+                    label for label in fully_copy_labels if label not in music
+                )
             if uncited:
                 warnings.append(
                     "fully_copy audio is not cited in every applicable audio section: "
@@ -746,9 +780,12 @@ def h3_structure_warnings(
         ]
         if duplicate_definitions:
             warnings.append(
-                "duplicate tracked definition row(s): " + ", ".join(duplicate_definitions)
+                "duplicate tracked definition row(s): "
+                + ", ".join(duplicate_definitions)
             )
-        missing_retention = [label for label in defined_counts if label not in retained_counts]
+        missing_retention = [
+            label for label in defined_counts if label not in retained_counts
+        ]
         if missing_retention:
             warnings.append(
                 "tracked definition(s) missing a retention row: "
@@ -761,7 +798,9 @@ def h3_structure_warnings(
             warnings.append(
                 "duplicate retention row(s): " + ", ".join(duplicate_retention)
             )
-        undefined_retention = [label for label in retained_counts if label not in defined_counts]
+        undefined_retention = [
+            label for label in retained_counts if label not in defined_counts
+        ]
         if undefined_retention:
             warnings.append(
                 "retention row(s) without a tracked definition: "
@@ -775,10 +814,14 @@ def h3_structure_warnings(
         if not _expected_reference_label_is_present(value, label, expected_mode)
     ]
     if absent_labels:
-        warnings.append("supplied reference label(s) are absent: " + ", ".join(absent_labels))
+        warnings.append(
+            "supplied reference label(s) are absent: " + ", ".join(absent_labels)
+        )
     if expected_labels:
         supplied_visuals = {
-            label for label in expected_labels if label.startswith(("<Picture ", "<Video "))
+            label
+            for label in expected_labels
+            if label.startswith(("<Picture ", "<Video "))
         }
         found_visuals = {
             f"<{kind} {number}>"
@@ -798,7 +841,9 @@ def h3_structure_warnings(
         elif expected_mode in {"FL2VA", "L2VA"} and not leading.startswith(
             "How the reference pictures align with the target video"
         ):
-            warnings.append(f"{expected_mode} is missing its endpoint alignment instruction")
+            warnings.append(
+                f"{expected_mode} is missing its endpoint alignment instruction"
+            )
 
     return list(dict.fromkeys(warnings))
 
@@ -829,7 +874,9 @@ def clip_generation_issue(clip) -> str | None:
     inner_clip = getattr(stage, stage.clip, None)
     transformer = getattr(inner_clip, "transformer", None)
     config = getattr(getattr(transformer, "model", None), "config", None)
-    layers = getattr(config, "num_hidden_layers", getattr(transformer, "num_layers", None))
+    layers = getattr(
+        config, "num_hidden_layers", getattr(transformer, "num_layers", None)
+    )
     has_lm_head = getattr(config, "lm_head", None)
     has_final_norm = getattr(config, "final_norm", None)
     if layers == 50 and has_lm_head is False and has_final_norm is False:
@@ -838,7 +885,7 @@ def clip_generation_issue(clip) -> str | None:
             "Qwen3-VL-32B checkpoint truncated to 50 layers, without a final normalization or "
             "language-model head. It can condition H3 but cannot reliably generate instructions. "
             "Connect a MiniMax H3 Generation Tail Loader to clip_tail, connect a complete "
-            "instruction-tuned Qwen3-VL model, or send the textual llm_prompt plus any visual "
+            "instruction-tuned Qwen3-VL or Qwen3.5 model, or send the textual llm_prompt plus any visual "
             "inputs through another multimodal LLM node's own visual-token format. manual_prompt "
             "was returned unchanged."
         )
@@ -891,8 +938,8 @@ def _generate_with_clip(
     token_batches = next(iter(tokens.values())) if isinstance(tokens, dict) else tokens
     tokens_only = [[token[0] for token in batch] for batch in token_batches]
     embeds, _, _, embeds_info = inner_clip.process_tokens(tokens_only, device)
-    position_ids, visual_pos_masks, deepstack = inner_clip.transformer.build_image_inputs(
-        embeds, embeds_info
+    position_ids, visual_pos_masks, deepstack = (
+        inner_clip.transformer.build_image_inputs(embeds, embeds_info)
     )
     with comfy.model_management.cuda_device_context(device):
         return inner_clip.transformer.generate(
@@ -917,7 +964,7 @@ class MiniMaxH3GenerationTailLoader:
     )
     DESCRIPTION = (
         "Side loader for MiniMax H3's optional Qwen3-VL generation tail. Use it only with the "
-        "bundled 50-layer conditioning CLIP; a complete generative Qwen3-VL CLIP needs no tail."
+        "bundled 50-layer conditioning CLIP; complete Qwen3-VL and Qwen3.5 CLIPs need no tail."
     )
 
     @classmethod
@@ -948,7 +995,7 @@ class MiniMaxH3GenerationTailLoader:
 
 
 class MiniMaxH3PromptEnhancer:
-    """Generate an enhanced H3 prompt with ComfyUI's loaded Qwen3-VL CLIP."""
+    """Generate an enhanced H3 prompt with a supported generative Qwen CLIP."""
 
     CATEGORY = "MiniMax H3/Prompting"
     FUNCTION = "enhance"
@@ -961,7 +1008,7 @@ class MiniMaxH3PromptEnhancer:
         "Resolved H3 output family, generation status, and H3 structure warnings. It explains success, conditioning-only skips, historical system-prompt upgrades, or fallback after empty/repetitive/punctuation output.",
     )
     DESCRIPTION = (
-        "Second step after MiniMax H3 Prompt Guide. Connect h3_prompt, mode_report, and a Qwen3-VL CLIP. "
+        "Second step after MiniMax H3 Prompt Guide. Connect h3_prompt, mode_report, and a generative Qwen3-VL or Qwen3.5 CLIP. "
         "A complete generative CLIP needs no tail; MiniMax H3's 50-layer conditioning CLIP uses the optional 50-63 tail. "
         "The node can analyze a chained set of role-labeled pictures and video samples, or one legacy image. "
         "By default it explicitly offloads the connected CLIP after text decoding. Connect enhanced_prompt to ComfyUI's official H3 conditioning node."
@@ -976,7 +1023,7 @@ class MiniMaxH3PromptEnhancer:
                     "CLIP",
                     {
                         "tooltip": (
-                            "Connect either a complete instruction-tuned Qwen3-VL model or MiniMax H3's normal 50-layer conditioning CLIP. "
+                            "Connect a complete instruction-tuned Qwen3-VL/Qwen3.5 model or MiniMax H3's normal 50-layer conditioning CLIP. "
                             "For the 50-layer MiniMax CLIP, connect MiniMax H3 Generation Tail Loader to the optional clip_tail input. "
                             "This input means an LLM-capable ComfyUI CLIP, not an OpenAI CLIP vision model."
                         )
@@ -1131,7 +1178,7 @@ class MiniMaxH3PromptEnhancer:
                         "tooltip": (
                             "Connect MiniMax H3 Generation Tail Loader only when clip is H3's bundled "
                             "50-layer conditioning encoder. Leave disconnected for a complete "
-                            "generation-capable Qwen3-VL CLIP. The tail is temporary and does not alter clip."
+                            "generation-capable Qwen3-VL or Qwen3.5 CLIP. The tail is temporary and does not alter clip."
                         )
                     },
                 ),
@@ -1205,9 +1252,15 @@ class MiniMaxH3PromptEnhancer:
 
         tail_name = _resolve_tail_name(clip_tail)
         validate_clip_compatibility(clip, tail_name)
-        resolved_system_prompt, migrated_system_prompt = resolve_system_prompt(system_prompt)
+        resolved_system_prompt, migrated_system_prompt = resolve_system_prompt(
+            system_prompt
+        )
         minimax_clip = _is_minimax_h3_tokenizer(clip)
-        entries = reference_entries(reference_context) if reference_context is not None else []
+        entries = (
+            reference_entries(reference_context)
+            if reference_context is not None
+            else []
+        )
         validate_reference_bindings(entries)
         context_mode_hint = reference_context_mode_hint(reference_context, entries)
         resolved_mode = expected_h3_mode(
@@ -1233,7 +1286,11 @@ class MiniMaxH3PromptEnhancer:
             has_image=has_visual,
             reference_context=inventory,
         )
-        visual_count = len(generic_images) if entries and not minimax_clip else int(image is not None)
+        visual_count = (
+            len(generic_images)
+            if entries and not minimax_clip
+            else int(image is not None)
+        )
         llm_prompt = format_chat_prompt(
             resolved_system_prompt,
             user_prompt,
@@ -1324,7 +1381,7 @@ class MiniMaxH3PromptEnhancer:
                 f"Resolved H3 output family: {resolved_mode}. Enhancement fallback: {collapse}. "
                 "manual_prompt was returned unchanged. "
                 "Try deterministic sampling, lower temperature, or a complete instruction-tuned "
-                "Qwen3-VL model."
+                "Qwen3-VL or Qwen3.5 model."
             )
             enhanced_prompt = manual_prompt.strip()
             report = _decorate_report(report, migrated_system_prompt)
@@ -1370,5 +1427,5 @@ NODE_CLASS_MAPPINGS = {
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3GenerationTailLoader": "MiniMax H3 Generation Tail Loader",
-    "MiniMaxH3PromptEnhancer": "MiniMax H3 Prompt Enhancer (Legacy Qwen3-VL)",
+    "MiniMaxH3PromptEnhancer": "MiniMax H3 Prompt Enhancer (Legacy Qwen LLM)",
 }

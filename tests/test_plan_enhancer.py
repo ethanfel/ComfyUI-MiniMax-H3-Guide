@@ -286,6 +286,26 @@ def test_qwen_receives_the_full_compiled_scene_in_one_request():
     assert "images" not in clip.tokenize_calls[0]["kwargs"]
 
 
+def test_structured_enhancer_accepts_comfy_qwen35_clip():
+    tokenizer_type = type("Qwen35ImageTokenizer_", (), {})
+    tokenizer_type.__module__ = "comfy.text_encoders.qwen35"
+    plan = compiled_scene()
+    clip = FakeClip(enhanced_json(plan))
+    clip.tokenizer = tokenizer_type()
+
+    prompt, _prose, _enhanced_plan, *_rest, report = (
+        MiniMaxH3PlanV2PromptEnhancer().enhance_plan(
+            clip,
+            plan,
+            **enhancer_kwargs(),
+        )
+    )
+
+    assert "physically continuous motion" in prompt
+    assert clip.generate_call is not None
+    assert "connected complete CLIP" in report
+
+
 def test_qwen_inventory_keeps_binding_notes_retention_scope_and_transfer_fields():
     context = compiled_scene()
 
