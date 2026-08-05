@@ -210,6 +210,37 @@ def _without_verbatim_source(candidate: str, source: str) -> str:
     return value
 
 
+def _canonical_reference_label(match: re.Match) -> str:
+    return f"<{match.group(1).title()} {int(match.group(2))}>"
+
+
+def _reference_labels(value: Any) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                _canonical_reference_label(match)
+                for match in _REFERENCE_LABEL_RE.finditer(str(value or ""))
+            }
+        )
+    )
+
+
+def _prepare_intent_addendum(
+    candidate: str, source: str
+) -> tuple[str, tuple[str, ...]]:
+    """Normalize same-field labels or reject an addendum that introduces one."""
+
+    addition = _without_verbatim_source(candidate, source)
+    allowed = set(_reference_labels(source))
+    unexpected = tuple(
+        label for label in _reference_labels(addition) if label not in allowed
+    )
+    if unexpected:
+        return "", unexpected
+    normalized = _REFERENCE_LABEL_RE.sub(_canonical_reference_label, addition)
+    return normalized, ()
+
+
 def _append_prose(source: str, addendum: str) -> str:
     original = str(source or "").strip()
     addition = _without_verbatim_source(addendum, original)
@@ -239,19 +270,29 @@ def _compose_intent_locked_prose(
     for source_shot, addendum_shot, combined_shot in zip(
         source["shots"], addenda["shots"], combined["shots"]
     ):
-        description_addendum = _without_verbatim_source(
+        description_addendum, unexpected_labels = _prepare_intent_addendum(
             addendum_shot["description"], source_shot["description"]
         )
-        if description_addendum:
+        if unexpected_labels:
+            ignored.append(
+                f"Shot {source_shot['shot_number']} description "
+                f"(introduced {', '.join(unexpected_labels)})"
+            )
+        elif description_addendum:
             combined_shot["description"] = _append_prose(
                 source_shot["description"], description_addendum
             )
             applied += 1
 
-        camera_addendum = _without_verbatim_source(
+        camera_addendum, unexpected_labels = _prepare_intent_addendum(
             addendum_shot["camera_direction"], source_shot["camera_direction"]
         )
-        if camera_addendum and source_shot["camera_direction"].strip():
+        if unexpected_labels:
+            ignored.append(
+                f"Shot {source_shot['shot_number']} camera_direction "
+                f"(introduced {', '.join(unexpected_labels)})"
+            )
+        elif camera_addendum and source_shot["camera_direction"].strip():
             combined_shot["camera_direction"] = _append_prose(
                 source_shot["camera_direction"], camera_addendum
             )
@@ -259,10 +300,16 @@ def _compose_intent_locked_prose(
         elif camera_addendum:
             ignored.append(f"Shot {source_shot['shot_number']} camera_direction")
 
-    soundscape_addendum = _without_verbatim_source(
+    soundscape_addendum, unexpected_labels = _prepare_intent_addendum(
         addenda["overall_soundscape"], source["overall_soundscape"]
     )
-    if soundscape_addendum and source["overall_soundscape"].strip().casefold() != "n/a":
+    if unexpected_labels:
+        ignored.append(
+            f"overall_soundscape (introduced {', '.join(unexpected_labels)})"
+        )
+    elif (
+        soundscape_addendum and source["overall_soundscape"].strip().casefold() != "n/a"
+    ):
         combined["overall_soundscape"] = _append_prose(
             source["overall_soundscape"], soundscape_addendum
         )
@@ -447,7 +494,7 @@ def _prose_string(value: Any, location: str) -> str:
             raise ValueError(
                 f"{location} contains {name}; leave those to the locked compiler."
             )
-    return text
+    return _REFERENCE_LABEL_RE.sub(_canonical_reference_label, text)
 
 
 def parse_editable_prose(text: str, plan_context: Any) -> dict:
@@ -565,25 +612,15 @@ def _locked_signature(plan: dict) -> dict:
 def _reference_label_signature(plan: dict) -> dict:
     """Keep every existing H3 label in the same editable field."""
 
-    def labels(value: Any) -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                {
-                    match.group(0)
-                    for match in _REFERENCE_LABEL_RE.finditer(str(value or ""))
-                }
-            )
-        )
-
     return {
-        "visual_style": labels(plan["project"]["visual_style"]),
-        "initial_prompt": labels(plan["project"]["initial_prompt"]),
-        "overall_soundscape": labels(plan["project"]["overall_soundscape"]),
-        "non_diegetic_music": labels(plan["project"]["non_diegetic_music"]),
+        "visual_style": _reference_labels(plan["project"]["visual_style"]),
+        "initial_prompt": _reference_labels(plan["project"]["initial_prompt"]),
+        "overall_soundscape": _reference_labels(plan["project"]["overall_soundscape"]),
+        "non_diegetic_music": _reference_labels(plan["project"]["non_diegetic_music"]),
         "shots": [
             {
-                "description": labels(shot["description"]),
-                "camera_direction": labels(shot["camera_direction"]),
+                "description": _reference_labels(shot["description"]),
+                "camera_direction": _reference_labels(shot["camera_direction"]),
             }
             for shot in plan["shots"]
         ],
@@ -796,6 +833,10 @@ def _effective_system_prompt(
             "production detail. Do not restate the source or alter its emphasis.\n"
             "- Keep camera_direction empty when the original camera_direction is empty. When "
             "the original contains a camera request, return only a compatible addendum.\n"
+            "- Normally omit reference labels from addenda because Python already preserves them. "
+            "If a label is essential, repeat it only when that exact source field already contains "
+            "the same label. Never mention an Audio label in Shot addenda; voice and dialogue "
+            "relationships are compiler-managed.\n"
             "- overall_soundscape may contain only compatible ambience or synchronized physical-"
             "sound additions; never add dialogue, vocals, or music.\n"
             "- Do not invent colors, weather, lighting effects, lenses, atmosphere, motivations, "

@@ -372,6 +372,47 @@ def test_intent_locked_mode_preserves_source_and_composes_only_addenda():
     assert "Shot 1 camera_direction" in report
 
 
+def test_intent_locked_mode_discards_only_the_addendum_with_a_new_label():
+    plan = compiled_scene()
+    original = json.loads(editable_prose_json(plan))
+    addenda = intent_addenda_payload(plan)
+    addenda["shots"][0]["description"] = (
+        "The door movement stays physically continuous as she enters."
+    )
+    addenda["shots"][1]["description"] = (
+        "The seat settles while <Audio 1> controls her delivery."
+    )
+    clip = FakeClip(json.dumps(addenda))
+
+    prompt, prose, _enhanced_plan, *_rest, report = (
+        MiniMaxH3PlanV2PromptEnhancer().enhance_plan(
+            clip,
+            plan,
+            **enhancer_kwargs(enhancement_mode=ENHANCEMENT_MODE_INTENT_LOCKED),
+        )
+    )
+    result = json.loads(prose)
+
+    assert "Structured enhancement fallback" not in report
+    assert addenda["shots"][0]["description"] in prompt
+    assert result["shots"][1]["description"] == original["shots"][1]["description"]
+    assert "The seat settles while" not in prompt
+    assert "Shot 2 description (introduced <Audio 1>)" in report
+
+
+def test_reference_label_case_and_spacing_are_canonicalized():
+    plan = compiled_scene()
+    payload = json.loads(editable_prose_json(plan))
+    payload["shots"][0]["description"] = payload["shots"][0]["description"].replace(
+        "<Subject 1>", "< subject   1 >"
+    )
+
+    prompt, *_rest = apply_editable_prose(plan, json.dumps(payload))
+
+    assert "<Subject 1> opens the passenger door" in prompt
+    assert "< subject   1 >" not in prompt
+
+
 def test_structured_enhancer_repairs_copied_compiler_dialogue_once():
     plan = compiled_scene()
     payload = json.loads(enhanced_json(plan))
