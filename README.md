@@ -21,6 +21,7 @@ chain instead of asking one large form or an LLM to infer what each file means:
         -> MiniMax H3 Prompt Merge (Plan v2)
         -> optional Structured Prompt Enhancer (Plan v2)
         -> optional Apply Structured Prose (Plan v2)
+        -> optional Prompt Review Gate (Plan v2)
         -> MiniMax H3 Apply Reference Plan (Plan v2)
         -> sampler
 
@@ -149,15 +150,38 @@ Use **Apply Structured Prose (Plan v2)** after a text editor when the returned
 JSON should be refined manually and recompiled without running Qwen again.
 The side-node Generation Tail Loader remains supported.
 
+Use **Prompt Review Gate (Plan v2)** for the final human check immediately
+before native conditioning. It is prompt-only: connect the matching prompt and
+`plan_context` from Prompt Merge, the structured enhancer, or Apply Structured
+Prose. The gate pauses the queued job, opens the full H3 prompt in a large text
+editor, and offers **Approve & continue**, **Restore input**, revision history,
+and **Reject run**. Generation resumes from the same queue after approval; no
+image, video, or audio must be selected again.
+
+The editor permits descriptive scene, camera, ambience, and music prose changes.
+It rejects edits to compiler-owned sections, exact reference labels, retention,
+Shot markers/order, cut timestamps, dialogue tags/words, character-replacement
+instructions, and media routes. Approved text is bound to the connected plan
+and checked again by Apply Reference Plan. History is stored under ComfyUI user
+data and contains prompt text and hashes only—never reference media or tensors.
+`Pass through without pausing` leaves the gate in a workflow while disabling
+the interactive stop.
+
+```text
+Without Qwen: Prompt Merge -> Prompt Review Gate -> Apply Reference Plan
+With Qwen:    Prompt Merge -> Structured Enhancer -> Prompt Review Gate
+                                                        -> Apply Reference Plan
+```
+
 **Apply Reference Plan (Plan v2)** is the native handoff. Connect `h3_prompt`
-and `plan_context` from the same Prompt Merge, Structured Prompt Enhancer, or
-Apply Structured Prose result, plus the official H3 CLIP/video VAE and optional
-audio VAE. The node verifies that the pair still matches, automatically routes
-stored media as endpoint frames or canonical Ref2VA dictionaries, and delegates
-conditioning to ComfyUI's installed `MiniMaxH3ImageToVideo` or
-`MiniMaxH3ReferenceToVideo` implementation. It returns native positive
-conditioning and the joint AV latent. Reference audio requires the audio VAE;
-text-only and endpoint plans do not.
+and `plan_context` from the same Prompt Merge, Structured Prompt Enhancer, Apply
+Structured Prose, or Prompt Review Gate result, plus the official H3 CLIP/video
+VAE and optional audio VAE. The node verifies that the pair still matches,
+automatically routes stored media as endpoint frames or canonical Ref2VA
+dictionaries, and delegates conditioning to ComfyUI's installed
+`MiniMaxH3ImageToVideo` or `MiniMaxH3ReferenceToVideo` implementation. It
+returns native positive conditioning and the joint AV latent. Reference audio
+requires the audio VAE; text-only and endpoint plans do not.
 
 The adapter does not duplicate ComfyUI's encoder. It checks the installed
 native call signature and fails with an actionable compatibility message when
@@ -172,7 +196,9 @@ APP mode; reference starters keep their semantic spine visible so files, roles,
 Shots, and dialogue can be inspected before generation. The identity-and-voice
 example also includes the current official Ref2VA model, sampler, joint video/
 audio decode, and Save Video path, with Apply Reference Plan replacing manual
-reference-socket wiring.
+reference-socket wiring. It places Prompt Review Gate directly before Apply
+Reference Plan to demonstrate the prompt-only pause while all media stays in
+`plan_context`.
 
 For existing graphs, see [Migrating existing workflows to Plan v2](MIGRATION_TO_PLAN_V2.md).
 Old node IDs remain registered so saved workflows load, but the monolithic

@@ -12,6 +12,7 @@ const MERGE = "MiniMaxH3PlanV2PromptMerge";
 const APPLY_PROSE = "MiniMaxH3PlanV2ApplyProse";
 const ENHANCER = "MiniMaxH3PlanV2PromptEnhancer";
 const APPLY_REFERENCE = "MiniMaxH3PlanV2ApplyReferencePlan";
+const PROMPT_REVIEW = "MiniMaxH3PlanV2PromptReview";
 
 const PLAN_CLASSES = new Set([
     PROJECT,
@@ -28,6 +29,7 @@ const UI_CLASSES = new Set([
     ...PLAN_CLASSES,
     APPLY_PROSE,
     ENHANCER,
+    PROMPT_REVIEW,
     APPLY_REFERENCE,
 ]);
 
@@ -769,6 +771,10 @@ function installWidgetCallbacks(node) {
 
 function resizeNode(node) {
     if (!node?.computeSize || !node?.setSize) return;
+    // The prompt review extension owns a freely resizable, fill-height DOM
+    // editor. Recomputing its height on every Plan-v2 refresh would snap the
+    // node back and make vertical resizing appear broken.
+    if (className(node) === PROMPT_REVIEW) return;
     const computed = node.computeSize();
     const width = Math.max(node.size?.[0] || 0, className(node) === SHOT ? 390 : 340);
     const height = computed?.[1] || node.size?.[1] || 120;
@@ -1134,6 +1140,9 @@ function refreshBadgeAndOutputs(node, catalog) {
         color = COLORS.ready;
     } else if (type === APPLY_PROSE) {
         text = "Recompile · validate all locks";
+        color = COLORS.ready;
+    } else if (type === PROMPT_REVIEW) {
+        text = "Prompt-only approval · media stays in plan_context";
         color = COLORS.ready;
     } else if (type === APPLY_REFERENCE) {
         text = "Native H3 handoff · prompt/context pair verified at queue time";

@@ -9,6 +9,7 @@ import media_context
 import nodes
 import plan_adapter
 import plan_v2
+import prompt_review
 import reference_sheet
 
 
@@ -68,6 +69,7 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
     assert "MiniMaxH3PlanV2ImageReference" in identity_types
     assert "MiniMaxH3PlanV2AudioReference" in identity_types
     assert "MiniMaxH3PlanV2DialogueEvent" in identity_types
+    assert "MiniMaxH3PlanV2PromptReview" in identity_types
     assert "MiniMaxH3PlanV2ApplyReferencePlan" in identity_types
     assert "SamplerCustomAdvanced" in identity_types
     assert "SaveVideo" in identity_types
@@ -169,6 +171,7 @@ def test_character_replacement_template_compiles_with_placeholder_media():
 
 def test_phase3_nodes_and_legacy_labels_remain_registered():
     assert "MiniMaxH3PlanV2ApplyReferencePlan" in plan_adapter.NODE_CLASS_MAPPINGS
+    assert "MiniMaxH3PlanV2PromptReview" in prompt_review.NODE_CLASS_MAPPINGS
     assert plan_adapter.native_h3_compatibility_report.__doc__
     assert reference_sheet.MiniMaxH3ReferenceSheet.RETURN_NAMES[-1] == "selected_audio"
 

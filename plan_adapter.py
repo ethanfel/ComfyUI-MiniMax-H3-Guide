@@ -14,6 +14,11 @@ import inspect
 from typing import Any
 
 try:
+    from .prompt_review import verify_review_approval
+except ImportError:
+    from prompt_review import verify_review_approval
+
+try:
     from .plan_v2 import (
         MODE_FL2VA,
         MODE_I2VA,
@@ -217,12 +222,17 @@ def prepare_native_h3_call(
     supplied_prompt = _normalized_prompt(h3_prompt)
     if not supplied_prompt:
         raise ValueError("h3_prompt is empty.")
-    if supplied_prompt != _normalized_prompt(canonical_prompt):
-        raise ValueError(
-            "h3_prompt does not match the connected plan_context. Connect both outputs from "
-            "the same Prompt Merge, Structured Prompt Enhancer, or Apply Structured Prose node. "
-            "For manual changes, edit editable_prose and recompile it first."
-        )
+    reviewed = supplied_prompt != _normalized_prompt(canonical_prompt)
+    if reviewed:
+        try:
+            verify_review_approval(compiled, canonical_prompt, supplied_prompt)
+        except ValueError as error:
+            raise ValueError(
+                "h3_prompt does not match the connected plan_context. Connect both outputs from "
+                "the same Prompt Merge, Structured Prompt Enhancer, Apply Structured Prose, or "
+                "Prompt Review Gate node. Manual full-prompt edits require review approval. "
+                f"Approval check: {error}"
+            ) from error
 
     resolved_width, resolved_height = _target_size(width, height)
     if ref_image_size not in {"match", "max"}:
@@ -237,7 +247,7 @@ def prepare_native_h3_call(
     node_id = REFERENCE_NODE_ID if mode == MODE_REF2VA else ENDPOINT_NODE_ID
 
     kwargs = {
-        "prompt": canonical_prompt,
+        "prompt": supplied_prompt,
         "width": resolved_width,
         "height": resolved_height,
         "length": h3_length,
@@ -260,6 +270,11 @@ def prepare_native_h3_call(
             f"Native conditioning node: {node_id}",
             f"Target: {resolved_width}x{resolved_height}, {h3_length} frames at 24 FPS.",
             f"Compatibility contract: {NATIVE_H3_CONTRACT}",
+            (
+                "Prompt: manually edited and structurally approved by Prompt Review Gate."
+                if reviewed
+                else "Prompt: canonical compiler output."
+            ),
             "Applied routes:",
             *route_lines,
         ]
@@ -269,7 +284,7 @@ def prepare_native_h3_call(
         "mode": mode,
         "checkpoint": checkpoint,
         "h3_length": h3_length,
-        "prompt": canonical_prompt,
+        "prompt": supplied_prompt,
         "kwargs": kwargs,
         "needs_audio_vae": needs_audio_vae,
         "report": report,
@@ -371,7 +386,8 @@ class MiniMaxH3PlanV2ApplyReferencePlan:
                         "dynamicPrompts": False,
                         "tooltip": (
                             "Connect h3_prompt/enhanced_prompt from the same node that supplies "
-                            "plan_context. A text-only manual edit is rejected to prevent stale labels."
+                            "plan_context. Full-prompt manual edits are accepted only as the "
+                            "approved output of Prompt Review Gate."
                         ),
                     },
                 ),
@@ -380,7 +396,7 @@ class MiniMaxH3PlanV2ApplyReferencePlan:
                     {
                         "tooltip": (
                             "Connect compiled plan_context from Prompt Merge, Structured Prompt "
-                            "Enhancer, or Apply Structured Prose."
+                            "Enhancer, Apply Structured Prose, or Prompt Review Gate."
                         )
                     },
                 ),

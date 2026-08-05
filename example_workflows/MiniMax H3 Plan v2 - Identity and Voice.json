@@ -1,8 +1,8 @@
 {
   "id": "a0e9f3bf-359f-40ee-91ec-bbcf39092a4c",
   "revision": 0,
-  "last_node_id": 23,
-  "last_link_id": 28,
+  "last_node_id": 24,
+  "last_link_id": 30,
   "nodes": [
     {
       "id": 1,
@@ -191,7 +191,7 @@
     {
       "id": 9,
       "type": "PreviewAny",
-      "pos": [3180, 0],
+      "pos": [4000, 0],
       "size": [570, 420],
       "flags": {},
       "order": 8,
@@ -205,6 +205,27 @@
       "title": "Compiled identity + voice prompt",
       "properties": {"Node name for S&R": "PreviewAny"},
       "widgets_values": []
+    },
+    {
+      "id": 24,
+      "type": "MiniMaxH3PlanV2PromptReview",
+      "pos": [3300, -70],
+      "size": [640, 650],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [
+        {"name": "h3_prompt", "type": "STRING", "link": 9},
+        {"name": "plan_context", "type": "MINIMAX_H3_PLAN_V2", "link": 10}
+      ],
+      "outputs": [
+        {"name": "approved_prompt", "type": "STRING", "links": [29], "slot_index": 0},
+        {"name": "approved_plan_context", "type": "MINIMAX_H3_PLAN_V2", "links": [30], "slot_index": 1},
+        {"name": "review_report", "type": "STRING", "links": null, "slot_index": 2}
+      ],
+      "title": "Review prompt text; media stays in plan_context",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2PromptReview"},
+      "widgets_values": ["Pause for approval", 20, "review-identity-and-voice-example"]
     },
     {
       "id": 10,
@@ -322,8 +343,8 @@
       "inputs": [
         {"name": "clip", "type": "CLIP", "link": 11},
         {"name": "vae", "type": "VAE", "link": 12},
-        {"name": "h3_prompt", "type": "STRING", "link": 9},
-        {"name": "plan_context", "type": "MINIMAX_H3_PLAN_V2", "link": 10},
+        {"name": "h3_prompt", "type": "STRING", "link": 29},
+        {"name": "plan_context", "type": "MINIMAX_H3_PLAN_V2", "link": 30},
         {"name": "audio_vae", "type": "VAE", "link": 13}
       ],
       "outputs": [
@@ -504,8 +525,8 @@
     [6, 6, 0, 7, 0, "MINIMAX_H3_PLAN_V2"],
     [7, 7, 0, 8, 0, "MINIMAX_H3_PLAN_V2"],
     [8, 8, 0, 9, 0, "STRING"],
-    [9, 8, 0, 14, 2, "STRING"],
-    [10, 8, 2, 14, 3, "MINIMAX_H3_PLAN_V2"],
+    [9, 8, 0, 24, 0, "STRING"],
+    [10, 8, 2, 24, 1, "MINIMAX_H3_PLAN_V2"],
     [11, 10, 0, 14, 0, "CLIP"],
     [12, 11, 0, 14, 1, "VAE"],
     [13, 12, 0, 14, 4, "VAE"],
@@ -523,11 +544,13 @@
     [25, 12, 0, 21, 1, "VAE"],
     [26, 20, 0, 22, 0, "IMAGE"],
     [27, 21, 0, 22, 1, "AUDIO"],
-    [28, 22, 0, 23, 0, "VIDEO"]
+    [28, 22, 0, 23, 0, "VIDEO"],
+    [29, 24, 0, 14, 2, "STRING"],
+    [30, 24, 1, 14, 3, "MINIMAX_H3_PLAN_V2"]
   ],
   "groups": [
     {"id": 1, "title": "1. Exact references", "bounding": [-30, -70, 1600, 1030], "color": "#3f789e", "flags": {}},
-    {"id": 2, "title": "2. Timeline and compile", "bounding": [1580, -70, 2200, 570], "color": "#3f789e", "flags": {}},
+    {"id": 2, "title": "2. Timeline, compile, and prompt review", "bounding": [1580, -100, 3030, 710], "color": "#3f789e", "flags": {}},
     {"id": 3, "title": "3. Official H3 model and native Plan handoff", "bounding": [1580, 690, 1680, 820], "color": "#3f789e", "flags": {}},
     {"id": 4, "title": "4. Sample, decode, and save synchronized video", "bounding": [3260, 580, 2400, 650], "color": "#3f789e", "flags": {}}
   ],

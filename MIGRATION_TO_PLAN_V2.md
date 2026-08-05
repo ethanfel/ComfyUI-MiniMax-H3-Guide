@@ -14,13 +14,16 @@ Project Setup
   -> Shot nodes (+ optional Dialogue Event nodes)
   -> Prompt Merge
   -> optional Structured Prompt Enhancer
+  -> optional Prompt Review Gate
   -> Apply Reference Plan
   -> sampler
 ```
 
 Connect `h3_prompt` and `plan_context` from the same Merge, Structured Prompt
-Enhancer, or Apply Structured Prose node to Apply Reference Plan. The adapter
-rejects mismatched pairs instead of silently using stale labels or routes.
+Enhancer, Apply Structured Prose, or Prompt Review Gate node to Apply Reference
+Plan. The adapter rejects mismatched pairs instead of silently using stale
+labels or routes. Prompt Review Gate pauses only for prompt text; reference
+media remains allocated in `plan_context` and needs no chooser.
 
 ## Node-by-node map
 
@@ -34,6 +37,7 @@ rejects mismatched pairs instead of silently using stale labels or routes.
 | Visual Reference Role + Enhancer Visual Reference | One exact Image or Video Reference; add Subject Binding only when the same physical media defines another reusable Subject/role |
 | Generic audio context | One exact Audio Reference per clip, including its speaker, layer/event, transcript, copied range, and optional paired-video handle |
 | Legacy free-form Prompt Enhancer | Structured Prompt Enhancer (Plan v2), which returns prose JSON and a matching recompiled plan |
+| Manual final-prompt text gate | Prompt Review Gate (Plan v2), which validates compiler locks and forwards the same media-bearing plan |
 | Manual native reference sockets | Apply Reference Plan, or keep the official native node and follow Prompt Merge's route report |
 | Generation Tail Loader | Keep it; both enhancer generations continue to support this side node |
 
@@ -67,9 +71,10 @@ routes.
    words, voice references, or multiple speakers.
 5. Queue Prompt Merge and resolve every reported scope, label, timing, or media
    limit error.
-6. Optionally enhance the compiled scene. For manual edits, edit
-   `editable_prose` and run Apply Structured Prose.
-7. Connect the matching prompt/context pair to Apply Reference Plan. Load the
+6. Optionally enhance the compiled scene. For structured reusable edits, edit
+   `editable_prose` and run Apply Structured Prose. For a final full-prompt
+   check, connect both outputs through Prompt Review Gate.
+7. Connect the matching prompt/context pair (or both approved gate outputs) to Apply Reference Plan. Load the
    checkpoint family named in `adapter_report`.
 8. After a successful generation, remove or bypass the old branch.
 
