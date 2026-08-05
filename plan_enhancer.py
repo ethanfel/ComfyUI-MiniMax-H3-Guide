@@ -452,26 +452,34 @@ def _plan_inventory(plan_context: Any) -> str:
         label = catalog["picture_labels"][asset["asset_id"]]
         lines.append(
             f"{label}: image; relationship={asset['relationship']}; "
-            f"name={asset['reference_name']}; description={asset['description'] or 'not supplied'}."
+            f"name={asset['reference_name']}; description={asset['description'] or 'not supplied'}; "
+            f"retention={asset['retention']}; "
+            f"shot_scope={asset['shot_scope'] or 'all applicable shots'}."
         )
         for binding in bindings_by_asset.get(asset["asset_id"], []):
             lines.append(
                 f"  Subject binding: alias={binding['subject_name']}; "
                 f"content_type={binding['content_type']}; retention={binding['retention']}; "
-                f"shot_scope={binding['shot_scope'] or 'all applicable shots'}."
+                f"transfer_target={binding['transfer_target_subject'] or 'none'}; "
+                f"shot_scope={binding['shot_scope'] or 'all applicable shots'}; "
+                f"notes={binding['notes'] or 'not supplied'}."
             )
     for asset in catalog["videos"]:
         label = catalog["video_labels"][asset["asset_id"]]
         lines.append(
             f"{label}: video; relationship={asset['relationship']}; "
             f"name={asset['reference_name']}; description={asset['description'] or 'not supplied'}; "
-            f"duration={asset['native_duration']:.3f}s."
+            f"duration={asset['native_duration']:.3f}s; retention={asset['retention']}; "
+            f"target_subject={asset['target_subject'] or 'none'}; "
+            f"shot_scope={asset['shot_scope'] or 'all applicable shots'}."
         )
         for binding in bindings_by_asset.get(asset["asset_id"], []):
             lines.append(
                 f"  Subject binding: alias={binding['subject_name']}; "
                 f"content_type={binding['content_type']}; retention={binding['retention']}; "
-                f"shot_scope={binding['shot_scope'] or 'all applicable shots'}."
+                f"transfer_target={binding['transfer_target_subject'] or 'none'}; "
+                f"shot_scope={binding['shot_scope'] or 'all applicable shots'}; "
+                f"notes={binding['notes'] or 'not supplied'}."
             )
     for asset in catalog["audios"]:
         relationship = audio_relationships[asset["asset_id"]]
@@ -626,7 +634,7 @@ class MiniMaxH3PlanV2PromptEnhancer:
         "Generation, visual-analysis, fallback, validation, tail, and CLIP-offload status.",
     )
     DESCRIPTION = (
-        "Structured Phase 2 enhancer. Qwen sees the complete compiled scene and edits descriptive "
+        "Structured Plan v2 enhancer. Qwen sees the complete compiled scene and edits descriptive "
         "JSON only; Python restores and validates every H3 structural field."
     )
 

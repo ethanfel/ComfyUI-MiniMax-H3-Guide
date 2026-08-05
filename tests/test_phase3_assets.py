@@ -145,3 +145,15 @@ def test_phase3_release_and_manual_migration_document_are_present():
     assert "There is intentionally no automatic conversion" in migration
     assert "Reference Sheet.selected_audio -> Audio Reference.audio" in migration
     assert "Apply Reference Plan" in migration
+
+
+def test_plan_v2_browser_logic_handles_auto_transfer_and_clears_hidden_role_data():
+    source = (ROOT / "web" / "plan_v2.js").read_text(encoding="utf-8")
+
+    assert "retention === RETENTION_AUTO && contentType === CONTENT_ACTION" in source
+    assert 'setWidgetValue(node, "transcript", "")' in source
+    assert 'setWidgetValue(node, "target_subject", "")' in source
+    assert 'const APPLY_REFERENCE = "MiniMaxH3PlanV2ApplyReferencePlan"' in source
+    assert "const endpointConflict = hasEndpoint && requiresRef2va" in source
+    assert "unassignedReferenceIds" in source
+    assert "endpoint and Ref2VA roles need separate plans" in source

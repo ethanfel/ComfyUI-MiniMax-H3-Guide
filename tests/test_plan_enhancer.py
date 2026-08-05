@@ -11,6 +11,7 @@ from plan_enhancer import (
     MiniMaxH3PlanV2PromptEnhancer,
     NODE_CLASS_MAPPINGS,
     _analysis_entries,
+    _plan_inventory,
     apply_editable_prose,
     editable_prose_json,
     parse_editable_prose,
@@ -283,6 +284,17 @@ def test_qwen_receives_the_full_compiled_scene_in_one_request():
     assert "LOCKED OUTPUT CONTRACT" in effective_system
     assert "text metadata only" in report
     assert "images" not in clip.tokenize_calls[0]["kwargs"]
+
+
+def test_qwen_inventory_keeps_binding_notes_retention_scope_and_transfer_fields():
+    context = compiled_scene()
+
+    inventory = _plan_inventory(context)
+
+    assert "retention=fully_preserved" in inventory
+    assert "shot_scope=1-2" in inventory
+    assert "transfer_target=none" in inventory
+    assert "notes=A dark-haired woman in a denim jacket." in inventory
 
 
 def test_invalid_qwen_json_falls_back_to_valid_compiler_outputs():

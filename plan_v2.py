@@ -550,6 +550,12 @@ def _validate_image_retention(
         return _resolve_binding_retention(resolved, content_type, transfer_target)
     if resolved not in VISUAL_RETENTIONS[1:]:
         raise ValueError("Choose a valid visual retention relationship.")
+    if resolved == RETENTION_TRANSFER:
+        raise ValueError(
+            "attribute_transfer requires Define reusable visible content and an "
+            "explicit transfer_target_subject. Direct endpoint, keyframe, and storyboard "
+            "Picture roles cannot silently transfer an attribute."
+        )
     return resolved
 
 
@@ -692,10 +698,23 @@ def _determine_mode(plan: dict, catalog: dict) -> tuple[str, str]:
     endpoint_only = all(
         image_use in {IMAGE_FIRST_FRAME, IMAGE_LAST_FRAME} for image_use in image_uses
     )
-    if has_video_or_audio or has_subjects or (pictures and not endpoint_only):
+    requires_ref2va = bool(
+        has_video_or_audio or has_subjects or (pictures and not endpoint_only)
+    )
+    has_endpoint = any(
+        image_use in {IMAGE_FIRST_FRAME, IMAGE_LAST_FRAME} for image_use in image_uses
+    )
+    if has_endpoint and requires_ref2va:
+        raise ValueError(
+            "Exact first/last-frame relationships use H3 endpoint conditioning and cannot "
+            "be mixed with reusable Subjects, keyframes/storyboards, reference video, or "
+            "reference audio. Duplicate the image with a Ref2VA role, or keep a separate "
+            "endpoint-only workflow."
+        )
+    if requires_ref2va:
         return MODE_REF2VA, "H3-Base-Ref2VA"
     if not pictures:
-        return MODE_T2VA, "H3-Base"
+        return MODE_T2VA, "H3-Base-FL2VA"
     first_count = image_uses.count(IMAGE_FIRST_FRAME)
     last_count = image_uses.count(IMAGE_LAST_FRAME)
     if first_count > 1 or last_count > 1:
@@ -703,11 +722,11 @@ def _determine_mode(plan: dict, catalog: dict) -> tuple[str, str]:
             "Endpoint generation accepts at most one exact first and one exact last frame."
         )
     if first_count and last_count:
-        return MODE_FL2VA, "H3-Base"
+        return MODE_FL2VA, "H3-Base-FL2VA"
     if first_count:
-        return MODE_I2VA, "H3-Base"
+        return MODE_I2VA, "H3-Base-FL2VA"
     if last_count:
-        return MODE_L2VA, "H3-Base"
+        return MODE_L2VA, "H3-Base-FL2VA"
     raise ValueError(
         "The plan's image relationships do not resolve to a supported H3 mode."
     )
@@ -948,6 +967,7 @@ def _binding_role_phrase(content_type: str) -> str:
 def _subject_definition(group: dict, catalog: dict) -> str:
     sources: list[str] = []
     roles: list[str] = []
+    transfer_clauses: list[str] = []
     for binding in group["bindings"]:
         asset_id = binding["asset_id"]
         label = catalog["picture_labels"].get(asset_id) or catalog["video_labels"].get(
@@ -958,16 +978,26 @@ def _subject_definition(group: dict, catalog: dict) -> str:
         phrase = _binding_role_phrase(binding["content_type"])
         if phrase not in roles:
             roles.append(phrase)
+        target_alias = binding.get("transfer_target_subject", "")
+        if binding["retention"] == RETENTION_TRANSFER and target_alias:
+            target = catalog["subjects_by_alias"].get(_alias_key(target_alias))
+            target_text = target["label"] if target else target_alias
+            clause = f"Transfer the {phrase} defined by {label} to {target_text}."
+            if clause not in transfer_clauses:
+                transfer_clauses.append(clause)
     source_text = (
         sources[0]
         if len(sources) == 1
         else f"{', '.join(sources[:-1])}, and {sources[-1]}"
     )
     role_text = roles[0] if len(roles) == 1 else ", ".join(roles)
-    return (
+    definition = (
         f"{group['label']} is {group['subject_name']}, the reusable visible subject or scene, "
         f"with {role_text} defined by {source_text}."
     )
+    if transfer_clauses:
+        definition += " " + " ".join(transfer_clauses)
+    return definition
 
 
 def _direct_picture_definition(asset: dict, label: str, plan: dict) -> str | None:
@@ -1162,7 +1192,7 @@ def _summary(plan: dict, catalog: dict) -> str:
     return " ".join(sentences)
 
 
-def _subject_retention_line(group: dict, plan: dict) -> str:
+def _subject_retention_line(group: dict, plan: dict, catalog: dict) -> str:
     markers = {binding["retention"] for binding in group["bindings"]}
     if len(markers) != 1:
         raise ValueError(
@@ -1188,12 +1218,25 @@ def _subject_retention_line(group: dict, plan: dict) -> str:
         RETENTION_TRANSFER: "the declared attribute, pose, action, or motion is transferred",
         RETENTION_WEAK: "only broad visual inspiration is retained",
     }[marker]
+    if marker == RETENTION_TRANSFER:
+        targets = []
+        for binding in group["bindings"]:
+            target_alias = binding.get("transfer_target_subject", "")
+            if not target_alias:
+                continue
+            target = catalog["subjects_by_alias"].get(_alias_key(target_alias))
+            target_text = target["label"] if target else target_alias
+            if target_text not in targets:
+                targets.append(target_text)
+        if targets:
+            explanation += " to " + ", ".join(targets)
     return f"{group['label']}{context}: {marker} - {explanation}."
 
 
 def _retention_analysis(plan: dict, catalog: dict) -> list[str]:
     lines = [
-        _subject_retention_line(group, plan) for group in catalog["subject_groups"]
+        _subject_retention_line(group, plan, catalog)
+        for group in catalog["subject_groups"]
     ]
     for asset in catalog["pictures"]:
         relationship = asset["relationship"]
@@ -1219,7 +1262,7 @@ def _retention_analysis(plan: dict, catalog: dict) -> list[str]:
             VIDEO_EDIT: RETENTION_PARTIAL,
             VIDEO_CONTINUE: RETENTION_PARTIAL,
             VIDEO_MOTION: RETENTION_TRANSFER,
-            VIDEO_STRUCTURE: RETENTION_TRANSFER,
+            VIDEO_STRUCTURE: RETENTION_WEAK,
         }[relationship]
         scope = _parse_shot_scope(asset["shot_scope"], len(plan["shots"]))
         context = f" ({_scope_text(scope)})" if scope else ""
@@ -1777,7 +1820,7 @@ class MiniMaxH3PlanV2ImageReference:
                     {
                         "default": UNASSIGNED_CONTENT_TYPE,
                         "tooltip": (
-                            "Required only for Define reusable visible content. Phase 2 will hide "
+                            "Required only for Define reusable visible content. The browser UI hides "
                             "this control for direct Picture roles."
                         ),
                     },
@@ -2015,6 +2058,15 @@ class MiniMaxH3PlanV2SubjectBinding:
             reference_handle,
             allowed_kinds={"image", "video"},
         )
+        if asset["media_kind"] == "image" and asset.get("relationship") in {
+            IMAGE_FIRST_FRAME,
+            IMAGE_LAST_FRAME,
+        }:
+            raise ValueError(
+                "Exact first/last-frame images cannot receive Subject Bindings because "
+                "that would switch the plan away from native endpoint conditioning. "
+                "Register a separate Ref2VA image instead."
+            )
         updated = _append_binding(
             plan,
             asset,
@@ -2131,7 +2183,11 @@ class MiniMaxH3PlanV2VideoReference:
                     {
                         "default": "",
                         "placeholder": "Existing upstream Subject alias",
-                        "tooltip": "Required for motion/action transfer; the target must already exist.",
+                        "tooltip": (
+                            "Required for Motion or action reference, and for reusable visible "
+                            "content whose retention resolves to attribute_transfer. The target "
+                            "must already exist upstream."
+                        ),
                     },
                 ),
                 "retention": (
@@ -2186,6 +2242,18 @@ class MiniMaxH3PlanV2VideoReference:
             raise ValueError(
                 "content_type and subject_name are only used when the video defines reusable content."
             )
+        whole_retention = {
+            VIDEO_EDIT: RETENTION_PARTIAL,
+            VIDEO_CONTINUE: RETENTION_PARTIAL,
+            VIDEO_MOTION: RETENTION_TRANSFER,
+            VIDEO_STRUCTURE: RETENTION_WEAK,
+        }.get(video_use)
+        resolved_retention = (
+            _resolve_binding_retention(retention, content_type, target)
+            if video_use == VIDEO_DEFINE_VISIBLE
+            else whole_retention
+        )
+
         if video_use == VIDEO_MOTION:
             if not target:
                 raise ValueError("Motion or action reference requires target_subject.")
@@ -2195,22 +2263,11 @@ class MiniMaxH3PlanV2VideoReference:
                     f"Motion target {target!r} is not an upstream Subject. "
                     "Define the target image/Subject first."
                 )
-        elif target:
+        elif video_use != VIDEO_DEFINE_VISIBLE and target:
             raise ValueError(
-                "target_subject is only used by Motion or action reference."
+                "target_subject is only used by Motion or action reference or by "
+                "reusable visible content with attribute_transfer retention."
             )
-
-        whole_retention = {
-            VIDEO_EDIT: RETENTION_PARTIAL,
-            VIDEO_CONTINUE: RETENTION_PARTIAL,
-            VIDEO_MOTION: RETENTION_TRANSFER,
-            VIDEO_STRUCTURE: RETENTION_TRANSFER,
-        }.get(video_use)
-        resolved_retention = (
-            _resolve_binding_retention(retention, content_type, "")
-            if video_use == VIDEO_DEFINE_VISIBLE
-            else whole_retention
-        )
         asset = {
             "asset_id": _next_asset_id(plan, "video"),
             "media_kind": "video",
@@ -2238,7 +2295,7 @@ class MiniMaxH3PlanV2VideoReference:
                 resolved_retention,
                 shot_scope,
                 description,
-                "",
+                target,
             )
         _validate_reference_counts(updated)
         video_number = len(
@@ -2286,7 +2343,7 @@ class MiniMaxH3PlanV2AudioReference:
                     {
                         "default": UNASSIGNED_AUDIO_USE,
                         "tooltip": (
-                            "Choose exactly one relationship. Phase 2 will show only the controls "
+                            "Choose exactly one relationship. The browser UI shows only the controls "
                             "required by the selected relationship."
                         ),
                     },
@@ -2456,12 +2513,21 @@ class MiniMaxH3PlanV2AudioReference:
         relationship = {
             "asset_id": asset["asset_id"],
             "use": audio_use,
-            "target_speaker": speaker,
-            "language": source_language,
-            "transcript": source_transcript,
-            "target_layer_or_event": layer,
-            "instructions": detail,
-            "shot_scope": _clean_inline(shot_scope),
+            "target_speaker": (
+                speaker if audio_use in {AUDIO_VOICE, AUDIO_CONTENT} else ""
+            ),
+            "language": source_language if audio_use == AUDIO_CONTENT else "",
+            "transcript": source_transcript if audio_use == AUDIO_CONTENT else "",
+            "target_layer_or_event": (
+                layer
+                if audio_use
+                in {AUDIO_MUSIC, AUDIO_BEAT, AUDIO_SFX, AUDIO_CONTINUITY, AUDIO_BROAD}
+                else ""
+            ),
+            "instructions": detail if audio_use != AUDIO_COPY_COMPLETE else "",
+            "shot_scope": (
+                _clean_inline(shot_scope) if audio_use != AUDIO_COPY_COMPLETE else ""
+            ),
             "retention": _audio_retention(audio_use),
         }
         updated = _copy_plan(plan)
@@ -2548,7 +2614,7 @@ class MiniMaxH3PlanV2Shot:
                         "placeholder": "Visible and audible events during this Shot only.",
                         "tooltip": (
                             "Describe the intended entity directly with its upstream H3 label. "
-                            "Phase 2 adds the < autocomplete menu."
+                            "The browser UI adds the < autocomplete menu."
                         ),
                     },
                 ),
@@ -2762,7 +2828,7 @@ class MiniMaxH3PlanV2PromptMerge:
     OUTPUT_TOOLTIPS = (
         "Immediately usable deterministic H3 prompt with three or six correct sections.",
         "Self-contained prose-only enhancement request with semantic fields locked.",
-        "Compiled plan for the future structured enhancer and native adapter.",
+        "Compiled plan for the structured enhancer and native adapter.",
         "Readiness, mode, inventory, native routes, timing, and locked fields.",
         "Same native 17k+5 target length produced by Project Setup.",
     )

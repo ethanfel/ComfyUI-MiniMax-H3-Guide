@@ -10,6 +10,7 @@ const DIALOGUE = "MiniMaxH3PlanV2DialogueEvent";
 const MERGE = "MiniMaxH3PlanV2PromptMerge";
 const APPLY_PROSE = "MiniMaxH3PlanV2ApplyProse";
 const ENHANCER = "MiniMaxH3PlanV2PromptEnhancer";
+const APPLY_REFERENCE = "MiniMaxH3PlanV2ApplyReferencePlan";
 
 const PLAN_CLASSES = new Set([
     PROJECT,
@@ -21,20 +22,32 @@ const PLAN_CLASSES = new Set([
     DIALOGUE,
     MERGE,
 ]);
-const UI_CLASSES = new Set([...PLAN_CLASSES, APPLY_PROSE, ENHANCER]);
+const UI_CLASSES = new Set([
+    ...PLAN_CLASSES,
+    APPLY_PROSE,
+    ENHANCER,
+    APPLY_REFERENCE,
+]);
 
+const UNASSIGNED_IMAGE_USE = "Choose an image relationship";
 const IMAGE_DEFINE_VISIBLE = "Define reusable visible content";
 const IMAGE_FIRST_FRAME = "Exact first frame";
 const IMAGE_LAST_FRAME = "Exact last frame";
 const IMAGE_KEYFRAME = "Concrete keyframe / composition anchor";
 const IMAGE_STORYBOARD = "Storyboard / shot planning";
 
+const UNASSIGNED_VIDEO_USE = "Choose a video relationship";
 const VIDEO_DEFINE_VISIBLE = "Define reusable visible content";
 const VIDEO_MOTION = "Motion or action reference";
 const VIDEO_STRUCTURE = "Camera, cuts, rhythm, or temporal-structure reference";
 
+const UNASSIGNED_CONTENT_TYPE = "Choose visible content type";
+const CONTENT_ACTION = "Pose, expression, action, or motion";
+const RETENTION_AUTO = "Auto for this relationship";
+const RETENTION_FULL = "fully_preserved";
 const RETENTION_TRANSFER = "attribute_transfer";
 
+const UNASSIGNED_AUDIO_USE = "Choose an audio relationship";
 const AUDIO_VOICE = "Voice timbre and delivery";
 const AUDIO_MUSIC = "Background-music style";
 const AUDIO_BEAT = "Beat or rhythm";
@@ -98,6 +111,22 @@ function setWidgetVisible(target, visible) {
     } else {
         target.computeSize = () => [0, -4];
     }
+}
+
+function setWidgetValue(node, name, value) {
+    const target = widget(node, name);
+    if (!target || target.value === value) return;
+    target.value = value;
+    if (target.inputEl) target.inputEl.value = value;
+}
+
+function bindingTransfers(node) {
+    const retention = clean(widget(node, "retention")?.value);
+    const contentType = clean(widget(node, "content_type")?.value);
+    return (
+        retention === RETENTION_TRANSFER ||
+        (retention === RETENTION_AUTO && contentType === CONTENT_ACTION)
+    );
 }
 
 function setOutputLabel(node, name, label) {
@@ -283,23 +312,54 @@ function buildCatalog(chain) {
     }
 
     const imageUses = pictures.map((node) => clean(widget(node, "image_use")?.value));
+    const unassignedReferenceIds = new Set([
+        ...pictures
+            .filter(
+                (node) =>
+                    clean(widget(node, "image_use")?.value) === UNASSIGNED_IMAGE_USE
+            )
+            .map((node) => node.id),
+        ...videos
+            .filter(
+                (node) =>
+                    clean(widget(node, "video_use")?.value) === UNASSIGNED_VIDEO_USE
+            )
+            .map((node) => node.id),
+        ...audios
+            .filter(
+                (node) =>
+                    clean(widget(node, "audio_use")?.value) === UNASSIGNED_AUDIO_USE
+            )
+            .map((node) => node.id),
+    ]);
     const endpointsOnly = imageUses.every(
         (value) => value === IMAGE_FIRST_FRAME || value === IMAGE_LAST_FRAME
     );
-    let mode = "T2VA";
-    if (
+    const hasEndpoint = imageUses.some(
+        (value) => value === IMAGE_FIRST_FRAME || value === IMAGE_LAST_FRAME
+    );
+    const requiresRef2va = Boolean(
         videos.length ||
         audios.length ||
         subjects.length ||
         (pictures.length && !endpointsOnly)
-    ) {
+    );
+    const endpointConflict = hasEndpoint && requiresRef2va;
+    let mode = "T2VA";
+    if (endpointConflict) {
+        mode = "Invalid mixed routes";
+    } else if (requiresRef2va) {
         mode = "Ref2VA";
     } else if (pictures.length) {
         const first = imageUses.includes(IMAGE_FIRST_FRAME);
         const last = imageUses.includes(IMAGE_LAST_FRAME);
         mode = first && last ? "FL2VA" : first ? "I2VA" : "L2VA";
     }
-    if (mode !== "Ref2VA") {
+    if (endpointConflict) {
+        for (const node of [...pictures, ...videos, ...audios]) {
+            routes.set(node.id, "incompatible endpoint/Ref2VA mix");
+        }
+    } else if (mode !== "Ref2VA") {
         for (const node of pictures) {
             const use = clean(widget(node, "image_use")?.value);
             routes.set(
@@ -325,6 +385,8 @@ function buildCatalog(chain) {
         speakers,
         speakersByAlias,
         mode,
+        endpointConflict,
+        unassignedReferenceIds,
     };
 }
 
@@ -789,42 +851,69 @@ function refreshConditionalWidgets(node, catalog) {
     if (type === IMAGE) {
         const use = clean(widget(node, "image_use")?.value);
         const reusable = use === IMAGE_DEFINE_VISIBLE;
-        const retention = clean(widget(node, "retention")?.value);
+        if (!reusable) {
+            setWidgetValue(node, "content_type", UNASSIGNED_CONTENT_TYPE);
+            setWidgetValue(node, "subject_name", "");
+        }
+        const scopeVisible =
+            reusable || use === IMAGE_KEYFRAME || use === IMAGE_STORYBOARD;
+        if (!scopeVisible) setWidgetValue(node, "shot_scope", "");
+        if (
+            [IMAGE_FIRST_FRAME, IMAGE_LAST_FRAME, IMAGE_KEYFRAME].includes(use) &&
+            ![RETENTION_AUTO, RETENTION_FULL].includes(
+                clean(widget(node, "retention")?.value)
+            )
+        ) {
+            setWidgetValue(node, "retention", RETENTION_AUTO);
+        }
+        if (
+            use === IMAGE_STORYBOARD &&
+            clean(widget(node, "retention")?.value) === RETENTION_TRANSFER
+        ) {
+            setWidgetValue(node, "retention", RETENTION_AUTO);
+        }
+        const transfers = reusable && bindingTransfers(node);
+        if (!transfers) setWidgetValue(node, "transfer_target_subject", "");
         setWidgetVisible(widget(node, "content_type"), reusable);
         setWidgetVisible(widget(node, "subject_name"), reusable);
-        setWidgetVisible(
-            widget(node, "shot_scope"),
-            reusable || use === IMAGE_KEYFRAME || use === IMAGE_STORYBOARD
-        );
+        setWidgetVisible(widget(node, "shot_scope"), scopeVisible);
         refreshAliasEditor(
             node.__h3AliasEditors?.transfer_target_subject,
             upstreamCatalog,
-            retention === RETENTION_TRANSFER
+            transfers
         );
     } else if (type === BINDING) {
-        const retention = clean(widget(node, "retention")?.value);
+        const transfers = bindingTransfers(node);
+        if (!transfers) setWidgetValue(node, "transfer_target_subject", "");
         refreshAliasEditor(
             node.__h3AliasEditors?.transfer_target_subject,
             upstreamCatalog,
-            retention === RETENTION_TRANSFER
+            transfers
         );
     } else if (type === VIDEO) {
         const use = clean(widget(node, "video_use")?.value);
         const reusable = use === VIDEO_DEFINE_VISIBLE;
+        const assigned = Boolean(use) && use !== UNASSIGNED_VIDEO_USE;
+        if (!reusable) {
+            setWidgetValue(node, "content_type", UNASSIGNED_CONTENT_TYPE);
+            setWidgetValue(node, "subject_name", "");
+            setWidgetValue(node, "retention", RETENTION_AUTO);
+        }
+        const transfers = use === VIDEO_MOTION || (reusable && bindingTransfers(node));
+        if (!transfers) setWidgetValue(node, "target_subject", "");
+        if (!assigned) setWidgetValue(node, "shot_scope", "");
         setWidgetVisible(widget(node, "content_type"), reusable);
         setWidgetVisible(widget(node, "subject_name"), reusable);
         setWidgetVisible(widget(node, "retention"), reusable);
-        setWidgetVisible(
-            widget(node, "shot_scope"),
-            reusable || use === VIDEO_MOTION || use === VIDEO_STRUCTURE
-        );
+        setWidgetVisible(widget(node, "shot_scope"), assigned);
         refreshAliasEditor(
             node.__h3AliasEditors?.target_subject,
             upstreamCatalog,
-            use === VIDEO_MOTION
+            transfers
         );
     } else if (type === AUDIO) {
         const use = clean(widget(node, "audio_use")?.value);
+        const assigned = Boolean(use) && use !== UNASSIGNED_AUDIO_USE;
         const speakerUse = use === AUDIO_VOICE || use === AUDIO_CONTENT;
         const contentUse = use === AUDIO_CONTENT;
         const layerUse = [
@@ -834,7 +923,16 @@ function refreshConditionalWidgets(node, catalog) {
             AUDIO_CONTINUITY,
             AUDIO_BROAD,
         ].includes(use);
-        const instructionsUse = use !== AUDIO_COPY_COMPLETE;
+        const instructionsUse = assigned && use !== AUDIO_COPY_COMPLETE;
+        const scopeUse = assigned && use !== AUDIO_COPY_COMPLETE;
+        if (!speakerUse) setWidgetValue(node, "target_speaker", "");
+        if (!contentUse) {
+            setWidgetValue(node, "language", "");
+            setWidgetValue(node, "transcript", "");
+        }
+        if (!layerUse) setWidgetValue(node, "target_layer_or_event", "");
+        if (!instructionsUse) setWidgetValue(node, "instructions", "");
+        if (!scopeUse) setWidgetValue(node, "shot_scope", "");
         refreshAliasEditor(
             node.__h3AliasEditors?.target_speaker,
             upstreamCatalog,
@@ -844,7 +942,7 @@ function refreshConditionalWidgets(node, catalog) {
         setWidgetVisible(widget(node, "transcript"), contentUse);
         setWidgetVisible(widget(node, "target_layer_or_event"), layerUse);
         setWidgetVisible(widget(node, "instructions"), instructionsUse);
-        setWidgetVisible(widget(node, "shot_scope"), use !== AUDIO_COPY_COMPLETE);
+        setWidgetVisible(widget(node, "shot_scope"), scopeUse);
     } else if (type === DIALOGUE) {
         refreshAliasEditor(node.__h3AliasEditors?.speaker, upstreamCatalog, true);
     } else if (type === SHOT) {
@@ -902,7 +1000,14 @@ function refreshBadgeAndOutputs(node, catalog) {
     } else if ([IMAGE, VIDEO, AUDIO].includes(type)) {
         text = referenceBadge(node, catalog);
         const scope = scopeWidgetStatus(node, catalog);
-        if (!scope.valid && clean(widget(node, "shot_scope")?.value)) {
+        if (catalog.unassignedReferenceIds.has(node.id)) {
+            const kind = type === IMAGE ? "image" : type === VIDEO ? "video" : "audio";
+            text = "Choose a " + kind + " relationship before queueing";
+            color = COLORS.warning;
+        } else if (catalog.endpointConflict) {
+            text += " · endpoint and Ref2VA roles cannot share one plan";
+            color = COLORS.error;
+        } else if (!scope.valid && clean(widget(node, "shot_scope")?.value)) {
             text += " · " + scope.text;
             color = COLORS.error;
         } else {
@@ -921,7 +1026,10 @@ function refreshBadgeAndOutputs(node, catalog) {
         text = subject ? subject.label + " · " + subject.alias : "Subject alias required";
         const scope = scopeWidgetStatus(node, catalog);
         color = subject ? COLORS.ready : COLORS.warning;
-        if (!scope.valid && clean(widget(node, "shot_scope")?.value)) {
+        if (catalog.endpointConflict) {
+            text += " · exact endpoints cannot receive Subject bindings";
+            color = COLORS.error;
+        } else if (!scope.valid && clean(widget(node, "shot_scope")?.value)) {
             text += " · " + scope.text;
             color = COLORS.error;
         }
@@ -955,19 +1063,33 @@ function refreshBadgeAndOutputs(node, catalog) {
             (speaker ? speaker.id + " · " + speaker.alias : "speaker required");
         color = speakerName ? COLORS.ready : COLORS.warning;
     } else if (type === MERGE) {
-        text =
-            catalog.mode +
-            " · " +
-            catalog.subjects.length +
-            " Subjects · " +
-            catalog.shots.length +
-            " Shots";
-        color = COLORS.ready;
+        if (catalog.unassignedReferenceIds.size) {
+            text =
+                "Incomplete · " +
+                catalog.unassignedReferenceIds.size +
+                " reference relationship(s) unassigned";
+            color = COLORS.warning;
+        } else if (catalog.endpointConflict) {
+            text = "Invalid · endpoint and Ref2VA roles need separate plans";
+            color = COLORS.error;
+        } else {
+            text =
+                catalog.mode +
+                " · " +
+                catalog.subjects.length +
+                " Subjects · " +
+                catalog.shots.length +
+                " Shots";
+            color = COLORS.ready;
+        }
     } else if (type === ENHANCER) {
         text = "Full-scene context · locked JSON prose";
         color = COLORS.ready;
     } else if (type === APPLY_PROSE) {
         text = "Recompile · validate all locks";
+        color = COLORS.ready;
+    } else if (type === APPLY_REFERENCE) {
+        text = "Native H3 handoff · prompt/context pair verified at queue time";
         color = COLORS.ready;
     }
     node.__h3PlanV2Badge = { text, color };

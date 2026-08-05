@@ -60,7 +60,7 @@ Reference Sheet remains the reusable media library: connect its selected image
 or selected audio output to the matching Plan v2 reference node, where the
 workflow-specific role is declared.
 
-The Phase 2 browser extension hides irrelevant role fields, supplies upstream
+The Plan v2 browser extension hides irrelevant role fields, supplies upstream
 Subject pickers, validates numeric scope syntax, shows live label/route/timing
 badges, fixes the first Shot at 0.000 seconds, and replaces the Shot description
 box with an editor that opens an upstream reference menu when `<` is typed.
@@ -345,9 +345,9 @@ The role fields mean:
 | Field | Meaning |
 | --- | --- |
 | `reference_role` | What content the asset provides: endpoint, identity, object, scene, style, keyframe, storyboard, motion, temporal structure, edit source, or continuation source. The `Unassigned - choose a reference role` new-node default must be replaced before execution. |
-| `retention` | One official visible marker: `fully_preserved`, `partially_preserved`, `attribute_transfer`, or `weak_reference`. Auto chooses a role-safe non-transfer default. |
+| `retention` | One official visible marker: `fully_preserved`, `partially_preserved`, `attribute_transfer`, or `weak_reference`. Auto uses full preservation for identity/object/scene, weak reference for style/storyboard/temporal structure, and attribute transfer for action/motion. |
 | `content_group` | A stable user key for reusable visible content. Give bindings on different files the same key when the Guide should combine them as evidence for one `<Subject N>`. |
-| `transfer_target` | Required only for explicit `attribute_transfer`; names a different content group that receives the attribute or motion. |
+| `transfer_target` | Required whenever retention resolves to `attribute_transfer`, including Auto action/motion bindings; names a different upstream Subject that receives the attribute or motion. |
 | `shot_scope` | Optional Shot numbers: `3`, `3,4`, `3-4`, or `all`. Older wording such as `Shot 3` remains supported. Leave blank when the location is not known instead of inventing Shot 1. |
 | `notes` | What to preserve, transfer, ignore, or change for this binding. |
 
@@ -573,9 +573,9 @@ MiniMax tokenizer are absent.
   files in total. Plan v2 validates the complete mixed inventory before
   conditioning.
 - H3 policy requires each reference video/audio clip to be 2–15 seconds and
-  limits each media type to 15 seconds total. Video duration is validated by the
-  Video Reference and Audio Reference validate these limits when each asset is
-  registered and Prompt Merge validates their totals.
+  limits each media type to 15 seconds total. Video Reference and Audio
+  Reference validate each asset when registered, and Prompt Merge validates
+  their totals.
 - H3 policy does not allow reference audio as the sole media input. Prompt Merge
   rejects that plan before Apply Reference Plan can run.
 - Native Ref2VA ordering is pictures first; then each enabled video soundtrack

@@ -146,6 +146,7 @@ def test_text_only_plan_prepares_native_endpoint_call():
 
     assert package["node_id"] == ENDPOINT_NODE_ID
     assert package["mode"] == "T2VA"
+    assert package["checkpoint"] == "H3-Base-FL2VA"
     assert package["h3_length"] == length == 158
     assert package["kwargs"]["first_frame"] is None
     assert package["kwargs"]["last_frame"] is None
@@ -179,6 +180,7 @@ def test_ref2va_routes_media_in_the_native_named_collections():
 
     assert package["node_id"] == REFERENCE_NODE_ID
     assert package["mode"] == "Ref2VA"
+    assert package["checkpoint"] == "H3-Base-Ref2VA"
     assert package["needs_audio_vae"] is True
     assert list(package["kwargs"]["ref_images"]) == ["ref_image_0"]
     assert list(package["kwargs"]["ref_video_audios"]) == ["ref_video_audio_0"]

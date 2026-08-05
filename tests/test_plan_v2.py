@@ -11,16 +11,21 @@ from plan_v2 import (
     AUDIO_MUSIC,
     AUDIO_SFX,
     AUDIO_VOICE,
+    CONTENT_ACTION,
     CONTENT_IDENTITY,
     CONTENT_OBJECT,
     IMAGE_DEFINE_VISIBLE,
     IMAGE_FIRST_FRAME,
     IMAGE_LAST_FRAME,
+    IMAGE_STORYBOARD,
     PLAN_TYPE,
     RETENTION_AUTO,
+    RETENTION_TRANSFER,
     UNASSIGNED_CONTENT_TYPE,
+    VIDEO_DEFINE_VISIBLE,
     VIDEO_EDIT,
     VIDEO_MOTION,
+    VIDEO_STRUCTURE,
     MiniMaxH3PlanV2AudioReference,
     MiniMaxH3PlanV2DialogueEvent,
     MiniMaxH3PlanV2ImageReference,
@@ -183,8 +188,10 @@ def test_project_and_text_only_compile_to_native_t2va():
     assert "overall_soundscape: Soft wind and footsteps." in prompt
     assert "subject_definitions:" not in prompt
     assert "Mode: T2VA" in report
+    assert "Checkpoint: H3-Base-FL2VA" in report
     assert compiled["phase"] == "compiled"
     assert compiled["compiled"]["mode"] == "T2VA"
+    assert compiled["compiled"]["checkpoint"] == "H3-Base-FL2VA"
     assert "Do not add, remove, rename, or renumber" in rewrite
 
 
@@ -204,6 +211,7 @@ def test_endpoint_image_does_not_create_a_subject():
     )
     assert "<Subject 1>" not in prompt
     assert "Mode: I2VA" in report
+    assert "Checkpoint: H3-Base-FL2VA" in report
     assert compiled["compiled"]["routes"][0]["route"] == "first_frame"
 
 
@@ -237,6 +245,59 @@ def test_first_and_last_endpoints_compile_to_fl2va_without_subjects():
         "first_frame",
         "last_frame",
     ]
+
+
+def test_endpoint_roles_cannot_be_silently_downgraded_to_ref2va_images():
+    plan = project("Start from the opening frame, then preserve the referenced woman.")
+    plan, _handle, _image, _preview = image_reference(
+        plan,
+        use=IMAGE_FIRST_FRAME,
+        name="opening",
+        content_type=UNASSIGNED_CONTENT_TYPE,
+        subject="",
+    )
+    plan, _handle, _image, _preview = image_reference(
+        plan,
+        name="woman portrait",
+        subject="woman",
+    )
+
+    with pytest.raises(ValueError, match="cannot be mixed.*Ref2VA role"):
+        compile_h3_plan(plan)
+
+
+def test_exact_endpoint_handle_rejects_subject_binding_before_merge():
+    plan = project("Animate the supplied opening frame.")
+    plan, handle, _image, _preview = image_reference(
+        plan,
+        use=IMAGE_FIRST_FRAME,
+        name="opening",
+        content_type=UNASSIGNED_CONTENT_TYPE,
+        subject="",
+    )
+
+    with pytest.raises(ValueError, match="cannot receive Subject Bindings"):
+        MiniMaxH3PlanV2SubjectBinding().bind_subject(
+            plan,
+            handle,
+            "woman",
+            CONTENT_IDENTITY,
+            RETENTION_AUTO,
+            "",
+            "Identity from the opening frame.",
+            "",
+        )
+
+
+def test_direct_picture_role_cannot_claim_an_unbound_attribute_transfer():
+    with pytest.raises(ValueError, match="attribute_transfer requires Define reusable"):
+        image_reference(
+            project(),
+            use=IMAGE_STORYBOARD,
+            content_type=UNASSIGNED_CONTENT_TYPE,
+            subject="",
+            retention=RETENTION_TRANSFER,
+        )
 
 
 def test_voice_reference_is_exactly_bound_to_subject_and_dialogue_order():
@@ -362,6 +423,29 @@ def test_each_nonverbal_audio_role_gets_its_own_definition(
 
     assert f"<Audio 1> {expected_definition}" in prompt
     assert f"<Audio 1>: {expected_retention}" in prompt
+
+
+def test_irrelevant_audio_metadata_is_removed_when_the_exact_role_changes():
+    plan = project()
+    plan, _handle, _image, _preview = image_reference(plan)
+    plan, _audio, _preview = MiniMaxH3PlanV2AudioReference().add_audio(
+        plan,
+        audio_value(),
+        AUDIO_MUSIC,
+        "music style",
+        "stale speaker",
+        "stale language",
+        "stale transcript",
+        "the non-diegetic score",
+        "Use restrained instrumentation.",
+        "",
+    )
+
+    relationship = plan["audio_relationships"][0]
+    assert relationship["target_speaker"] == ""
+    assert relationship["language"] == ""
+    assert relationship["transcript"] == ""
+    assert relationship["target_layer_or_event"] == "the non-diegetic score"
 
 
 def test_dialogue_content_requires_and_matches_structured_vocal_event():
@@ -556,6 +640,59 @@ def test_motion_video_requires_and_targets_an_upstream_subject():
         in prompt
     )
     assert "<Video 1>: attribute_transfer" in prompt
+
+
+def test_temporal_structure_video_uses_weak_reference_not_attribute_transfer():
+    plan = project("Follow the supplied edit rhythm without copying its scene.")
+    plan, _video_handle, _video, _preview = video_reference(
+        plan,
+        use=VIDEO_STRUCTURE,
+        name="editing rhythm",
+        description="Three measured cuts followed by a long closing hold.",
+    )
+    plan = shot(plan, 0.0, "A new scene follows the referenced pacing structure.")
+
+    prompt, _rewrite, _report, compiled, _length = compile_h3_plan(plan)
+
+    assert "is the camera, cuts, rhythm, and temporal-structure reference" in prompt
+    assert "<Video 1>: weak_reference" in prompt
+    assert "<Video 1>: attribute_transfer" not in prompt
+    assert compiled["assets"][0]["retention"] == "weak_reference"
+
+
+def test_reusable_video_action_auto_retention_accepts_and_names_transfer_target():
+    plan = project("Transfer the supplied running action to the referenced woman.")
+    plan, _handle, _image, _preview = image_reference(plan)
+    plan, _video_handle, _video, _preview = MiniMaxH3PlanV2VideoReference().add_video(
+        plan,
+        torch.zeros(48, 32, 48, 3),
+        VIDEO_DEFINE_VISIBLE,
+        "running action",
+        "A runner accelerates with a strong forward lean.",
+        24.0,
+        CONTENT_ACTION,
+        "running action",
+        "woman",
+        RETENTION_AUTO,
+        "",
+    )
+    plan = shot(
+        plan,
+        0.0,
+        "<Subject 1> performs the action defined by <Subject 2>.",
+    )
+
+    prompt, _rewrite, _report, _compiled, _length = compile_h3_plan(plan)
+
+    assert (
+        "Transfer the pose, expression, action, or motion defined by <Video 1> "
+        "to <Subject 1>"
+    ) in prompt
+    assert (
+        "<Subject 2> (appears wherever cited in the Shot plan): attribute_transfer"
+        in prompt
+    )
+    assert "is transferred to <Subject 1>" in prompt
 
 
 def test_references_cannot_be_appended_after_the_first_shot():
