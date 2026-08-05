@@ -2,6 +2,8 @@ import json
 import tomllib
 from pathlib import Path
 
+import torch
+
 import enhancer
 import media_context
 import nodes
@@ -25,6 +27,7 @@ def test_phase3_workflow_templates_have_consistent_graph_links():
     workflows = _workflows()
 
     assert set(workflows) == {
+        "MiniMax H3 Plan v2 - Character Replacement.json",
         "MiniMax H3 Plan v2 - First and Last Frames.json",
         "MiniMax H3 Plan v2 - Identity and Voice.json",
         "MiniMax H3 Plan v2 - Prompt Builder App.json",
@@ -59,6 +62,7 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
     workflows = _workflows()
     identity = workflows["MiniMax H3 Plan v2 - Identity and Voice.json"]
     endpoints = workflows["MiniMax H3 Plan v2 - First and Last Frames.json"]
+    replacement = workflows["MiniMax H3 Plan v2 - Character Replacement.json"]
 
     identity_types = [node["type"] for node in identity["nodes"]]
     assert "MiniMaxH3PlanV2ImageReference" in identity_types
@@ -87,7 +91,22 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
     assert "Exact last frame" in endpoint_values
     assert not any(value == "Identity or appearance" for value in endpoint_values)
 
-    for workflow in (identity, endpoints):
+    replacement_types = [node["type"] for node in replacement["nodes"]]
+    assert "VHS_LoadVideo" in replacement_types
+    assert "MiniMaxH3PlanV2CharacterReplacement" in replacement_types
+    replacement_values = [
+        value
+        for node in replacement["nodes"]
+        for value in (
+            node.get("widgets_values", {}).values()
+            if isinstance(node.get("widgets_values"), dict)
+            else node.get("widgets_values", [])
+        )
+    ]
+    assert "Source video to edit" in replacement_values
+    assert "Replace identity and body; keep source wardrobe" in replacement_values
+
+    for workflow in (identity, endpoints, replacement):
         assert any(
             node["type"] == "MiniMaxH3PlanV2PromptMerge" for node in workflow["nodes"]
         )
@@ -106,6 +125,46 @@ def test_prompt_builder_app_exposes_only_real_widget_names():
         assert widget_name in widget_names
     for output_id in workflow["extra"]["linearData"]["outputs"]:
         assert output_id in nodes_by_id
+
+
+def test_character_replacement_template_compiles_with_placeholder_media():
+    workflow = _workflows()["MiniMax H3 Plan v2 - Character Replacement.json"]
+    nodes = {node["id"]: node for node in workflow["nodes"]}
+
+    plan = plan_v2.MiniMaxH3PlanV2ProjectSetup().start(
+        *nodes[1]["widgets_values"]
+    )[0]
+    plan, _image_handle, _image, _preview = (
+        plan_v2.MiniMaxH3PlanV2ImageReference().add_image(
+            plan,
+            torch.zeros(1, 48, 64, 3),
+            *nodes[3]["widgets_values"],
+        )
+    )
+    plan, video_handle, _video, _preview = (
+        plan_v2.MiniMaxH3PlanV2VideoReference().add_video(
+            plan,
+            torch.zeros(144, 48, 64, 3),
+            *nodes[5]["widgets_values"],
+        )
+    )
+    plan, _preview = plan_v2.MiniMaxH3PlanV2CharacterReplacement().add_replacement(
+        plan,
+        video_handle,
+        *nodes[6]["widgets_values"],
+    )
+    plan = plan_v2.MiniMaxH3PlanV2Shot().add_shot(
+        plan, *nodes[7]["widgets_values"]
+    )[0]
+
+    prompt, _rewrite, context, report, _length = (
+        plan_v2.MiniMaxH3PlanV2PromptMerge().merge(plan)
+    )
+
+    assert "replace only the source performer" in prompt
+    assert "<Video 1>" in prompt and "<Subject 1>" in prompt
+    assert context["character_replacements"][0]["shot_scope"] == "all"
+    assert "Plan ready: 0 errors" in report
 
 
 def test_phase3_nodes_and_legacy_labels_remain_registered():
@@ -154,6 +213,8 @@ def test_plan_v2_browser_logic_handles_auto_transfer_and_clears_hidden_role_data
     assert 'setWidgetValue(node, "transcript", "")' in source
     assert 'setWidgetValue(node, "target_subject", "")' in source
     assert 'const APPLY_REFERENCE = "MiniMaxH3PlanV2ApplyReferencePlan"' in source
+    assert 'const REPLACEMENT = "MiniMaxH3PlanV2CharacterReplacement"' in source
+    assert '"Replacement Subject"' in source
     assert "const endpointConflict = hasEndpoint && requiresRef2va" in source
     assert "unassignedReferenceIds" in source
     assert "endpoint and Ref2VA roles need separate plans" in source

@@ -14,6 +14,7 @@ chain instead of asking one large form or an LLM to infer what each file means:
     MiniMax H3 Project Setup (Plan v2)
         -> Image / Video / Audio Reference nodes
         -> optional Subject Binding nodes
+        -> optional Character Replacement nodes
         -> Shot 1
         -> optional Dialogue Event nodes
         -> Shot 2 ...
@@ -36,6 +37,11 @@ The three media nodes require an exact relationship:
   only when reusable visible content is explicitly selected.
 - Video Reference distinguishes source editing, continuation, visible content,
   motion/action transfer, and camera/cut/temporal structure.
+- Character Replacement maps one precisely described performer in a source-edit
+  Video to one upstream identity Subject. Its appearance policy separately
+  controls identity, body, and wardrobe, while preservation switches retain the
+  source performance and surrounding scene. Prompt Merge inserts the locked
+  mapping into every selected Shot; Shot prose does not need repeated labels.
 - Audio Reference distinguishes voice, music style, beat, sound-effect
   texture, exact dialogue/lyric content, continuity, complete copy, partial
   copy, and broad inspiration. Voice requires a target speaker; exact content
@@ -66,6 +72,26 @@ badges, fixes the first Shot at 0.000 seconds, and replaces the Shot description
 box with an editor that opens an upstream reference menu when `<` is typed.
 These conveniences do not replace Python validation and are not required in
 API/headless mode.
+
+For a character transfer, build the setup chain in this order:
+
+```text
+Project Setup
+  -> Image Reference: Define reusable visible content / Identity or appearance
+  -> Video Reference: Source video to edit
+  -> Character Replacement
+       source_video: Video Reference.reference_handle
+       replacement_subject: the Image Reference Subject alias
+       source_character_description: the woman in the red jacket
+       shot_scope: 1-3 (or all)
+  -> Shots -> Prompt Merge
+```
+
+The source-character description identifies the performer already present in
+the video; it is not a prompt for the replacement character. The replacement
+Subject must be upstream and have an Identity or appearance binding. Use the
+policy dropdown to decide whether body and wardrobe remain from the video or
+come from the reference character.
 
 For exact sound placement, choose the relationship on the upstream Audio
 Reference, then type `<` in the Shot editor and select its `<Audio N>` tag.

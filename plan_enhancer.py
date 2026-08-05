@@ -594,6 +594,9 @@ def _locked_signature(plan: dict) -> dict:
             for asset in plan["assets"]
         ],
         "bindings": [dict(binding) for binding in plan["bindings"]],
+        "character_replacements": [
+            dict(replacement) for replacement in plan["character_replacements"]
+        ],
         "audio_relationships": [
             dict(relationship) for relationship in plan["audio_relationships"]
         ],
@@ -759,6 +762,11 @@ def _plan_inventory(plan_context: Any) -> str:
         relationship["asset_id"]: relationship
         for relationship in plan["audio_relationships"]
     }
+    replacements_by_video: dict[str, list[dict]] = {}
+    for replacement in plan["character_replacements"]:
+        replacements_by_video.setdefault(
+            replacement["source_video_asset_id"], []
+        ).append(replacement)
     lines = []
     for asset in catalog["pictures"]:
         label = catalog["picture_labels"][asset["asset_id"]]
@@ -792,6 +800,22 @@ def _plan_inventory(plan_context: Any) -> str:
                 f"transfer_target={binding['transfer_target_subject'] or 'none'}; "
                 f"shot_scope={binding['shot_scope'] or 'all applicable shots'}; "
                 f"notes={binding['notes'] or 'not supplied'}."
+            )
+        for replacement in replacements_by_video.get(asset["asset_id"], []):
+            subject = catalog["subjects_by_alias"].get(
+                str(replacement["replacement_subject"]).strip().casefold()
+            )
+            subject_label = subject["label"] if subject else "unresolved Subject"
+            lines.append(
+                f"  Character replacement: source_performer="
+                f"{replacement['source_character_description']}; "
+                f"replacement_subject={subject_label} "
+                f"({replacement['replacement_subject']}); "
+                f"appearance_policy={replacement['appearance_policy']}; "
+                f"preserve_performance={replacement['preserve_performance']}; "
+                f"preserve_scene={replacement['preserve_scene']}; "
+                f"shot_scope={replacement['shot_scope']}; "
+                f"instructions={replacement['instructions'] or 'none'}."
             )
     for asset in catalog["audios"]:
         relationship = audio_relationships[asset["asset_id"]]

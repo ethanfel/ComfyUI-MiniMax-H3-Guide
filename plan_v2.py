@@ -55,6 +55,21 @@ VIDEO_USES = [
     VIDEO_STRUCTURE,
 ]
 
+REPLACEMENT_IDENTITY_KEEP_BODY_WARDROBE = (
+    "Replace identity; keep source body and wardrobe"
+)
+REPLACEMENT_IDENTITY_BODY_KEEP_WARDROBE = (
+    "Replace identity and body; keep source wardrobe"
+)
+REPLACEMENT_COMPLETE_APPEARANCE = (
+    "Replace complete referenced appearance including wardrobe"
+)
+CHARACTER_REPLACEMENT_APPEARANCE_POLICIES = [
+    REPLACEMENT_IDENTITY_KEEP_BODY_WARDROBE,
+    REPLACEMENT_IDENTITY_BODY_KEEP_WARDROBE,
+    REPLACEMENT_COMPLETE_APPEARANCE,
+]
+
 UNASSIGNED_CONTENT_TYPE = "Choose visible content type"
 CONTENT_IDENTITY = "Identity or appearance"
 CONTENT_OBJECT = "Object, prop, clothing, interface, or visual effect"
@@ -177,11 +192,12 @@ def _copy_plan(plan: dict) -> dict:
     for key in (
         "assets",
         "bindings",
+        "character_replacements",
         "audio_relationships",
         "shots",
         "dialogue_events",
     ):
-        copied[key] = [dict(entry) for entry in plan[key]]
+        copied[key] = [dict(entry) for entry in plan.get(key, [])]
     if isinstance(plan.get("compiled"), dict):
         copied["compiled"] = dict(plan["compiled"])
     return copied
@@ -215,14 +231,17 @@ def validated_plan(plan: Any, *, allowed_phases: set[str] | None = None) -> dict
     ):
         raise ValueError("h3_plan contains stale native duration data.")
 
+    normalized = dict(plan)
+    normalized.setdefault("character_replacements", [])
     for key in (
         "assets",
         "bindings",
+        "character_replacements",
         "audio_relationships",
         "shots",
         "dialogue_events",
     ):
-        entries = plan.get(key)
+        entries = normalized.get(key)
         if not isinstance(entries, (list, tuple)) or not all(
             isinstance(entry, dict) for entry in entries
         ):
@@ -233,7 +252,7 @@ def validated_plan(plan: Any, *, allowed_phases: set[str] | None = None) -> dict
         raise ValueError("Every plan asset needs a stable internal asset_id.")
     if len(asset_ids) != len(set(asset_ids)):
         raise ValueError("h3_plan contains duplicate internal asset IDs.")
-    return _copy_plan(plan)
+    return _copy_plan(normalized)
 
 
 def _new_plan(
@@ -258,6 +277,7 @@ def _new_plan(
         },
         "assets": [],
         "bindings": [],
+        "character_replacements": [],
         "audio_relationships": [],
         "shots": [],
         "dialogue_events": [],
@@ -271,6 +291,10 @@ def _next_asset_id(plan: dict, media_kind: str) -> str:
 
 def _next_binding_id(plan: dict) -> str:
     return f"binding-{len(plan['bindings']) + 1}"
+
+
+def _next_character_replacement_id(plan: dict) -> str:
+    return f"character-replacement-{len(plan['character_replacements']) + 1}"
 
 
 def _reference_handle(asset: dict) -> dict:
@@ -813,6 +837,110 @@ def _shot_prose_mentions_label(plan: dict, label: str) -> bool:
     )
 
 
+def _replacement_subject_group(replacement: dict, catalog: dict) -> dict:
+    group = catalog["subjects_by_alias"].get(
+        _alias_key(replacement["replacement_subject"])
+    )
+    if group is None:
+        raise ValueError(
+            f"Character replacement Subject {replacement['replacement_subject']!r} "
+            "is not an upstream Subject. Define its reference image and identity first."
+        )
+    return group
+
+
+def _replacement_video(replacement: dict, plan: dict) -> dict:
+    asset = _asset_by_id(plan).get(replacement["source_video_asset_id"])
+    if asset is None or asset.get("media_kind") != "video":
+        raise ValueError(
+            "A Character Replacement refers to a source video that is not present in h3_plan."
+        )
+    if asset.get("relationship") != VIDEO_EDIT:
+        raise ValueError(
+            "Character Replacement requires a Video Reference set to Source video to edit."
+        )
+    return asset
+
+
+def _replacement_scope(replacement: dict, plan: dict) -> list[int]:
+    return _parse_shot_scope(replacement["shot_scope"], len(plan["shots"]))
+
+
+def _replacement_covers_subject_shot(
+    plan: dict, subject_alias: str, shot_number: int
+) -> bool:
+    return any(
+        _alias_key(replacement["replacement_subject"]) == _alias_key(subject_alias)
+        and shot_number in _replacement_scope(replacement, plan)
+        for replacement in plan["character_replacements"]
+    )
+
+
+def _validate_character_replacements(plan: dict, catalog: dict) -> None:
+    replacement_ids: set[str] = set()
+    source_targets: set[tuple[str, str]] = set()
+    for replacement in plan["character_replacements"]:
+        replacement_id = replacement.get("replacement_id")
+        if not isinstance(replacement_id, str) or not replacement_id:
+            raise ValueError("Every Character Replacement needs a stable replacement_id.")
+        if replacement_id in replacement_ids:
+            raise ValueError("h3_plan contains duplicate Character Replacement IDs.")
+        replacement_ids.add(replacement_id)
+
+        video = _replacement_video(replacement, plan)
+        group = _replacement_subject_group(replacement, catalog)
+        if not any(
+            binding["content_type"] == CONTENT_IDENTITY
+            for binding in group["bindings"]
+        ):
+            raise ValueError(
+                f"{group['label']} ({group['subject_name']}) cannot replace a character "
+                "until it has an Identity or appearance binding."
+            )
+        source_character = _clean_inline(
+            replacement.get("source_character_description")
+        )
+        if not source_character:
+            raise ValueError(
+                "Character Replacement needs a precise source_character_description."
+            )
+        instructions = _clean_block(replacement.get("instructions"))
+        if _REFERENCE_TOKEN_RE.search(source_character) or _REFERENCE_TOKEN_RE.search(
+            instructions
+        ):
+            raise ValueError(
+                "Character Replacement description and instructions must use plain language; "
+                "the compiler assigns H3 labels automatically."
+            )
+        if (
+            replacement.get("appearance_policy")
+            not in CHARACTER_REPLACEMENT_APPEARANCE_POLICIES
+        ):
+            raise ValueError("Character Replacement contains an invalid appearance policy.")
+        if not isinstance(
+            replacement.get("preserve_performance"), bool
+        ) or not isinstance(
+            replacement.get("preserve_scene"), bool
+        ):
+            raise ValueError("Character Replacement preservation controls must be booleans.")
+        numbers = _replacement_scope(replacement, plan)
+        if not numbers:
+            raise ValueError("Character Replacement requires a non-empty shot_scope.")
+        video_scope = _parse_shot_scope(video.get("shot_scope", ""), len(plan["shots"]))
+        if video_scope and not set(numbers).issubset(video_scope):
+            raise ValueError(
+                "Character Replacement shot_scope extends outside its source Video "
+                "Reference shot_scope."
+            )
+        source_key = (video["asset_id"], _alias_key(source_character))
+        if source_key in source_targets:
+            raise ValueError(
+                "The same source performer in one video cannot have two Character "
+                "Replacement mappings. Edit the existing mapping instead."
+            )
+        source_targets.add(source_key)
+
+
 def _validate_scopes(plan: dict, catalog: dict) -> None:
     shot_count = len(plan["shots"])
     for group in catalog["subject_groups"]:
@@ -826,6 +954,9 @@ def _validate_scopes(plan: dict, catalog: dict) -> None:
                     number,
                     group["label"],
                     group["subject_name"],
+                )
+                and not _replacement_covers_subject_shot(
+                    plan, group["subject_name"], number
                 )
             ]
             if missing:
@@ -977,6 +1108,7 @@ def _validate_final_plan(plan: dict, catalog: dict, mode: str) -> None:
         if asset.get("shot_scope"):
             _parse_shot_scope(asset["shot_scope"], len(plan["shots"]))
     _validate_typed_references(plan, catalog)
+    _validate_character_replacements(plan, catalog)
     _validate_scopes(plan, catalog)
     _validate_speakers(plan, catalog)
     _validate_complete_audio_copy(plan, catalog)
@@ -994,7 +1126,67 @@ def _binding_role_grammar(content_type: str) -> tuple[str, bool]:
     }[content_type]
 
 
-def _subject_definition(group: dict, catalog: dict) -> str:
+def _replacement_labels(
+    replacement: dict, plan: dict, catalog: dict
+) -> tuple[str, str]:
+    subject = _replacement_subject_group(replacement, catalog)["label"]
+    video = catalog["video_labels"][_replacement_video(replacement, plan)["asset_id"]]
+    return subject, video
+
+
+def _replacement_mapping_sentence(
+    replacement: dict, plan: dict, catalog: dict
+) -> str:
+    subject, video = _replacement_labels(replacement, plan, catalog)
+    scope = _scope_text(_replacement_scope(replacement, plan))
+    source_character = _clause(replacement["source_character_description"])
+    return (
+        f"In {scope}, {subject} replaces only the source performer described as "
+        f"{source_character} from {video}."
+    )
+
+
+def _replacement_shot_instruction(
+    replacement: dict, plan: dict, catalog: dict
+) -> str:
+    subject, video = _replacement_labels(replacement, plan, catalog)
+    source_character = _clause(replacement["source_character_description"])
+    lines = [
+        f"Using {video} as the source timeline, replace only the source performer "
+        f"described as {source_character} with {subject}."
+    ]
+    policy = replacement["appearance_policy"]
+    if policy == REPLACEMENT_IDENTITY_KEEP_BODY_WARDROBE:
+        lines.append(
+            f"Apply only {subject}'s identity and facial appearance; retain the source "
+            f"performer's body proportions and wardrobe from {video}."
+        )
+    elif policy == REPLACEMENT_IDENTITY_BODY_KEEP_WARDROBE:
+        lines.append(
+            f"Apply {subject}'s identity, facial appearance, hair, and body proportions; "
+            f"retain the source performer's wardrobe from {video}."
+        )
+    else:
+        lines.append(
+            f"Apply {subject}'s complete referenced identity and appearance, including wardrobe."
+        )
+    if replacement["preserve_performance"]:
+        lines.append(
+            "Preserve that source performer's pose, motion, timing, gaze, expression, "
+            f"and physical interactions from {video}."
+        )
+    if replacement["preserve_scene"]:
+        lines.append(
+            "Keep every other person, the environment, props, lighting, camera movement, "
+            f"framing, and cuts from {video} unchanged."
+        )
+    instructions = _sentence(replacement["instructions"])
+    if instructions:
+        lines.append(instructions)
+    return " ".join(lines)
+
+
+def _subject_definition(group: dict, plan: dict, catalog: dict) -> str:
     definition_clauses: list[str] = []
     transfer_clauses: list[str] = []
     for binding in group["bindings"]:
@@ -1016,11 +1208,18 @@ def _subject_definition(group: dict, catalog: dict) -> str:
             clause = f"Transfer the {phrase} defined by {label} to {target_text}."
             if clause not in transfer_clauses:
                 transfer_clauses.append(clause)
+    replacement_clauses = [
+        _replacement_mapping_sentence(replacement, plan, catalog)
+        for replacement in plan["character_replacements"]
+        if _alias_key(replacement["replacement_subject"])
+        == _alias_key(group["subject_name"])
+    ]
     return " ".join(
         (
             f"{group['label']} is {group['subject_name']}.",
             *definition_clauses,
             *transfer_clauses,
+            *replacement_clauses,
         )
     )
 
@@ -1142,7 +1341,10 @@ def _audio_definition(
 
 def _subject_definitions(plan: dict, catalog: dict) -> list[str]:
     assets = _asset_by_id(plan)
-    lines = [_subject_definition(group, catalog) for group in catalog["subject_groups"]]
+    lines = [
+        _subject_definition(group, plan, catalog)
+        for group in catalog["subject_groups"]
+    ]
     for asset in catalog["pictures"]:
         definition = _direct_picture_definition(
             asset,
@@ -1206,6 +1408,10 @@ def _summary(plan: dict, catalog: dict) -> str:
             sentences.append(f"The target video is an edited version of {label}.")
         elif video["relationship"] == VIDEO_CONTINUE:
             sentences.append(f"The target video continues after {label}.")
+    sentences.extend(
+        _replacement_mapping_sentence(replacement, plan, catalog)
+        for replacement in plan["character_replacements"]
+    )
     role_labels = [
         *(group["label"] for group in catalog["subject_groups"]),
         *catalog["picture_labels"].values(),
@@ -1229,6 +1435,13 @@ def _subject_retention_line(group: dict, plan: dict, catalog: dict) -> str:
             number
             for binding in group["bindings"]
             for number in _parse_shot_scope(binding["shot_scope"], len(plan["shots"]))
+        }
+        | {
+            number
+            for replacement in plan["character_replacements"]
+            if _alias_key(replacement["replacement_subject"])
+            == _alias_key(group["subject_name"])
+            for number in _replacement_scope(replacement, plan)
         }
     )
     context = (
@@ -1307,9 +1520,28 @@ def _retention_analysis(plan: dict, catalog: dict) -> list[str]:
         }[relationship]
         scope = _parse_shot_scope(asset["shot_scope"], len(plan["shots"]))
         context = f" ({_scope_text(scope)})" if scope else ""
-        lines.append(
-            f"{label}{context}: {marker} - its declared whole-video relationship is applied."
-        )
+        replacements = [
+            replacement
+            for replacement in plan["character_replacements"]
+            if replacement["source_video_asset_id"] == asset["asset_id"]
+        ]
+        if relationship == VIDEO_EDIT and replacements:
+            preserved: list[str] = []
+            if any(entry["preserve_performance"] for entry in replacements):
+                preserved.append("source performance and timing")
+            if any(entry["preserve_scene"] for entry in replacements):
+                preserved.append("scene, other people, lighting, camera, framing, and cuts")
+            explanation = (
+                "the source timeline remains identifiable; only the declared character "
+                "replacement is applied"
+            )
+            if preserved:
+                explanation += ". Its " + " plus ".join(preserved) + " are preserved"
+            lines.append(f"{label}{context}: {marker} - {explanation}.")
+        else:
+            lines.append(
+                f"{label}{context}: {marker} - its declared whole-video relationship is applied."
+            )
     relationships = {entry["asset_id"]: entry for entry in plan["audio_relationships"]}
     for audio in catalog["audios"]:
         relationship = relationships[audio["asset_id"]]
@@ -1409,6 +1641,13 @@ def _detailed_description(plan: dict, catalog: dict) -> str:
         description = _sentence(
             shot["description"], "Describe the target action and setting."
         )
+        replacement_instructions = [
+            _replacement_shot_instruction(replacement, plan, catalog)
+            for replacement in plan["character_replacements"]
+            if number in _replacement_scope(replacement, plan)
+        ]
+        if replacement_instructions:
+            description = " ".join((description, *replacement_instructions))
         camera = _sentence(shot["camera_direction"])
         if number == 1:
             line = f"[Shot 1] {description}"
@@ -1581,6 +1820,7 @@ def _problems_report(
         (
             f"Inventory: {len(catalog['pictures'])} picture(s), "
             f"{len(catalog['videos'])} video(s), {len(catalog['audios'])} audio clip(s), "
+            f"{len(plan['character_replacements'])} character replacement mapping(s), "
             f"{len(plan['shots']) or 1} shot(s), {len(plan['dialogue_events'])} vocal event(s)."
         ),
         "Native routes:",
@@ -1590,7 +1830,8 @@ def _problems_report(
     else:
         lines.append("- none")
     lines.append(
-        "Locked by the compiler: labels, roles, retention, speakers, exact dialogue, and cut times."
+        "Locked by the compiler: labels, roles, character replacements, retention, speakers, "
+        "exact dialogue, and cut times."
     )
     return "\n".join(lines)
 
@@ -2350,6 +2591,220 @@ class MiniMaxH3PlanV2VideoReference:
         return updated, _reference_handle(asset), h3_video, preview
 
 
+class MiniMaxH3PlanV2CharacterReplacement:
+    """Map one performer in a source edit video to one referenced Subject."""
+
+    CATEGORY = "MiniMax H3/Plan v2"
+    FUNCTION = "add_replacement"
+    RETURN_TYPES = (PLAN_TYPE, "STRING")
+    RETURN_NAMES = ("h3_plan", "replacement_preview")
+    OUTPUT_TOOLTIPS = (
+        "Continue the ordered setup chain before adding Shots.",
+        "Resolved source performer, replacement Subject, appearance policy, and Shot scope.",
+    )
+    DESCRIPTION = (
+        "Declares an exact character replacement inside a source video edit. Select the "
+        "source Video handle and an upstream identity Subject; Prompt Merge writes and locks "
+        "the replacement instruction into every scoped Shot."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "h3_plan": (
+                    PLAN_TYPE,
+                    {
+                        "tooltip": (
+                            "Connect the same setup chain that already contains the replacement "
+                            "Subject and source Video Reference."
+                        )
+                    },
+                ),
+                "source_video": (
+                    REFERENCE_HANDLE_TYPE,
+                    {
+                        "tooltip": (
+                            "Connect reference_handle from the Video Reference whose video_use "
+                            "is Source video to edit. This is the timeline containing the "
+                            "performer being replaced."
+                        )
+                    },
+                ),
+                "replacement_subject": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "placeholder": "Choose an upstream identity Subject",
+                        "tooltip": (
+                            "Human alias of the referenced character that replaces the source "
+                            "performer. The browser picker lists upstream Subjects."
+                        ),
+                    },
+                ),
+                "source_character_description": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "dynamicPrompts": False,
+                        "placeholder": (
+                            "Example: the woman in the red jacket seated beside the driver"
+                        ),
+                        "tooltip": (
+                            "Identify exactly one performer already visible in the source video. "
+                            "Use plain visual language, not <Subject N> or <Video N> labels."
+                        ),
+                    },
+                ),
+                "appearance_policy": (
+                    CHARACTER_REPLACEMENT_APPEARANCE_POLICIES,
+                    {
+                        "default": REPLACEMENT_IDENTITY_KEEP_BODY_WARDROBE,
+                        "tooltip": (
+                            "Choose which visible properties come from the replacement Subject "
+                            "and which remain from the source performer."
+                        ),
+                    },
+                ),
+                "preserve_performance": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": (
+                            "Keep the source performer's pose, motion, timing, gaze, expression, "
+                            "and physical interactions."
+                        ),
+                    },
+                ),
+                "preserve_scene": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": (
+                            "Keep other people, environment, props, lighting, camera movement, "
+                            "framing, and cuts from the source video unchanged."
+                        ),
+                    },
+                ),
+                "shot_scope": (
+                    "STRING",
+                    {
+                        "default": "all",
+                        "placeholder": "Examples: 2, 2-4, all",
+                        "tooltip": (
+                            "Shots where the source performer is replaced. The compiler inserts "
+                            "the typed replacement instruction into each selected Shot, so the "
+                            "Shot text does not need manual H3 labels."
+                        ),
+                    },
+                ),
+                "instructions": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "dynamicPrompts": False,
+                        "placeholder": "Optional continuity exception or replacement constraint",
+                        "tooltip": (
+                            "Optional plain-language constraint specific to this replacement. "
+                            "Do not type numbered H3 labels; the compiler owns them."
+                        ),
+                    },
+                ),
+            }
+        }
+
+    def add_replacement(
+        self,
+        h3_plan,
+        source_video,
+        replacement_subject: str,
+        source_character_description: str,
+        appearance_policy: str,
+        preserve_performance: bool,
+        preserve_scene: bool,
+        shot_scope: str,
+        instructions: str,
+    ):
+        plan = validated_plan(h3_plan, allowed_phases={PHASE_SETUP})
+        video = _resolved_handle(plan, source_video, allowed_kinds={"video"})
+        if video["relationship"] != VIDEO_EDIT:
+            raise ValueError(
+                "Character Replacement requires a Video Reference set to Source video to edit."
+            )
+        alias = _clean_inline(replacement_subject)
+        catalog = _catalog(plan)
+        group = catalog["subjects_by_alias"].get(_alias_key(alias))
+        if group is None:
+            raise ValueError(
+                f"replacement_subject {alias!r} is not an upstream Subject. "
+                "Define the character image and Subject first."
+            )
+        if not any(
+            binding["content_type"] == CONTENT_IDENTITY
+            for binding in group["bindings"]
+        ):
+            raise ValueError(
+                f"{group['label']} ({group['subject_name']}) needs an Identity or "
+                "appearance binding before it can replace a character."
+            )
+        source_character = _clean_inline(source_character_description)
+        if not source_character:
+            raise ValueError(
+                "Describe the exact source performer to replace, such as "
+                "'the woman in the red jacket'."
+            )
+        extra = _clean_block(instructions)
+        if _REFERENCE_TOKEN_RE.search(source_character) or _REFERENCE_TOKEN_RE.search(
+            extra
+        ):
+            raise ValueError(
+                "Use plain language in Character Replacement fields; Prompt Merge assigns "
+                "the numbered H3 labels."
+            )
+        if appearance_policy not in CHARACTER_REPLACEMENT_APPEARANCE_POLICIES:
+            raise ValueError(
+                "Choose a supported Character Replacement appearance policy."
+            )
+        scope = _clean_inline(shot_scope)
+        if not scope:
+            raise ValueError(
+                "Character Replacement requires shot_scope, such as 2-4 or all."
+            )
+        source_key = (video["asset_id"], _alias_key(source_character))
+        if any(
+            (
+                entry["source_video_asset_id"],
+                _alias_key(entry["source_character_description"]),
+            )
+            == source_key
+            for entry in plan["character_replacements"]
+        ):
+            raise ValueError(
+                "That source performer already has a Character Replacement in this plan."
+            )
+        replacement = {
+            "replacement_id": _next_character_replacement_id(plan),
+            "source_video_asset_id": video["asset_id"],
+            "replacement_subject": group["subject_name"],
+            "source_character_description": source_character,
+            "appearance_policy": appearance_policy,
+            "preserve_performance": bool(preserve_performance),
+            "preserve_scene": bool(preserve_scene),
+            "shot_scope": scope,
+            "instructions": extra,
+        }
+        updated = _copy_plan(plan)
+        updated["character_replacements"].append(replacement)
+        video_label = catalog["video_labels"][video["asset_id"]]
+        preview = (
+            f"{video_label} performer ({source_character}) -> {group['label']} "
+            f"({group['subject_name']}); shots={scope}; policy={appearance_policy}."
+        )
+        return updated, preview
+
+
 class MiniMaxH3PlanV2AudioReference:
     """Register one audio clip with one exact semantic relationship."""
 
@@ -2916,6 +3371,7 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxH3PlanV2ImageReference": MiniMaxH3PlanV2ImageReference,
     "MiniMaxH3PlanV2SubjectBinding": MiniMaxH3PlanV2SubjectBinding,
     "MiniMaxH3PlanV2VideoReference": MiniMaxH3PlanV2VideoReference,
+    "MiniMaxH3PlanV2CharacterReplacement": MiniMaxH3PlanV2CharacterReplacement,
     "MiniMaxH3PlanV2AudioReference": MiniMaxH3PlanV2AudioReference,
     "MiniMaxH3PlanV2Shot": MiniMaxH3PlanV2Shot,
     "MiniMaxH3PlanV2DialogueEvent": MiniMaxH3PlanV2DialogueEvent,
@@ -2927,6 +3383,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3PlanV2ImageReference": "MiniMax H3 Image Reference (Plan v2)",
     "MiniMaxH3PlanV2SubjectBinding": "MiniMax H3 Subject Binding (Plan v2)",
     "MiniMaxH3PlanV2VideoReference": "MiniMax H3 Video Reference (Plan v2)",
+    "MiniMaxH3PlanV2CharacterReplacement": "MiniMax H3 Character Replacement (Plan v2)",
     "MiniMaxH3PlanV2AudioReference": "MiniMax H3 Audio Reference (Plan v2)",
     "MiniMaxH3PlanV2Shot": "MiniMax H3 Shot (Plan v2)",
     "MiniMaxH3PlanV2DialogueEvent": "MiniMax H3 Dialogue Event (Plan v2)",

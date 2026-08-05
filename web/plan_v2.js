@@ -4,6 +4,7 @@ const PROJECT = "MiniMaxH3PlanV2ProjectSetup";
 const IMAGE = "MiniMaxH3PlanV2ImageReference";
 const BINDING = "MiniMaxH3PlanV2SubjectBinding";
 const VIDEO = "MiniMaxH3PlanV2VideoReference";
+const REPLACEMENT = "MiniMaxH3PlanV2CharacterReplacement";
 const AUDIO = "MiniMaxH3PlanV2AudioReference";
 const SHOT = "MiniMaxH3PlanV2Shot";
 const DIALOGUE = "MiniMaxH3PlanV2DialogueEvent";
@@ -17,6 +18,7 @@ const PLAN_CLASSES = new Set([
     IMAGE,
     BINDING,
     VIDEO,
+    REPLACEMENT,
     AUDIO,
     SHOT,
     DIALOGUE,
@@ -37,6 +39,7 @@ const IMAGE_KEYFRAME = "Concrete keyframe / composition anchor";
 const IMAGE_STORYBOARD = "Storyboard / shot planning";
 
 const UNASSIGNED_VIDEO_USE = "Choose a video relationship";
+const VIDEO_EDIT = "Source video to edit";
 const VIDEO_DEFINE_VISIBLE = "Define reusable visible content";
 const VIDEO_MOTION = "Motion or action reference";
 const VIDEO_STRUCTURE = "Camera, cuts, rhythm, or temporal-structure reference";
@@ -241,6 +244,7 @@ function buildCatalog(chain) {
     const project = chain.find((node) => className(node) === PROJECT) || null;
     const pictures = chain.filter((node) => className(node) === IMAGE);
     const videos = chain.filter((node) => className(node) === VIDEO);
+    const replacements = chain.filter((node) => className(node) === REPLACEMENT);
     const audios = chain.filter((node) => className(node) === AUDIO);
     const shots = chain.filter((node) => className(node) === SHOT);
     const dialogues = chain.filter((node) => className(node) === DIALOGUE);
@@ -373,6 +377,7 @@ function buildCatalog(chain) {
         project,
         pictures,
         videos,
+        replacements,
         audios,
         shots,
         dialogues,
@@ -826,6 +831,13 @@ function setupNode(node) {
             "Motion target Subject",
             true
         );
+    } else if (type === REPLACEMENT) {
+        node.__h3AliasEditors.replacement_subject = createAliasEditor(
+            node,
+            "replacement_subject",
+            "Replacement Subject",
+            true
+        );
     } else if (type === AUDIO) {
         node.__h3AliasEditors.target_speaker = createAliasEditor(
             node,
@@ -913,6 +925,12 @@ function refreshConditionalWidgets(node, catalog) {
             node.__h3AliasEditors?.target_subject,
             upstreamCatalog,
             transfers
+        );
+    } else if (type === REPLACEMENT) {
+        refreshAliasEditor(
+            node.__h3AliasEditors?.replacement_subject,
+            upstreamCatalog,
+            true
         );
     } else if (type === AUDIO) {
         const use = clean(widget(node, "audio_use")?.value);
@@ -1035,6 +1053,32 @@ function refreshBadgeAndOutputs(node, catalog) {
         } else if (!scope.valid && clean(widget(node, "shot_scope")?.value)) {
             text += " · " + scope.text;
             color = COLORS.error;
+        }
+    } else if (type === REPLACEMENT) {
+        const alias = clean(widget(node, "replacement_subject")?.value);
+        const subject = catalog.subjectsByAlias.get(aliasKey(alias));
+        const source = referenceHandleSource(node, "source_video");
+        const video = source ? catalog.videoLabels.get(source.id) : null;
+        const sourceUse = clean(widget(source, "video_use")?.value);
+        const sourceCharacter = clean(
+            widget(node, "source_character_description")?.value
+        );
+        const scope = scopeWidgetStatus(node, catalog);
+        text =
+            (video || "Source Video required") +
+            " performer → " +
+            (subject ? subject.label + " · " + subject.alias : "Subject required");
+        if (!video || !subject || !sourceCharacter) {
+            color = COLORS.warning;
+        } else if (sourceUse !== VIDEO_EDIT) {
+            text += " · source must use Source video to edit";
+            color = COLORS.error;
+        } else if (!scope.valid) {
+            text += " · " + scope.text;
+            color = COLORS.error;
+        } else {
+            text += " · " + scope.text;
+            color = COLORS.ready;
         }
     } else if (type === SHOT) {
         const local = buildCatalog(chainThrough(node));

@@ -11,6 +11,7 @@ from plan_v2 import (
     AUDIO_MUSIC,
     AUDIO_SFX,
     AUDIO_VOICE,
+    CHARACTER_REPLACEMENT_APPEARANCE_POLICIES,
     CONTENT_ACTION,
     CONTENT_IDENTITY,
     CONTENT_OBJECT,
@@ -27,6 +28,7 @@ from plan_v2 import (
     VIDEO_MOTION,
     VIDEO_STRUCTURE,
     MiniMaxH3PlanV2AudioReference,
+    MiniMaxH3PlanV2CharacterReplacement,
     MiniMaxH3PlanV2DialogueEvent,
     MiniMaxH3PlanV2ImageReference,
     MiniMaxH3PlanV2ProjectSetup,
@@ -36,6 +38,7 @@ from plan_v2 import (
     MiniMaxH3PlanV2VideoReference,
     NODE_CLASS_MAPPINGS,
     compile_h3_plan,
+    validated_plan,
 )
 
 
@@ -112,6 +115,31 @@ def audio_value(seconds=3.0, sample_rate=32_000):
         "waveform": torch.zeros(1, 1, round(seconds * sample_rate)),
         "sample_rate": sample_rate,
     }
+
+
+def character_replacement(
+    plan,
+    video_handle,
+    *,
+    subject="woman",
+    source_character="the woman in the red jacket",
+    policy=None,
+    preserve_performance=True,
+    preserve_scene=True,
+    scope="all",
+    instructions="",
+):
+    return MiniMaxH3PlanV2CharacterReplacement().add_replacement(
+        plan,
+        video_handle,
+        subject,
+        source_character,
+        policy or CHARACTER_REPLACEMENT_APPEARANCE_POLICIES[0],
+        preserve_performance,
+        preserve_scene,
+        scope,
+        instructions,
+    )
 
 
 def audio_reference(
@@ -193,6 +221,15 @@ def test_project_and_text_only_compile_to_native_t2va():
     assert compiled["compiled"]["mode"] == "T2VA"
     assert compiled["compiled"]["checkpoint"] == "H3-Base-FL2VA"
     assert "Do not add, remove, rename, or renumber" in rewrite
+
+
+def test_plan_v2_accepts_pre_replacement_payloads_as_empty_mappings():
+    plan = project()
+    plan.pop("character_replacements")
+
+    normalized = validated_plan(plan)
+
+    assert normalized["character_replacements"] == []
 
 
 def test_endpoint_image_does_not_create_a_subject():
@@ -698,6 +735,100 @@ def test_video_edit_does_not_invent_a_subject():
     assert "Mode: Ref2VA" in report
 
 
+def test_character_replacement_maps_source_performer_and_injects_locked_shot_instructions():
+    plan = project("A woman enters a truck and sits beside the driver.")
+    plan, _image_handle, _image, _preview = image_reference(plan)
+    plan, video_handle, _video, _preview = video_reference(
+        plan,
+        description=(
+            "A woman in a red jacket enters a truck and sits beside the driver."
+        ),
+    )
+    plan, preview = character_replacement(
+        plan,
+        video_handle,
+        source_character="the woman in the red jacket",
+        scope="1-2",
+        instructions="Maintain clean identity continuity through the cut.",
+    )
+    plan = shot(plan, 0.0, "The source performer opens the passenger door.")
+    plan = shot(plan, 2.0, "She settles into the passenger seat.")
+
+    prompt, _rewrite, report, compiled, _length = compile_h3_plan(plan)
+
+    assert "<Video 1> performer (the woman in the red jacket) -> <Subject 1>" in preview
+    assert (
+        "In [Shot 1] and [Shot 2], <Subject 1> replaces only the source "
+        "performer described as the woman in the red jacket from <Video 1>."
+        in prompt
+    )
+    detailed = prompt.split("detailed_description:\n", 1)[1]
+    assert detailed.count(
+        "Using <Video 1> as the source timeline, replace only the source performer "
+        "described as the woman in the red jacket with <Subject 1>."
+    ) == 2
+    assert detailed.count(
+        "retain the source performer's body proportions and wardrobe from <Video 1>"
+    ) == 2
+    assert "Preserve that source performer's pose, motion, timing" in detailed
+    assert "Keep every other person, the environment, props, lighting" in detailed
+    assert "<Subject 1> (appears in [Shot 1] and [Shot 2])" in prompt
+    assert "only the declared character replacement is applied" in prompt
+    assert len(compiled["character_replacements"]) == 1
+    assert "character replacement mapping(s)" in report
+
+
+def test_character_replacement_scope_is_the_subject_citation_only_for_selected_shots():
+    plan = project()
+    plan, _image_handle, _image, _preview = image_reference(plan)
+    plan, video_handle, _video, _preview = video_reference(plan)
+    plan, _preview = character_replacement(plan, video_handle, scope="2")
+    plan = shot(plan, 0.0, "The driver is alone in the first source shot.")
+    plan = shot(plan, 2.0, "The woman in the red jacket enters the frame.")
+
+    prompt, *_rest = compile_h3_plan(plan)
+    detailed = prompt.split("detailed_description:\n", 1)[1]
+    shot_one, shot_two = detailed.split("[Shot 2]", 1)
+
+    assert "Using <Video 1> as the source timeline" not in shot_one
+    assert "Using <Video 1> as the source timeline" in shot_two
+
+
+def test_character_replacement_rejects_non_edit_video_and_non_identity_subject():
+    plan = project()
+    plan, _image_handle, _image, _preview = image_reference(plan)
+    plan, video_handle, _video, _preview = video_reference(
+        plan, use=VIDEO_STRUCTURE
+    )
+    with pytest.raises(ValueError, match="Source video to edit"):
+        character_replacement(plan, video_handle)
+
+    plan = project()
+    plan, _image_handle, _image, _preview = image_reference(
+        plan,
+        content_type=CONTENT_OBJECT,
+        subject="red jacket",
+    )
+    plan, video_handle, _video, _preview = video_reference(plan)
+    with pytest.raises(ValueError, match="Identity or appearance binding"):
+        character_replacement(plan, video_handle, subject="red jacket")
+
+
+def test_character_replacement_owns_h3_labels_and_requires_an_upstream_subject():
+    plan = project()
+    plan, _image_handle, _image, _preview = image_reference(plan)
+    plan, video_handle, _video, _preview = video_reference(plan)
+
+    with pytest.raises(ValueError, match="not an upstream Subject"):
+        character_replacement(plan, video_handle, subject="unknown character")
+    with pytest.raises(ValueError, match="plain language"):
+        character_replacement(
+            plan,
+            video_handle,
+            source_character="replace <Subject 2> in <Video 1>",
+        )
+
+
 def test_motion_video_requires_and_targets_an_upstream_subject():
     plan = project("Transfer the supplied running motion to the woman.")
     plan, _handle, _image, _preview = image_reference(plan)
@@ -871,6 +1002,7 @@ def test_node_contract_exposes_the_complete_phase_one_chain():
         "MiniMaxH3PlanV2ImageReference",
         "MiniMaxH3PlanV2SubjectBinding",
         "MiniMaxH3PlanV2VideoReference",
+        "MiniMaxH3PlanV2CharacterReplacement",
         "MiniMaxH3PlanV2AudioReference",
         "MiniMaxH3PlanV2Shot",
         "MiniMaxH3PlanV2DialogueEvent",

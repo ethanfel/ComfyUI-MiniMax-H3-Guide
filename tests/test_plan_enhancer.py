@@ -23,12 +23,15 @@ from plan_enhancer import (
 )
 from plan_v2 import (
     AUDIO_VOICE,
+    CHARACTER_REPLACEMENT_APPEARANCE_POLICIES,
     CONTENT_IDENTITY,
     IMAGE_DEFINE_VISIBLE,
     RETENTION_AUTO,
     UNASSIGNED_CONTENT_TYPE,
+    VIDEO_EDIT,
     VIDEO_STRUCTURE,
     MiniMaxH3PlanV2AudioReference,
+    MiniMaxH3PlanV2CharacterReplacement,
     MiniMaxH3PlanV2DialogueEvent,
     MiniMaxH3PlanV2ImageReference,
     MiniMaxH3PlanV2ProjectSetup,
@@ -137,6 +140,67 @@ def compiled_scene(*, include_video=False):
         "Thanks for the ride.",
         "warmly",
         "On-screen speech",
+    )[0]
+    return MiniMaxH3PlanV2PromptMerge().merge(plan)[2]
+
+
+def compiled_replacement_scene():
+    plan = MiniMaxH3PlanV2ProjectSetup().start(
+        "Replace one performer while retaining the source scene.",
+        6.0,
+        "cinematic, grounded live-action",
+        "Truck engine and road vibration.",
+        "N/A",
+    )[0]
+    plan, _image_handle, _image, _preview = MiniMaxH3PlanV2ImageReference().add_image(
+        plan,
+        torch.zeros(1, 48, 64, 3),
+        IMAGE_DEFINE_VISIBLE,
+        "replacement portrait",
+        "A dark-haired woman.",
+        CONTENT_IDENTITY,
+        "replacement woman",
+        RETENTION_AUTO,
+        "",
+        "",
+    )
+    plan, video_handle, _video, _preview = MiniMaxH3PlanV2VideoReference().add_video(
+        plan,
+        torch.zeros(48, 40, 64, 3),
+        VIDEO_EDIT,
+        "source truck video",
+        "A woman in a red jacket rides in a moving truck.",
+        24.0,
+        UNASSIGNED_CONTENT_TYPE,
+        "",
+        "",
+        RETENTION_AUTO,
+        "",
+    )
+    plan, _preview = MiniMaxH3PlanV2CharacterReplacement().add_replacement(
+        plan,
+        video_handle,
+        "replacement woman",
+        "the woman in the red jacket",
+        CHARACTER_REPLACEMENT_APPEARANCE_POLICIES[0],
+        True,
+        True,
+        "1-2",
+        "Keep the replacement identity consistent across the cut.",
+    )
+    plan = MiniMaxH3PlanV2Shot().add_shot(
+        plan,
+        0.0,
+        "The source performer opens the passenger door.",
+        "",
+        "Direct cut",
+    )[0]
+    plan = MiniMaxH3PlanV2Shot().add_shot(
+        plan,
+        2.0,
+        "She settles into the passenger seat.",
+        "",
+        "Direct cut",
     )[0]
     return MiniMaxH3PlanV2PromptMerge().merge(plan)[2]
 
@@ -466,6 +530,28 @@ def test_qwen_inventory_keeps_binding_notes_retention_scope_and_transfer_fields(
     assert "shot_scope=1-2" in inventory
     assert "transfer_target=none" in inventory
     assert "notes=A dark-haired woman in a denim jacket." in inventory
+
+
+def test_qwen_inventory_and_recompile_keep_character_replacement_locked():
+    context = compiled_replacement_scene()
+    inventory = _plan_inventory(context)
+
+    assert "Character replacement: source_performer=the woman in the red jacket" in inventory
+    assert "replacement_subject=<Subject 1> (replacement woman)" in inventory
+    assert "preserve_performance=True" in inventory
+    assert "preserve_scene=True" in inventory
+    assert "shot_scope=1-2" in inventory
+
+    prose = json.loads(editable_prose_json(context))
+    prose["shots"][0]["description"] += " Dust moves beneath the open door."
+    prompt, compiled, *_rest = apply_editable_prose(
+        context, json.dumps(prose, ensure_ascii=False)
+    )
+
+    assert compiled["character_replacements"] == context["character_replacements"]
+    assert prompt.count(
+        "Using <Video 1> as the source timeline, replace only the source performer"
+    ) == 2
 
 
 def test_invalid_qwen_json_falls_back_to_valid_compiler_outputs():
