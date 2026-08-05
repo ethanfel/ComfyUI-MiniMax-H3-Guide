@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import Counter
 import hashlib
 import re
-import traceback
 
 try:
     from .media_context import (
@@ -50,54 +49,13 @@ def _generate_with_tail(clip, tail_name: str, tokens, generation_options: dict):
     return generate_with_tail(clip, tail_name, tokens, generation_options)
 
 
-def _offload_connected_clip(clip) -> str:
-    """Ask ComfyUI to move the connected CLIP to its configured offload device."""
-
-    patcher = getattr(clip, "patcher", None)
-    if patcher is None:
-        return "unavailable"
-
-    load_device = getattr(patcher, "load_device", None)
-    offload_device = getattr(patcher, "offload_device", None)
-    if (
-        load_device is not None
-        and offload_device is not None
-        and load_device == offload_device
-    ):
-        return "same_device"
-
-    try:
-        import comfy.model_management
-
-        unload = comfy.model_management.unload_model_and_clones
-        try:
-            unload(
-                patcher,
-                unload_additional_models=False,
-                all_devices=True,
-            )
-        except TypeError as exc:
-            # Older ComfyUI versions did not expose all_devices. Keep generic
-            # Qwen wrappers usable there while current H3 builds use the safer
-            # multi-device form above.
-            if "all_devices" not in str(exc):
-                raise
-            unload(patcher, unload_additional_models=False)
-    except Exception as exc:  # Return generated text when ordinary cleanup fails.
-        return f"failed: {type(exc).__name__}: {exc}"
-    return "offloaded"
-
-
 def _clip_offload_report(status: str) -> str:
-    if status == "offloaded":
-        return "The connected CLIP was explicitly moved to its configured offload device after decoding."
-    if status == "same_device":
+    if status == "suppressed":
         return (
-            "CLIP offload was requested, but its load and offload devices are identical; "
-            "do not launch ComfyUI with --gpu-only when CPU offload is required."
+            "A legacy explicit connected-CLIP unload request was suppressed for safety; "
+            "ComfyUI manages the connected model's residency. Any temporary H3 generation "
+            "tail was still unloaded internally."
         )
-    if status.startswith("failed:"):
-        return f"CLIP offload warning: {status.removeprefix('failed: ').strip()}."
     return ""
 
 
@@ -1011,7 +969,8 @@ class MiniMaxH3PromptEnhancer:
         "Second step after MiniMax H3 Prompt Guide. Connect h3_prompt, mode_report, and a generative Qwen3-VL or Qwen3.5 CLIP. "
         "A complete generative CLIP needs no tail; MiniMax H3's 50-layer conditioning CLIP uses the optional 50-63 tail. "
         "The node can analyze a chained set of role-labeled pictures and video samples, or one legacy image. "
-        "By default it explicitly offloads the connected CLIP after text decoding. Connect enhanced_prompt to ComfyUI's official H3 conditioning node."
+        "ComfyUI manages the connected CLIP's residency; only the temporary generation tail is explicitly unloaded. "
+        "Connect enhanced_prompt to ComfyUI's official H3 conditioning node."
     )
 
     @classmethod
@@ -1065,12 +1024,12 @@ class MiniMaxH3PromptEnhancer:
                 "max_new_tokens": (
                     "INT",
                     {
-                        "default": 1400,
+                        "default": 1200,
                         "min": 64,
                         "max": 4096,
                         "step": 1,
                         "tooltip": (
-                            "Maximum tokens Qwen may generate, not input length. 1000-1400 is a practical range for the guide's detailed 350-500-word Ref2VA body plus other sections. "
+                            "Maximum tokens Qwen may generate, not input length. 800-1200 is a practical range for the guide's detailed Ref2VA body plus other sections. "
                             "Lower values are faster but may truncate sections; increase only for dialogue-heavy prompts."
                         ),
                     },
@@ -1207,14 +1166,13 @@ class MiniMaxH3PromptEnhancer:
                 "offload_after_generation": (
                     "BOOLEAN",
                     {
-                        "default": True,
+                        "default": False,
                         "tooltip": (
-                            "On (recommended for the 32B encoder) explicitly moves the connected "
-                            "CLIP to its configured ComfyUI offload device after generated tokens "
-                            "have been decoded. The temporary generation tail is always unloaded. "
-                            "Turn this off only when the same CLIP is consumed immediately downstream "
-                            "and avoiding a reload matters more than freeing VRAM. --gpu-only makes "
-                            "the load and offload devices identical, so CPU offload cannot work."
+                            "Compatibility switch retained for existing workflows. The enhancer never "
+                            "explicitly unloads a connected CLIP because a synchronous unload can stall "
+                            "large complete Qwen models; ComfyUI manages its residency instead. If an old "
+                            "workflow enables this switch, the request is safely ignored. The temporary "
+                            "H3 generation tail is always unloaded internally."
                         ),
                     },
                 ),
@@ -1240,7 +1198,7 @@ class MiniMaxH3PromptEnhancer:
         clip_tail=None,
         reference_context=None,
         image=None,
-        offload_after_generation: bool = True,
+        offload_after_generation: bool = False,
     ):
         if clip is None:
             raise RuntimeError("A generation-capable CLIP input is required.")
@@ -1338,40 +1296,19 @@ class MiniMaxH3PromptEnhancer:
             "presence_penalty": presence_penalty,
             "seed": seed,
         }
-        clip_offload_status = "disabled"
-        generation_error = generation_traceback = None
-        try:
-            if tail_name is None:
-                generated_ids = _generate_with_clip(
-                    clip,
-                    tokens,
-                    generation_options,
-                    use_minimax_image_path=minimax_clip and has_visual,
-                )
-            else:
-                generated_ids = _generate_with_tail(
-                    clip, tail_name, tokens, generation_options
-                )
-            raw_generated_prompt = clip.decode(generated_ids)
-        except BaseException as exc:
-            generation_error = exc
-            generation_traceback = exc.__traceback__
-            traceback.clear_frames(generation_traceback)
-        finally:
-            if offload_after_generation:
-                try:
-                    clip_offload_status = _offload_connected_clip(clip)
-                except BaseException as cleanup_error:
-                    traceback.clear_frames(cleanup_error.__traceback__)
-                    if generation_error is None:
-                        raise
-                    if hasattr(generation_error, "add_note"):
-                        generation_error.add_note(
-                            "Connected-CLIP cleanup also failed: "
-                            f"{type(cleanup_error).__name__}: {cleanup_error}"
-                        )
-        if generation_error is not None:
-            raise generation_error.with_traceback(generation_traceback)
+        clip_offload_status = "suppressed" if offload_after_generation else "disabled"
+        if tail_name is None:
+            generated_ids = _generate_with_clip(
+                clip,
+                tokens,
+                generation_options,
+                use_minimax_image_path=minimax_clip and has_visual,
+            )
+        else:
+            generated_ids = _generate_with_tail(
+                clip, tail_name, tokens, generation_options
+            )
+        raw_generated_prompt = clip.decode(generated_ids)
         enhanced_prompt = clean_generated_prompt(raw_generated_prompt, "")
         collapse = generation_collapse_reason(raw_generated_prompt)
         if collapse is None:

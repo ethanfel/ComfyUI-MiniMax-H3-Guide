@@ -2,7 +2,6 @@ from contextlib import nullcontext
 import hashlib
 import sys
 from types import ModuleType, SimpleNamespace
-import weakref
 
 import pytest
 import torch
@@ -15,7 +14,6 @@ from enhancer import (
     MiniMaxH3GenerationTailLoader,
     MiniMaxH3PromptEnhancer,
     _generate_with_clip,
-    _offload_connected_clip,
     build_llm_user_prompt,
     clip_generation_issue,
     clean_generated_prompt,
@@ -289,16 +287,17 @@ def test_enhancer_tooltips_explain_outputs_and_optional_image_scope():
     assert schema["optional"]["clip_tail"][0] == TAIL_TYPE
     assert "Legacy compatibility" in schema["optional"]["image"][1]["tooltip"]
     assert "reference_context" in schema["optional"]
-    assert schema["optional"]["offload_after_generation"][1]["default"] is True
+    assert schema["optional"]["offload_after_generation"][1]["default"] is False
     assert (
-        "explicitly moves"
+        "never explicitly unloads"
         in schema["optional"]["offload_after_generation"][1]["tooltip"]
     )
     assert (
         "Image to Video endpoint inputs"
         in schema["optional"]["reference_context"][1]["tooltip"]
     )
-    assert "1000-1400" in schema["required"]["max_new_tokens"][1]["tooltip"]
+    assert schema["required"]["max_new_tokens"][1]["default"] == 1200
+    assert "800-1200" in schema["required"]["max_new_tokens"][1]["tooltip"]
     assert "upgraded automatically" in schema["required"]["system_prompt"][1]["tooltip"]
     assert "Cleaned candidate" in MiniMaxH3PromptEnhancer.OUTPUT_TOOLTIPS[0]
     assert "Pixel tensors remain external" in MiniMaxH3PromptEnhancer.OUTPUT_TOOLTIPS[2]
@@ -312,45 +311,35 @@ def test_enhancer_tooltips_explain_outputs_and_optional_image_scope():
     )
 
 
-def test_enhancer_explicitly_offloads_managed_clip_after_decode(monkeypatch):
-    calls = []
+def test_complete_qwen_never_forces_unload_even_when_legacy_switch_is_on(
+    monkeypatch,
+):
     model_management = ModuleType("comfy.model_management")
-
-    def unload(patcher, **kwargs):
-        calls.append((patcher, kwargs))
-
-    model_management.unload_model_and_clones = unload
+    model_management.unload_model_and_clones = lambda *_args, **_kwargs: pytest.fail(
+        "the enhancer must not synchronously unload a connected complete Qwen model"
+    )
     comfy = ModuleType("comfy")
     comfy.__path__ = []
     comfy.model_management = model_management
     monkeypatch.setitem(sys.modules, "comfy", comfy)
     monkeypatch.setitem(sys.modules, "comfy.model_management", model_management)
 
-    patcher = SimpleNamespace(load_device="cuda:0", offload_device="cpu")
     clip = FakeClip(VALID_BASE_PROMPT)
-    clip.patcher = patcher
-    _, _, _, report = MiniMaxH3PromptEnhancer().enhance(clip=clip, **enhancer_kwargs())
+    clip.patcher = SimpleNamespace(load_device="cuda:0", offload_device="cpu")
+    _, _, _, report = MiniMaxH3PromptEnhancer().enhance(
+        clip=clip,
+        **enhancer_kwargs(offload_after_generation=True),
+    )
 
-    assert calls == [
-        (
-            patcher,
-            {"unload_additional_models": False, "all_devices": True},
-        )
-    ]
-    assert "explicitly moved to its configured offload device" in report
+    assert "unload request was suppressed for safety" in report
+    assert "ComfyUI manages" in report
 
 
-def test_enhancer_offloads_managed_clip_even_when_generation_fails(monkeypatch):
-    calls = []
-    tensor_ref = None
+def test_complete_qwen_generation_failure_never_forces_unload(monkeypatch):
     model_management = ModuleType("comfy.model_management")
-
-    def unload(patcher, **kwargs):
-        assert tensor_ref is not None
-        assert tensor_ref() is None
-        calls.append((patcher, kwargs))
-
-    model_management.unload_model_and_clones = unload
+    model_management.unload_model_and_clones = lambda *_args, **_kwargs: pytest.fail(
+        "error cleanup must not synchronously unload a connected complete Qwen model"
+    )
     comfy = ModuleType("comfy")
     comfy.__path__ = []
     comfy.model_management = model_management
@@ -362,60 +351,15 @@ def test_enhancer_offloads_managed_clip_even_when_generation_fails(monkeypatch):
 
     class FailingClip(FakeClip):
         def generate(self, _tokens, **_kwargs):
-            nonlocal tensor_ref
-            temporary = torch.ones(1)
-            tensor_ref = weakref.ref(temporary)
             raise GenerationInterrupt("generation interrupted")
 
-    patcher = SimpleNamespace(load_device="cuda:0", offload_device="cpu")
     clip = FailingClip("unused")
-    clip.patcher = patcher
+    clip.patcher = SimpleNamespace(load_device="cuda:0", offload_device="cpu")
     with pytest.raises(GenerationInterrupt, match="generation interrupted"):
-        MiniMaxH3PromptEnhancer().enhance(clip=clip, **enhancer_kwargs())
-
-    assert calls == [
-        (
-            patcher,
-            {"unload_additional_models": False, "all_devices": True},
+        MiniMaxH3PromptEnhancer().enhance(
+            clip=clip,
+            **enhancer_kwargs(offload_after_generation=True),
         )
-    ]
-
-
-def test_clip_offload_reports_identical_load_and_offload_devices(monkeypatch):
-    model_management = ModuleType("comfy.model_management")
-    model_management.unload_model_and_clones = lambda *_args, **_kwargs: pytest.fail(
-        "same-device residency cannot be offloaded"
-    )
-    comfy = ModuleType("comfy")
-    comfy.__path__ = []
-    comfy.model_management = model_management
-    monkeypatch.setitem(sys.modules, "comfy", comfy)
-    monkeypatch.setitem(sys.modules, "comfy.model_management", model_management)
-
-    clip = SimpleNamespace(
-        patcher=SimpleNamespace(load_device="cuda:0", offload_device="cuda:0")
-    )
-    assert _offload_connected_clip(clip) == "same_device"
-
-
-def test_clip_offload_does_not_swallow_fresh_interrupt(monkeypatch):
-    model_management = ModuleType("comfy.model_management")
-
-    def interrupt(*_args, **_kwargs):
-        raise KeyboardInterrupt("stop")
-
-    model_management.unload_model_and_clones = interrupt
-    comfy = ModuleType("comfy")
-    comfy.__path__ = []
-    comfy.model_management = model_management
-    monkeypatch.setitem(sys.modules, "comfy", comfy)
-    monkeypatch.setitem(sys.modules, "comfy.model_management", model_management)
-
-    clip = SimpleNamespace(
-        patcher=SimpleNamespace(load_device="cuda:0", offload_device="cpu")
-    )
-    with pytest.raises(KeyboardInterrupt, match="stop"):
-        _offload_connected_clip(clip)
 
 
 def test_default_system_prompt_covers_official_high_risk_rules():

@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import math
 import re
-import traceback
 from typing import Any
 
 try:
@@ -21,7 +20,6 @@ try:
         _generate_with_clip,
         _generate_with_tail,
         _is_minimax_h3_tokenizer,
-        _offload_connected_clip,
         _prepare_reference_visuals,
         _resolve_tail_name,
         clip_generation_issue,
@@ -52,7 +50,6 @@ except ImportError:
         _generate_with_clip,
         _generate_with_tail,
         _is_minimax_h3_tokenizer,
-        _offload_connected_clip,
         _prepare_reference_visuals,
         _resolve_tail_name,
         clip_generation_issue,
@@ -699,7 +696,7 @@ class MiniMaxH3PlanV2PromptEnhancer:
         "Editable system instructions exactly as resolved from the widget.",
         "Actual system instructions sent to Qwen: base prompt plus the non-editable schema contract.",
         "Complete Qwen chat template for debugging or use in another compatible LLM node.",
-        "Generation, visual-analysis, fallback, validation, tail, and CLIP-offload status.",
+        "Generation, visual-analysis, fallback, validation, tail, and CLIP-residency safety status.",
     )
     DESCRIPTION = (
         "Structured Plan v2 production-detail enhancer. Qwen materially expands editable scene "
@@ -770,7 +767,7 @@ class MiniMaxH3PlanV2PromptEnhancer:
                 "max_analysis_frames": (
                     "INT",
                     {
-                        "default": 12,
+                        "default": 8,
                         "min": 2,
                         "max": 32,
                         "step": 1,
@@ -780,7 +777,7 @@ class MiniMaxH3PlanV2PromptEnhancer:
                 "max_new_tokens": (
                     "INT",
                     {
-                        "default": 1800,
+                        "default": 1200,
                         "min": 128,
                         "max": 4096,
                         "step": 1,
@@ -840,8 +837,14 @@ class MiniMaxH3PlanV2PromptEnhancer:
                 "offload_after_generation": (
                     "BOOLEAN",
                     {
-                        "default": True,
-                        "tooltip": "Explicitly offload the connected CLIP after decoding.",
+                        "default": False,
+                        "tooltip": (
+                            "Compatibility switch retained for existing workflows. The enhancer never "
+                            "explicitly unloads a connected CLIP because a synchronous unload can stall "
+                            "large complete Qwen models; ComfyUI manages its residency instead. If an old "
+                            "workflow enables this switch, the request is safely ignored. The temporary "
+                            "H3 generation tail is always unloaded internally."
+                        ),
                     },
                 ),
             },
@@ -867,7 +870,7 @@ class MiniMaxH3PlanV2PromptEnhancer:
         seed: int,
         thinking: bool,
         clip_tail=None,
-        offload_after_generation: bool = True,
+        offload_after_generation: bool = False,
     ):
         if clip is None:
             raise RuntimeError("A generation-capable CLIP input is required.")
@@ -949,40 +952,19 @@ class MiniMaxH3PlanV2PromptEnhancer:
             "presence_penalty": presence_penalty,
             "seed": seed,
         }
-        clip_offload_status = "disabled"
-        generation_error = generation_traceback = None
-        try:
-            if tail_name is None:
-                generated_ids = _generate_with_clip(
-                    clip,
-                    tokens,
-                    generation_options,
-                    use_minimax_image_path=minimax_clip and bool(entries),
-                )
-            else:
-                generated_ids = _generate_with_tail(
-                    clip, tail_name, tokens, generation_options
-                )
-            raw_output = clip.decode(generated_ids)
-        except BaseException as exc:
-            generation_error = exc
-            generation_traceback = exc.__traceback__
-            traceback.clear_frames(generation_traceback)
-        finally:
-            if offload_after_generation:
-                try:
-                    clip_offload_status = _offload_connected_clip(clip)
-                except BaseException as cleanup_error:
-                    traceback.clear_frames(cleanup_error.__traceback__)
-                    if generation_error is None:
-                        raise
-                    if hasattr(generation_error, "add_note"):
-                        generation_error.add_note(
-                            "Connected-CLIP cleanup also failed: "
-                            f"{type(cleanup_error).__name__}: {cleanup_error}"
-                        )
-        if generation_error is not None:
-            raise generation_error.with_traceback(generation_traceback)
+        clip_offload_status = "suppressed" if offload_after_generation else "disabled"
+        if tail_name is None:
+            generated_ids = _generate_with_clip(
+                clip,
+                tokens,
+                generation_options,
+                use_minimax_image_path=minimax_clip and bool(entries),
+            )
+        else:
+            generated_ids = _generate_with_tail(
+                clip, tail_name, tokens, generation_options
+            )
+        raw_output = clip.decode(generated_ids)
 
         collapse = generation_collapse_reason(raw_output)
         fallback_reason = collapse or ""

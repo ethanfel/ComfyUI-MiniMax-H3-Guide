@@ -86,12 +86,17 @@ back to the deterministic compiler draft. The node exposes:
 2. the matching compiled `enhanced_plan_context`;
 3. both the editable `base_system_prompt` and actual
    `effective_system_prompt` with its appended locked contract;
-4. the complete `llm_prompt` and a validation/offload report.
+4. the complete `llm_prompt` and a validation/model-residency report.
+
+The enhancers never synchronously unload a connected complete Qwen checkpoint.
+ComfyUI's normal memory manager keeps it resident and reclaims it when another
+model needs the VRAM. The serialized `offload_after_generation` switch remains
+for workflow compatibility, defaults to off, and is safely ignored when enabled.
+The temporary MiniMax generation tail still unloads itself after every request.
 
 Use **Apply Structured Prose (Plan v2)** after a text editor when the returned
 JSON should be refined manually and recompiled without running Qwen again.
-The side-node Generation Tail Loader and explicit CLIP offload remain
-supported.
+The side-node Generation Tail Loader remains supported.
 
 **Apply Reference Plan (Plan v2)** is the native handoff. Connect `h3_prompt`
 and `plan_context` from the same Prompt Merge, Structured Prompt Enhancer, or
@@ -213,11 +218,10 @@ language layers 0–49, loads only layers 50–63 plus the final norm and LM hea
 then unloads that tail when generation finishes. Tail KV caches and embeddings
 are released before the managed unload and CUDA cache flush. The connected
 50-layer CLIP is never merged or modified and remains suitable for official H3
-conditioning. The enhancer's `offload_after_generation` option defaults to on
-and explicitly moves that connected CLIP to its configured ComfyUI offload
-device after decoding. Turn it off only when the same CLIP is consumed
-immediately downstream and avoiding a reload is more important than freeing
-VRAM.
+conditioning. The connected CLIP remains under ComfyUI's normal memory manager;
+the enhancer does not synchronously unload it after decoding. The legacy
+`offload_after_generation` widget is retained only so older workflows continue
+to load, and enabling it no longer forces a connected-model unload.
 If the truncated CLIP is connected without the side loader, enhancement is
 safely skipped and the manual prompt is returned unchanged.
 
@@ -236,10 +240,10 @@ autoregressive generation revisits every language layer for each token.
 
 High `nvidia-smi` usage on a larger card does not itself mean full residency is
 required: ComfyUI opportunistically uses available VRAM and may retain allocator
-cache. The explicit post-generation cleanup is what returns the transient tail
-and, by default, the connected CLIP afterward. A real INT8 tail artifact has
-now been smoke-tested for successful text generation; available hardware still
-determines practical speed and maximum visual/prompt context.
+cache. Explicit post-generation cleanup returns only the transient tail; the
+connected CLIP remains under ComfyUI's model manager. A real INT8 tail artifact
+has now been smoke-tested for successful text generation; available hardware
+still determines practical speed and maximum visual/prompt context.
 
 Download the INT8 tail from
 [`ethanfel/Qwen3-VL-32B-Ultra-Heretic-MiniMax-H3-ComfyUI-INT8-ConvRot`](https://huggingface.co/ethanfel/Qwen3-VL-32B-Ultra-Heretic-MiniMax-H3-ComfyUI-INT8-ConvRot)

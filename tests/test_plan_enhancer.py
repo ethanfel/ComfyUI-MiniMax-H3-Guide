@@ -1,4 +1,6 @@
 import json
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -396,3 +398,35 @@ def test_phase_two_node_contract():
         "llm_prompt",
         "enhancer_report",
     )
+    offload = MiniMaxH3PlanV2PromptEnhancer.INPUT_TYPES()["optional"][
+        "offload_after_generation"
+    ][1]
+    assert offload["default"] is False
+    assert "never explicitly unloads" in offload["tooltip"]
+    required = MiniMaxH3PlanV2PromptEnhancer.INPUT_TYPES()["required"]
+    assert required["max_analysis_frames"][1]["default"] == 8
+    assert required["max_new_tokens"][1]["default"] == 1200
+
+
+def test_structured_complete_qwen_never_forces_legacy_unload(monkeypatch):
+    model_management = ModuleType("comfy.model_management")
+    model_management.unload_model_and_clones = lambda *_args, **_kwargs: pytest.fail(
+        "the structured enhancer must not force-unload a connected complete Qwen model"
+    )
+    comfy = ModuleType("comfy")
+    comfy.__path__ = []
+    comfy.model_management = model_management
+    monkeypatch.setitem(sys.modules, "comfy", comfy)
+    monkeypatch.setitem(sys.modules, "comfy.model_management", model_management)
+
+    plan = compiled_scene()
+    clip = FakeClip(enhanced_json(plan))
+    clip.patcher = SimpleNamespace(load_device="cuda:0", offload_device="cpu")
+    *_, report = MiniMaxH3PlanV2PromptEnhancer().enhance_plan(
+        clip,
+        plan,
+        **enhancer_kwargs(offload_after_generation=True),
+    )
+
+    assert "unload request was suppressed for safety" in report
+    assert "ComfyUI manages" in report
