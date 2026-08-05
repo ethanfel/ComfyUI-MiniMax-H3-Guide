@@ -320,7 +320,7 @@ Queue once to create the sheet. Later choose `Load existing`, select the sheet,
 and click the desired thumbnail or audio player in the embedded gallery. The
 selection is carried in `reference_sheet`; users never type or remember an
 input filename or internal asset key. For audio, `audio_start_seconds` chooses
-the offset and the `audio_duration_seconds` slider chooses a 2–15 second output
+the offset and the `audio_duration_seconds` numeric field chooses an exact 2–15 second output
 window. Trimming is non-destructive: the player and saved WAV remain complete,
 while `selected_audio` and the legacy sheet-audio output carry only the selected
 segment. Duplicate the sheet node when different segments of one saved clip are
@@ -616,7 +616,7 @@ MiniMax tokenizer are absent.
   limits each media type to 15 seconds total. Video Reference and Audio
   Reference validate each asset when registered, and Prompt Merge validates
   their totals. Audio Reference errors include the cumulative duration and each
-  active clip's duration; use the Reference Sheet trim slider to fit several
+  active clip's duration; use the Reference Sheet numeric trim fields to fit several
   selected segments below the shared limit.
 - H3 policy does not allow reference audio as the sole media input. Prompt Merge
   rejects that plan before Apply Reference Plan can run.

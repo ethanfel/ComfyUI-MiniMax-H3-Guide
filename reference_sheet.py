@@ -1285,11 +1285,10 @@ class MiniMaxH3ReferenceSheet:
                         "min": 2.0,
                         "max": 15.0,
                         "step": 0.05,
-                        "display": "slider",
                         "tooltip": (
-                            "Length of the selected_audio segment. If less audio remains, the segment "
-                            "ends with the saved clip. H3 counts this shortened output toward its "
-                            "15-second cumulative reference-audio limit."
+                            "Exact length of the selected_audio segment; type the value directly. "
+                            "If less audio remains, the segment ends with the saved clip. H3 counts "
+                            "this shortened output toward its 15-second cumulative reference-audio limit."
                         ),
                     },
                 ),

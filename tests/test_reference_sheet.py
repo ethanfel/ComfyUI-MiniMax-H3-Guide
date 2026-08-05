@@ -576,7 +576,7 @@ def test_reference_sheet_node_contracts_and_guide_socket_order():
     required = MiniMaxH3ReferenceSheet.INPUT_TYPES()["required"]
     assert required["audio_start_seconds"][1]["default"] == 0.0
     assert required["audio_duration_seconds"][1]["default"] == 15.0
-    assert required["audio_duration_seconds"][1]["display"] == "slider"
+    assert "display" not in required["audio_duration_seconds"][1]
     assert "asset_key" not in MiniMaxH3ReferenceSheetVisualReference.INPUT_TYPES()["required"]
     assert "asset_key" not in MiniMaxH3ReferenceSheetAudioReference.INPUT_TYPES()["required"]
     assert (
