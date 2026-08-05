@@ -240,6 +240,52 @@ def _audio_duration(audio: dict) -> float:
     return waveform.shape[-1] / int(sample_rate)
 
 
+def _trim_audio_for_h3(
+    audio: dict,
+    start_seconds: float,
+    duration_seconds: float,
+) -> tuple[dict, float, float, float]:
+    """Return a non-destructive H3-sized segment from one saved audio value."""
+
+    if isinstance(start_seconds, bool) or isinstance(duration_seconds, bool):
+        raise ValueError("Audio trim start and duration must be numeric values.")
+    try:
+        requested_start = float(start_seconds)
+        requested_duration = float(duration_seconds)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Audio trim start and duration must be numeric values.") from error
+    if not math.isfinite(requested_start) or requested_start < 0.0:
+        raise ValueError("Audio trim start must be a finite value at or above 0 seconds.")
+    if (
+        not math.isfinite(requested_duration)
+        or requested_duration < 2.0
+        or requested_duration > 15.0
+    ):
+        raise ValueError("Audio trim duration must be from 2 through 15 seconds.")
+
+    full_duration = _audio_duration(audio)
+    waveform = audio["waveform"]
+    sample_rate = int(audio["sample_rate"])
+    sample_count = int(waveform.shape[-1])
+    start_sample = round(requested_start * sample_rate)
+    if start_sample >= sample_count:
+        raise ValueError(
+            f"Audio trim starts at {requested_start:.3f}s, but the selected saved clip "
+            f"lasts only {full_duration:.3f}s."
+        )
+    requested_samples = round(requested_duration * sample_rate)
+    end_sample = min(sample_count, start_sample + requested_samples)
+    actual_duration = (end_sample - start_sample) / sample_rate
+
+    actual_start = start_sample / sample_rate
+    if start_sample == 0 and end_sample == sample_count:
+        trimmed = audio
+    else:
+        trimmed = dict(audio)
+        trimmed["waveform"] = waveform[..., start_sample:end_sample].clone()
+    return trimmed, actual_start, actual_duration, full_duration
+
+
 def _draft_entries(draft) -> list[dict]:
     if draft is None:
         return []
@@ -954,6 +1000,22 @@ def _write_connected_audio(path: Path, audio: dict) -> None:
         handle.writeframes(samples.tobytes())
 
 
+def _next_connected_asset_key(kind: str, assets: list[dict]) -> str:
+    """Choose a stable append-only key without renumbering saved assets."""
+
+    used = {str(asset["key"]).casefold() for asset in assets}
+    pattern = re.compile(rf"^{re.escape(kind)}_(\d+)$", flags=re.IGNORECASE)
+    ordinals = []
+    for asset in assets:
+        match = pattern.fullmatch(str(asset["key"]))
+        if match:
+            ordinals.append(int(match.group(1)))
+    ordinal = max(ordinals, default=0) + 1
+    while f"{kind}_{ordinal}".casefold() in used:
+        ordinal += 1
+    return f"{kind}_{ordinal}"
+
+
 def _save_connected_sheet(
     operation: str,
     saved_sheet: str,
@@ -962,7 +1024,7 @@ def _save_connected_sheet(
     tags: str,
     confirm_update: bool,
     entries: list[dict],
-) -> dict:
+) -> tuple[dict, str]:
     root = _reference_sheet_root()
     root.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc).isoformat()
@@ -981,7 +1043,9 @@ def _save_connected_sheet(
             raise ValueError("The generated Reference Sheet directory already exists; retry creation.")
     elif operation == UPDATE_SHEET:
         if not confirm_update:
-            raise ValueError("Update existing requires confirm_update=true to prevent accidental replacement.")
+            raise ValueError(
+                "Update existing requires confirm_update=true to prevent accidental modification."
+            )
         record = _selected_record(saved_sheet)
         target = record["directory"]
         existing = _read_manifest(target, verify_files=True)
@@ -995,30 +1059,8 @@ def _save_connected_sheet(
     backup = None
     try:
         manifest_assets = []
-        if entries:
-            for entry in entries:
-                subdirectory = "images" if entry["kind"] == "image" else "audio"
-                extension = ".png" if entry["kind"] == "image" else ".wav"
-                destination = staging / subdirectory / f"{entry['key']}{extension}"
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                if entry["kind"] == "image":
-                    _write_connected_image(destination, entry["value"])
-                else:
-                    _write_connected_audio(destination, entry["value"])
-                manifest_assets.append(
-                    {
-                        "key": entry["key"],
-                        "kind": entry["kind"],
-                        "file": destination.relative_to(staging).as_posix(),
-                        "description": "",
-                        "suggested_role": "",
-                        "group_key": "main",
-                        "source_name": entry["source_name"],
-                        "sha256": _sha256(destination),
-                    }
-                )
-        else:
-            # A metadata-only update preserves the current media byte-for-byte.
+        if existing is not None:
+            # Update is append-only: stage every saved asset before accepting new media.
             for asset in existing["assets"]:
                 source = _manifest_asset_path(target, asset["file"])
                 destination = _manifest_asset_path(staging, asset["file"])
@@ -1028,8 +1070,56 @@ def _save_connected_sheet(
                 copied["sha256"] = _sha256(destination)
                 manifest_assets.append(copied)
 
+        preserved_count = len(manifest_assets)
+        appended_count = 0
+        duplicate_count = 0
+        fingerprints = {(asset["kind"], asset["sha256"]) for asset in manifest_assets}
+        limits = {"image": 9, "audio": 3}
+        for entry in entries:
+            kind = entry["kind"]
+            extension = ".png" if kind == "image" else ".wav"
+            incoming = staging / f".incoming-{uuid.uuid4().hex}{extension}"
+            if kind == "image":
+                _write_connected_image(incoming, entry["value"])
+            else:
+                _write_connected_audio(incoming, entry["value"])
+            digest = _sha256(incoming)
+            fingerprint = (kind, digest)
+            if fingerprint in fingerprints:
+                incoming.unlink()
+                duplicate_count += 1
+                continue
+
+            current_count = sum(asset["kind"] == kind for asset in manifest_assets)
+            if current_count >= limits[kind]:
+                raise ValueError(
+                    f"Reference Sheet already contains the maximum of {limits[kind]} "
+                    f"{kind} asset(s); the connected {kind} cannot be appended."
+                )
+            key = _next_connected_asset_key(kind, manifest_assets)
+            subdirectory = "images" if kind == "image" else "audio"
+            destination = staging / subdirectory / f"{key}{extension}"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(incoming, destination)
+            manifest_assets.append(
+                {
+                    "key": key,
+                    "kind": kind,
+                    "file": destination.relative_to(staging).as_posix(),
+                    "description": "",
+                    "suggested_role": "",
+                    "group_key": "main",
+                    "source_name": entry["source_name"],
+                    "sha256": digest,
+                }
+            )
+            fingerprints.add(fingerprint)
+            appended_count += 1
+
         resolved_description = _clean_text(sheet_description)
-        resolved_tags = [part for value in tags.split(",") if (part := _clean_text(value))]
+        resolved_tags = [
+            part for value in tags.split(",") if (part := _clean_text(value))
+        ]
         if existing is not None:
             resolved_description = resolved_description or existing["description"]
             resolved_tags = resolved_tags or existing["tags"]
@@ -1059,7 +1149,23 @@ def _save_connected_sheet(
             raise
         if backup is not None and backup.exists():
             shutil.rmtree(backup)
-        return _sheet_runtime(target)
+        if existing is None:
+            save_report = (
+                f"Created Reference Sheet with {appended_count} asset(s)"
+                + (
+                    f"; skipped {duplicate_count} duplicate connection(s)"
+                    if duplicate_count
+                    else ""
+                )
+                + "."
+            )
+        else:
+            save_report = (
+                f"Update preserved {preserved_count} existing asset(s), appended "
+                f"{appended_count} new asset(s), and skipped {duplicate_count} "
+                "duplicate connection(s)."
+            )
+        return _sheet_runtime(target), save_report
     finally:
         if staging.exists():
             shutil.rmtree(staging)
@@ -1093,11 +1199,12 @@ class MiniMaxH3ReferenceSheet:
         "Carries the selected saved image/audio for legacy Guide workflows that still use the Reference Sheet role nodes.",
         "The image currently selected in the embedded gallery. Connect it to a Plan v2 Image Reference and choose its exact workflow relationship there.",
         "Saved location, media inventory, and currently selected gallery items.",
-        "The audio clip currently selected in the embedded gallery. Connect it directly to a Plan v2 Audio Reference node, where its exact workflow role is declared.",
+        "The non-destructively trimmed segment of the audio selected in the gallery. Connect it to Plan v2 Audio Reference; the saved file remains complete.",
     )
     DESCRIPTION = (
         "One integrated Reference Sheet. Connect ordinary Load Image/Load Audio nodes, save the sheet, "
-        "then load it later and choose saved media from the embedded gallery. No filenames or asset keys are typed."
+        "then load it later and choose saved media from the embedded gallery. Audio trim controls slice "
+        "only the selected_audio output and never modify the saved file."
     )
 
     @classmethod
@@ -1113,7 +1220,10 @@ class MiniMaxH3ReferenceSheet:
                     SHEET_OPERATIONS,
                     {
                         "default": LOAD_SHEET,
-                        "tooltip": "Load is read-only. Create saves connected media. Update replaces media only when new media is connected.",
+                        "tooltip": (
+                            "Load is read-only. Create saves connected media. Update preserves saved "
+                            "media and appends new connected media; identical duplicates are skipped."
+                        ),
                     },
                 ),
                 "saved_sheet": (
@@ -1139,7 +1249,13 @@ class MiniMaxH3ReferenceSheet:
                 ),
                 "confirm_update": (
                     "BOOLEAN",
-                    {"default": False, "tooltip": "Safety lock required only for Update existing."},
+                    {
+                        "default": False,
+                        "tooltip": (
+                            "Safety lock required for Update existing. Updates preserve current media "
+                            "and append new non-duplicate connections."
+                        ),
+                    },
                 ),
                 "selected_image_key": (
                     "STRING",
@@ -1148,6 +1264,34 @@ class MiniMaxH3ReferenceSheet:
                 "selected_audio_key": (
                     "STRING",
                     {"default": "", "tooltip": "Managed automatically by the embedded audio gallery."},
+                ),
+                "audio_start_seconds": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 3600.0,
+                        "step": 0.05,
+                        "tooltip": (
+                            "Start offset inside the selected saved audio. This affects only the "
+                            "selected_audio output; the stored clip remains complete."
+                        ),
+                    },
+                ),
+                "audio_duration_seconds": (
+                    "FLOAT",
+                    {
+                        "default": 15.0,
+                        "min": 2.0,
+                        "max": 15.0,
+                        "step": 0.05,
+                        "display": "slider",
+                        "tooltip": (
+                            "Length of the selected_audio segment. If less audio remains, the segment "
+                            "ends with the saved clip. H3 counts this shortened output toward its "
+                            "15-second cumulative reference-audio limit."
+                        ),
+                    },
                 ),
             },
             "optional": {
@@ -1171,6 +1315,8 @@ class MiniMaxH3ReferenceSheet:
         confirm_update: bool,
         selected_image_key: str,
         selected_audio_key: str,
+        audio_start_seconds: float = 0.0,
+        audio_duration_seconds: float = 15.0,
         image_1=None,
         image_2=None,
         image_3=None,
@@ -1179,6 +1325,7 @@ class MiniMaxH3ReferenceSheet:
         audio_2=None,
         audio_3=None,
     ):
+        save_report = ""
         if operation == LOAD_SHEET:
             record = _selected_record(saved_sheet)
             sheet = _sheet_runtime(record["directory"])
@@ -1187,7 +1334,7 @@ class MiniMaxH3ReferenceSheet:
                 [("image_1", image_1), ("image_2", image_2), ("image_3", image_3), ("image_4", image_4)],
                 [("audio_1", audio_1), ("audio_2", audio_2), ("audio_3", audio_3)],
             )
-            sheet = _save_connected_sheet(
+            sheet, save_report = _save_connected_sheet(
                 operation,
                 saved_sheet,
                 sheet_name,
@@ -1197,20 +1344,40 @@ class MiniMaxH3ReferenceSheet:
                 entries,
             )
         sheet = _with_selected_assets(sheet, selected_image_key, selected_audio_key)
+        sheet["audio_start_seconds"] = float(audio_start_seconds)
+        sheet["audio_duration_seconds"] = float(audio_duration_seconds)
         manifest, _root = reference_sheet_manifest(sheet)
         option = f"{manifest['name']} [{manifest['id'][:8]}]"
         report = _sheet_report(sheet) + (
             f"\nSelected image: {sheet['selected_image_key'] or 'none'}"
             f"\nSelected audio: {sheet['selected_audio_key'] or 'none'}"
         )
+        if save_report:
+            report = save_report + "\n\n" + report
         selected_image = None
         if sheet["selected_image_key"]:
             _manifest, _asset, selected_path = _sheet_asset(sheet, None, "image")
             selected_image = _load_image(selected_path)
         selected_audio = None
+        audio_segment_report = ""
         if sheet["selected_audio_key"]:
             _manifest, _asset, selected_path = _sheet_asset(sheet, None, "audio")
-            selected_audio = _load_audio(selected_path)
+            (
+                selected_audio,
+                actual_start,
+                actual_duration,
+                source_duration,
+            ) = _trim_audio_for_h3(
+                _load_audio(selected_path),
+                audio_start_seconds,
+                audio_duration_seconds,
+            )
+            audio_segment_report = (
+                f"\nSelected audio segment: {actual_start:.3f}s-"
+                f"{actual_start + actual_duration:.3f}s ({actual_duration:.3f}s) "
+                f"from the complete {source_duration:.3f}s saved clip."
+            )
+        report += audio_segment_report
         return {
             "ui": {
                 "saved_sheet": [option],
@@ -1532,8 +1699,11 @@ class MiniMaxH3ReferenceSheetAudioReference:
             if previous_audio_context is not None
             else []
         )
-        audio = _load_audio(path)
-        duration = _audio_duration(audio)
+        audio, trim_start, duration, source_duration = _trim_audio_for_h3(
+            _load_audio(path),
+            reference_sheet.get("audio_start_seconds", 0.0),
+            reference_sheet.get("audio_duration_seconds", 15.0),
+        )
         index = len(previous) + 1
         entry = {
             "sheet_id": manifest["id"],
@@ -1555,6 +1725,9 @@ class MiniMaxH3ReferenceSheetAudioReference:
         report = audio_reference_inventory(entries) + (
             "\nConnect each h3_audio output to its listed native standalone ref_audio_N input. "
             "Connect only the final audio_context to Prompt Guide.audio_context."
+            f"\nSelected saved audio segment: {trim_start:.3f}s-"
+            f"{trim_start + duration:.3f}s ({duration:.3f}s) from the complete "
+            f"{source_duration:.3f}s file."
         )
         return (context, audio, report)
 

@@ -7,6 +7,7 @@ import numpy
 import pytest
 from PIL import Image
 
+import reference_sheet as reference_sheet_module
 from media_context import (
     AUTO_RELATION,
     FULL_RELATION,
@@ -36,6 +37,7 @@ from reference_sheet import (
     MiniMaxH3ReferenceSheetVisualReference,
     NODE_CLASS_MAPPINGS,
     REFERENCE_SHEET_TYPE,
+    _load_audio,
     _load_image,
     _load_wav_fallback,
     audio_reference_entries,
@@ -250,6 +252,7 @@ def test_sheet_update_requires_confirmation_and_checksum_tampering_is_detected(
 ):
     sheet, _ = _build_sheet(sheet_environment)
     manifest, root = reference_sheet_manifest(sheet)
+    original_checksums = {asset["key"]: asset["sha256"] for asset in manifest["assets"]}
     selection = f"{manifest['name']} [{manifest['id'][:8]}]"
     detail = _load_image(sheet_environment[0] / "detail.png")
 
@@ -277,16 +280,44 @@ def test_sheet_update_requires_confirmation_and_checksum_tampering_is_detected(
         "",
         image_1=detail,
     )
-    updated, _selected_image, _, _selected_audio = updated_result["result"]
+    updated, _selected_image, update_report, _selected_audio = updated_result["result"]
     updated_manifest, updated_root = reference_sheet_manifest(updated)
     assert updated_manifest["id"] == manifest["id"]
     assert updated_manifest["name"] == "Studio Subject Revised"
-    assert [asset["key"] for asset in updated_manifest["assets"]] == ["image_1"]
+    assert [asset["key"] for asset in updated_manifest["assets"]] == [
+        "image_1",
+        "audio_1",
+        "image_2",
+    ]
+    assert {
+        asset["key"]: asset["sha256"]
+        for asset in updated_manifest["assets"]
+        if asset["key"] in original_checksums
+    } == original_checksums
+    assert "preserved 2 existing asset(s), appended 1 new asset(s)" in update_report
     assert updated_root == root
 
-    updated_selection = (
-        f"{updated_manifest['name']} [{updated_manifest['id'][:8]}]"
+    updated_selection = f"{updated_manifest['name']} [{updated_manifest['id'][:8]}]"
+    duplicate_result = MiniMaxH3ReferenceSheet().manage(
+        UPDATE_SHEET,
+        updated_selection,
+        "",
+        "",
+        "",
+        True,
+        "",
+        "",
+        image_1=_load_image(sheet_environment[0] / "primary.png"),
     )
+    duplicate_sheet, _image, duplicate_report, _audio = duplicate_result["result"]
+    duplicate_manifest, _ = reference_sheet_manifest(duplicate_sheet)
+    assert [asset["key"] for asset in duplicate_manifest["assets"]] == [
+        "image_1",
+        "audio_1",
+        "image_2",
+    ]
+    assert "appended 0 new asset(s), and skipped 1 duplicate" in duplicate_report
+
     preserved_result = MiniMaxH3ReferenceSheet().manage(
         UPDATE_SHEET,
         updated_selection,
@@ -301,11 +332,48 @@ def test_sheet_update_requires_confirmation_and_checksum_tampering_is_detected(
     preserved_manifest, _ = reference_sheet_manifest(preserved)
     assert preserved_manifest["description"] == "Updated description"
     assert preserved_manifest["tags"] == ["detail"]
+    assert [asset["key"] for asset in preserved_manifest["assets"]] == [
+        "image_1",
+        "audio_1",
+        "image_2",
+    ]
 
     first_asset = root / preserved_manifest["assets"][0]["file"]
     first_asset.write_bytes(first_asset.read_bytes() + b"tampered")
     with pytest.raises(ValueError, match="checksum failed"):
         reference_sheet_manifest(preserved)
+
+
+def test_failed_sheet_append_leaves_the_saved_collection_untouched(
+    sheet_environment, monkeypatch
+):
+    sheet, _ = _build_sheet(sheet_environment)
+    original, _root = reference_sheet_manifest(sheet)
+    selection = f"{original['name']} [{original['id'][:8]}]"
+    detail = _load_image(sheet_environment[0] / "detail.png")
+
+    def fail_write(_path, _image):
+        raise RuntimeError("simulated image write failure")
+
+    monkeypatch.setattr(reference_sheet_module, "_write_connected_image", fail_write)
+    with pytest.raises(RuntimeError, match="simulated image write failure"):
+        MiniMaxH3ReferenceSheet().manage(
+            UPDATE_SHEET,
+            selection,
+            "",
+            "",
+            "",
+            True,
+            "",
+            "",
+            image_1=detail,
+        )
+
+    preserved, _root = reference_sheet_manifest(sheet)
+    assert preserved == original
+    assert not any(
+        path.name.startswith(".reference-sheet-") for path in sheet_environment[1].iterdir()
+    )
 
 
 def test_saved_visual_and_audio_assets_feed_guide_with_workflow_scopes(
@@ -442,6 +510,52 @@ def test_audio_reference_duration_is_checked_when_used(sheet_environment):
         )
 
 
+def test_selected_audio_trim_is_non_destructive_and_reaches_legacy_output(
+    sheet_environment,
+):
+    sheet, _ = _build_sheet(sheet_environment, audio_seconds=8.0)
+    manifest, root = reference_sheet_manifest(sheet)
+    selection = f"{manifest['name']} [{manifest['id'][:8]}]"
+
+    result = MiniMaxH3ReferenceSheet().manage(
+        LOAD_SHEET,
+        selection,
+        "",
+        "",
+        "",
+        False,
+        "",
+        "audio_1",
+        audio_start_seconds=1.25,
+        audio_duration_seconds=5.5,
+    )
+    trimmed_sheet, _image, report, selected_audio = result["result"]
+    selected_duration = (
+        selected_audio["waveform"].shape[-1] / selected_audio["sample_rate"]
+    )
+    assert selected_duration == pytest.approx(5.5)
+    assert "1.250s-6.750s (5.500s)" in report
+    assert trimmed_sheet["audio_start_seconds"] == 1.25
+    assert trimmed_sheet["audio_duration_seconds"] == 5.5
+
+    audio_asset = next(asset for asset in manifest["assets"] if asset["kind"] == "audio")
+    saved_audio = _load_audio(root / audio_asset["file"])
+    saved_duration = saved_audio["waveform"].shape[-1] / saved_audio["sample_rate"]
+    assert saved_duration == pytest.approx(8.0)
+
+    context, legacy_audio, legacy_report = (
+        MiniMaxH3ReferenceSheetAudioReference().use_audio(
+            trimmed_sheet,
+            AUDIO_REFERENCE,
+            "",
+            "",
+        )
+    )
+    assert audio_reference_entries(context)[0]["duration_seconds"] == pytest.approx(5.5)
+    assert legacy_audio["waveform"].shape[-1] / legacy_audio["sample_rate"] == pytest.approx(5.5)
+    assert "complete 8.000s file" in legacy_report
+
+
 def test_reference_sheet_manifest_uses_relative_paths(sheet_environment):
     sheet, _ = _build_sheet(sheet_environment)
     manifest, root = reference_sheet_manifest(sheet)
@@ -459,6 +573,10 @@ def test_reference_sheet_node_contracts_and_guide_socket_order():
     }
     assert MiniMaxH3ReferenceSheet.RETURN_TYPES[0] == REFERENCE_SHEET_TYPE
     assert MiniMaxH3ReferenceSheet.RETURN_NAMES[-1] == "selected_audio"
+    required = MiniMaxH3ReferenceSheet.INPUT_TYPES()["required"]
+    assert required["audio_start_seconds"][1]["default"] == 0.0
+    assert required["audio_duration_seconds"][1]["default"] == 15.0
+    assert required["audio_duration_seconds"][1]["display"] == "slider"
     assert "asset_key" not in MiniMaxH3ReferenceSheetVisualReference.INPUT_TYPES()["required"]
     assert "asset_key" not in MiniMaxH3ReferenceSheetAudioReference.INPUT_TYPES()["required"]
     assert (

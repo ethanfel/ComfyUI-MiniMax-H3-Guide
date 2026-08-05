@@ -575,9 +575,16 @@ def _validate_reference_counts(plan: dict) -> None:
         raise ValueError(
             "Reference videos total more than MiniMax H3's 15-second limit."
         )
-    if sum(float(asset["duration"]) for asset in audios) > 15.0 + 0.0005:
+    audio_total = sum(float(asset["duration"]) for asset in audios)
+    if audio_total > 15.0 + 0.0005:
+        audio_details = ", ".join(
+            f"{asset['reference_name']}={float(asset['duration']):.3f}s"
+            for asset in audios
+        )
         raise ValueError(
-            "Reference-audio clips total more than MiniMax H3's 15-second limit."
+            f"Reference-audio chain totals {audio_total:.3f}s, more than MiniMax H3's "
+            f"15-second cumulative limit ({audio_details}). Shorten a selected Reference "
+            "Sheet audio segment or remove an Audio Reference from this plan."
         )
 
 
@@ -2331,7 +2338,7 @@ class MiniMaxH3PlanV2AudioReference:
     RETURN_NAMES = ("h3_plan", "h3_audio", "reference_preview")
     OUTPUT_TOOLTIPS = (
         "Continue the ordered setup chain.",
-        "Original audio for the native standalone or paired route assigned by Prompt Merge.",
+        "Exact input audio segment for the native standalone or paired route assigned by Prompt Merge.",
         "Exact audio role, duration, target, retention, and paired/standalone route.",
     )
     DESCRIPTION = (
@@ -2349,7 +2356,13 @@ class MiniMaxH3PlanV2AudioReference:
                 ),
                 "audio": (
                     "AUDIO",
-                    {"tooltip": "One 2-15 second ComfyUI AUDIO clip."},
+                    {
+                        "tooltip": (
+                            "One 2-15 second ComfyUI AUDIO segment. All Audio References in the "
+                            "same Plan v2 chain share a 15-second cumulative limit; Reference Sheet "
+                            "can trim its selected_audio output non-destructively."
+                        )
+                    },
                 ),
                 "audio_use": (
                     AUDIO_USES,

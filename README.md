@@ -283,7 +283,9 @@ UUID, descriptions, tags, relative media paths, and SHA-256 checksums. Connected
 ComfyUI `IMAGE` tensors are saved as PNG and connected `AUDIO` tensors are saved
 as WAV, making the sheet independent of its creation workflow and original
 input filenames. Create never overwrites another sheet; Update requires
-`confirm_update` and replaces the selected sheet atomically.
+`confirm_update` and merges the selected sheet atomically. Every existing media
+asset is preserved, newly connected non-duplicate media is appended with a new
+stable key, and byte-identical connections are skipped.
 
 Build, display, and save a sheet with one integrated node:
 
@@ -303,9 +305,17 @@ batch is expanded into separate saved pictures, up to H3's nine-image limit.
 Queue once to create the sheet. Later choose `Load existing`, select the sheet,
 and click the desired thumbnail or audio player in the embedded gallery. The
 selection is carried in `reference_sheet`; users never type or remember an
-input filename or internal asset key. Update with no connected media changes
-metadata only and preserves the saved media. Update with connected media
-replaces the saved media after `confirm_update` is enabled.
+input filename or internal asset key. For audio, `audio_start_seconds` chooses
+the offset and the `audio_duration_seconds` slider chooses a 2–15 second output
+window. Trimming is non-destructive: the player and saved WAV remain complete,
+while `selected_audio` and the legacy sheet-audio output carry only the selected
+segment. Duplicate the sheet node when different segments of one saved clip are
+needed in the same workflow.
+
+Update with no connected media changes
+metadata only and preserves the saved media. Update with connected media appends
+to the saved collection after `confirm_update` is enabled; it never treats the
+currently connected inputs as a complete replacement list.
 
 Use saved assets directly with Plan v2:
 
@@ -591,7 +601,9 @@ MiniMax tokenizer are absent.
 - H3 policy requires each reference video/audio clip to be 2–15 seconds and
   limits each media type to 15 seconds total. Video Reference and Audio
   Reference validate each asset when registered, and Prompt Merge validates
-  their totals.
+  their totals. Audio Reference errors include the cumulative duration and each
+  active clip's duration; use the Reference Sheet trim slider to fit several
+  selected segments below the shared limit.
 - H3 policy does not allow reference audio as the sole media input. Prompt Merge
   rejects that plan before Apply Reference Plan can run.
 - Native Ref2VA ordering is pictures first; then each enabled video soundtrack

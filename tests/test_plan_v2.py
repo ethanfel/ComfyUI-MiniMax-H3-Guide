@@ -340,6 +340,47 @@ def test_voice_reference_is_exactly_bound_to_subject_and_dialogue_order():
     assert "ref_audio_0" in report
 
 
+def test_audio_reference_chain_reports_the_cumulative_duration_limit():
+    valid = project()
+    valid, _audio, _preview = audio_reference(
+        valid,
+        use=AUDIO_VOICE,
+        name="first voice",
+        speaker="woman",
+        seconds=7.4,
+    )
+    valid, _audio, preview = audio_reference(
+        valid,
+        use=AUDIO_VOICE,
+        name="second voice",
+        speaker="man",
+        seconds=7.4,
+    )
+    assert "7.400s" in preview
+
+    invalid = project()
+    invalid, _audio, _preview = audio_reference(
+        invalid,
+        use=AUDIO_VOICE,
+        name="first voice",
+        speaker="woman",
+        seconds=8.0,
+    )
+    with pytest.raises(ValueError) as caught:
+        audio_reference(
+            invalid,
+            use=AUDIO_VOICE,
+            name="second voice",
+            speaker="man",
+            seconds=8.0,
+        )
+    message = str(caught.value)
+    assert "totals 16.000s" in message
+    assert "first voice=8.000s" in message
+    assert "second voice=8.000s" in message
+    assert "15-second cumulative limit" in message
+
+
 def test_mixed_paired_music_and_standalone_voice_follow_native_label_order():
     plan = project()
     plan, _picture_handle, _image, _preview = image_reference(plan)

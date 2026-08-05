@@ -102,12 +102,18 @@ function currentSheet(node) {
     return (node.__h3SheetCatalog || []).find((sheet) => sheet.option === selection) || null;
 }
 
+function setAudioTrimVisible(node, visible) {
+    setWidgetVisible(widget(node, "audio_start_seconds"), visible);
+    setWidgetVisible(widget(node, "audio_duration_seconds"), visible);
+}
+
 function renderGallery(node) {
     const root = node.__h3SheetGallery;
     if (!root) return;
     root.replaceChildren();
 
     if (String(widget(node, "operation")?.value || LOAD) === CREATE) {
+        setAudioTrimVisible(node, false);
         const createHint = document.createElement("div");
         createHint.textContent = "Connect IMAGE/AUDIO inputs and queue once. The saved gallery will appear here automatically.";
         createHint.style.cssText = "padding:14px;color:#aaa;text-align:center;font-size:12px";
@@ -117,11 +123,30 @@ function renderGallery(node) {
 
     const sheet = currentSheet(node);
     if (!sheet) {
+        setAudioTrimVisible(node, false);
         const empty = document.createElement("div");
         empty.textContent = "No saved sheet selected. Connect media and choose Create new, then queue once.";
         empty.style.cssText = "padding:14px;color:#aaa;text-align:center;font-size:12px";
         root.appendChild(empty);
         return;
+    }
+    const hasAudio = sheet.assets.some((asset) => asset.kind === "audio");
+    setAudioTrimVisible(node, hasAudio);
+
+    if (String(widget(node, "operation")?.value || LOAD) === UPDATE) {
+        const updateHint = document.createElement("div");
+        updateHint.textContent = "Update appends connected media. Existing saved items remain; identical duplicates are skipped.";
+        updateHint.style.cssText = [
+            "padding:7px",
+            "margin-bottom:7px",
+            "border:1px solid #496a84",
+            "border-radius:5px",
+            "background:#1d3040",
+            "color:#c8e5ff",
+            "font-size:11px",
+            "white-space:normal",
+        ].join(";");
+        root.appendChild(updateHint);
     }
 
     const header = document.createElement("div");
@@ -142,6 +167,13 @@ function renderGallery(node) {
         description.textContent = sheet.description;
         description.style.cssText = "font-size:11px;color:#aaa;margin-bottom:8px;white-space:normal";
         root.appendChild(description);
+    }
+
+    if (hasAudio) {
+        const trimHint = document.createElement("div");
+        trimHint.textContent = "The player previews the complete saved clip. Start and duration trim only the selected_audio output; the saved file is unchanged.";
+        trimHint.style.cssText = "font-size:11px;color:#b9d8ef;margin-bottom:8px;white-space:normal";
+        root.appendChild(trimHint);
     }
 
     const images = sheet.assets.filter((asset) => asset.kind === "image");
