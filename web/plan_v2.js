@@ -7,6 +7,8 @@ const VIDEO = "MiniMaxH3PlanV2VideoReference";
 const REPLACEMENT = "MiniMaxH3PlanV2CharacterReplacement";
 const AUDIO = "MiniMaxH3PlanV2AudioReference";
 const SHOT = "MiniMaxH3PlanV2Shot";
+const SHOT_KEYFRAME = "MiniMaxH3PlanV2ShotKeyframe";
+const SHOT_MOTION = "MiniMaxH3PlanV2ShotMotionReference";
 const DIALOGUE = "MiniMaxH3PlanV2DialogueEvent";
 const MERGE = "MiniMaxH3PlanV2PromptMerge";
 const APPLY_PROSE = "MiniMaxH3PlanV2ApplyProse";
@@ -22,6 +24,8 @@ const PLAN_CLASSES = new Set([
     REPLACEMENT,
     AUDIO,
     SHOT,
+    SHOT_KEYFRAME,
+    SHOT_MOTION,
     DIALOGUE,
     MERGE,
 ]);
@@ -90,6 +94,26 @@ function input(node, name) {
 
 function output(node, name) {
     return (node?.outputs || []).find((item) => item.name === name);
+}
+
+function isPictureNode(node) {
+    return [IMAGE, SHOT_KEYFRAME].includes(className(node));
+}
+
+function isVideoNode(node) {
+    return [VIDEO, SHOT_MOTION].includes(className(node));
+}
+
+function imageUse(node) {
+    return className(node) === SHOT_KEYFRAME
+        ? IMAGE_KEYFRAME
+        : clean(widget(node, "image_use")?.value);
+}
+
+function videoUse(node) {
+    return className(node) === SHOT_MOTION
+        ? VIDEO_MOTION
+        : clean(widget(node, "video_use")?.value);
 }
 
 function clean(value) {
@@ -245,8 +269,8 @@ function addSubject(subjects, aliases, node, name) {
 
 function buildCatalog(chain) {
     const project = chain.find((node) => className(node) === PROJECT) || null;
-    const pictures = chain.filter((node) => className(node) === IMAGE);
-    const videos = chain.filter((node) => className(node) === VIDEO);
+    const pictures = chain.filter(isPictureNode);
+    const videos = chain.filter(isVideoNode);
     const replacements = chain.filter((node) => className(node) === REPLACEMENT);
     const audios = chain.filter((node) => className(node) === AUDIO);
     const shots = chain.filter((node) => className(node) === SHOT);
@@ -278,6 +302,13 @@ function buildCatalog(chain) {
     const videoLabels = new Map();
     videos.forEach((node, index) => {
         videoLabels.set(node.id, "<Video " + (index + 1) + ">");
+    });
+    const motionSubjectLabels = new Map();
+    let nextMotionSubject = subjects.length + 1;
+    videos.forEach((node) => {
+        if (videoUse(node) !== VIDEO_MOTION) return;
+        motionSubjectLabels.set(node.id, "<Subject " + nextMotionSubject + ">");
+        nextMotionSubject += 1;
     });
 
     const audioLabels = new Map();
@@ -318,18 +349,18 @@ function buildCatalog(chain) {
         speakersByAlias.set(key, speaker);
     }
 
-    const imageUses = pictures.map((node) => clean(widget(node, "image_use")?.value));
+    const imageUses = pictures.map(imageUse);
     const unassignedReferenceIds = new Set([
         ...pictures
             .filter(
                 (node) =>
-                    clean(widget(node, "image_use")?.value) === UNASSIGNED_IMAGE_USE
+                    imageUse(node) === UNASSIGNED_IMAGE_USE
             )
             .map((node) => node.id),
         ...videos
             .filter(
                 (node) =>
-                    clean(widget(node, "video_use")?.value) === UNASSIGNED_VIDEO_USE
+                    videoUse(node) === UNASSIGNED_VIDEO_USE
             )
             .map((node) => node.id),
         ...audios
@@ -368,7 +399,7 @@ function buildCatalog(chain) {
         }
     } else if (mode !== "Ref2VA") {
         for (const node of pictures) {
-            const use = clean(widget(node, "image_use")?.value);
+            const use = imageUse(node);
             routes.set(
                 node.id,
                 use === IMAGE_FIRST_FRAME ? "first_frame" : "last_frame"
@@ -388,6 +419,7 @@ function buildCatalog(chain) {
         subjectsByAlias,
         pictureLabels,
         videoLabels,
+        motionSubjectLabels,
         audioLabels,
         routes,
         speakers,
@@ -560,6 +592,16 @@ function labelSuggestions(catalog) {
             token: catalog.videoLabels.get(node.id),
             detail: clean(widget(node, "reference_name")?.value) || "video reference",
         });
+        const motionSubject = catalog.motionSubjectLabels.get(node.id);
+        if (motionSubject) {
+            suggestions.push({
+                token: motionSubject,
+                detail:
+                    (clean(widget(node, "reference_name")?.value) || "referenced motion") +
+                    " · reusable action from " +
+                    catalog.videoLabels.get(node.id),
+            });
+        }
     }
     for (const node of catalog.audios) {
         const use = clean(widget(node, "audio_use")?.value);
@@ -795,18 +837,41 @@ function scopeWidgetStatus(node, catalog) {
 
 function referenceBadge(node, catalog) {
     const type = className(node);
-    if (type === IMAGE) {
+    if (isPictureNode(node)) {
         const picture = catalog.pictureLabels.get(node.id) || "<Picture ?>";
         const alias = clean(widget(node, "subject_name")?.value);
         const subject = catalog.subjectsByAlias.get(aliasKey(alias));
         const route = catalog.routes.get(node.id) || "route pending";
-        return picture + (subject ? " · " + subject.label : "") + " → " + route;
+        const position =
+            type === SHOT_KEYFRAME
+                ? clean(widget(node, "keyframe_position")?.value)
+                : "";
+        return (
+            picture +
+            (position ? " · " + position : "") +
+            (subject ? " · " + subject.label : "") +
+            " → " +
+            route
+        );
     }
-    if (type === VIDEO) {
+    if (isVideoNode(node)) {
         const video = catalog.videoLabels.get(node.id) || "<Video ?>";
-        const alias = clean(widget(node, "subject_name")?.value);
+        const alias = clean(
+            widget(node, type === SHOT_MOTION ? "target_subject" : "subject_name")?.value
+        );
         const subject = catalog.subjectsByAlias.get(aliasKey(alias));
         const route = catalog.routes.get(node.id) || "route pending";
+        const motionSubject = catalog.motionSubjectLabels.get(node.id);
+        if (motionSubject) {
+            return (
+                motionSubject +
+                " from " +
+                video +
+                (subject ? " → " + subject.label : " → target required") +
+                " · " +
+                route
+            );
+        }
         return video + (subject ? " · " + subject.label : "") + " → " + route;
     }
     if (type === AUDIO) {
@@ -817,13 +882,19 @@ function referenceBadge(node, catalog) {
 }
 
 function setupNode(node) {
+    const type = className(node);
+    // Workflows saved before Shot handles existed may restore their serialized
+    // two-output layout. Add only the missing typed output so they can use the
+    // new attachment chain without recreating every Shot node.
+    if (type === SHOT && !output(node, "shot_handle")) {
+        node.addOutput?.("shot_handle", "MINIMAX_H3_SHOT_HANDLE_V2");
+    }
     if (node.__h3PlanV2Setup) {
         installWidgetCallbacks(node);
         return;
     }
     node.__h3PlanV2Setup = true;
     node.__h3AliasEditors = {};
-    const type = className(node);
     if (type === IMAGE || type === BINDING) {
         node.__h3AliasEditors.transfer_target_subject = createAliasEditor(
             node,
@@ -831,7 +902,7 @@ function setupNode(node) {
             "Transfer target Subject",
             true
         );
-    } else if (type === VIDEO) {
+    } else if (type === VIDEO || type === SHOT_MOTION) {
         node.__h3AliasEditors.target_subject = createAliasEditor(
             node,
             "target_subject",
@@ -933,6 +1004,12 @@ function refreshConditionalWidgets(node, catalog) {
             upstreamCatalog,
             transfers
         );
+    } else if (type === SHOT_MOTION) {
+        refreshAliasEditor(
+            node.__h3AliasEditors?.target_subject,
+            upstreamCatalog,
+            true
+        );
     } else if (type === REPLACEMENT) {
         refreshAliasEditor(
             node.__h3AliasEditors?.replacement_subject,
@@ -1025,11 +1102,15 @@ function refreshBadgeAndOutputs(node, catalog) {
             (frames / 24).toFixed(3) +
             "s native";
         color = COLORS.ready;
-    } else if ([IMAGE, VIDEO, AUDIO].includes(type)) {
+    } else if (isPictureNode(node) || isVideoNode(node) || type === AUDIO) {
         text = referenceBadge(node, catalog);
         const scope = scopeWidgetStatus(node, catalog);
         if (catalog.unassignedReferenceIds.has(node.id)) {
-            const kind = type === IMAGE ? "image" : type === VIDEO ? "video" : "audio";
+            const kind = isPictureNode(node)
+                ? "image"
+                : isVideoNode(node)
+                  ? "video"
+                  : "audio";
             text = "Choose a " + kind + " relationship before queueing";
             color = COLORS.warning;
         } else if (catalog.endpointConflict) {
@@ -1041,9 +1122,9 @@ function refreshBadgeAndOutputs(node, catalog) {
         } else {
             color = COLORS.ready;
         }
-        if (type === IMAGE) {
+        if (isPictureNode(node)) {
             setOutputLabel(node, "h3_image", catalog.routes.get(node.id));
-        } else if (type === VIDEO) {
+        } else if (isVideoNode(node)) {
             setOutputLabel(node, "h3_video", catalog.routes.get(node.id));
         } else {
             setOutputLabel(node, "h3_audio", catalog.routes.get(node.id));
@@ -1133,7 +1214,7 @@ function refreshBadgeAndOutputs(node, catalog) {
             text =
                 catalog.mode +
                 " · " +
-                catalog.subjects.length +
+                (catalog.subjects.length + catalog.motionSubjectLabels.size) +
                 " Subjects · " +
                 catalog.shots.length +
                 " Shots";

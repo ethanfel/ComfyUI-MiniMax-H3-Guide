@@ -217,7 +217,7 @@
       ],
       "title": "10. Verify identity mapping and source preservation",
       "properties": {"Node name for S&R": "MiniMaxH3PlanV2PromptReview"},
-      "widgets_values": ["Pause for approval", 20, "review-character-replacement"]
+      "widgets_values": ["Pause for approval", 20]
     },
     {
       "id": 10,

@@ -417,7 +417,6 @@ def test_pass_through_mode_validates_and_approves_without_arming_a_session():
             compiled,
             REVIEW_MODE_PASSTHROUGH,
             20,
-            "ignored invalid history key in pass-through mode!",
             unique_id="88",
         )
     )
@@ -465,6 +464,7 @@ def test_review_node_and_frontend_contract_are_registered():
     schema = MiniMaxH3PlanV2PromptReview.INPUT_TYPES()
     assert schema["required"]["h3_prompt"][1]["forceInput"] is True
     assert schema["required"]["review_mode"][1]["default"] == REVIEW_MODE_PAUSE
+    assert "history_key" not in schema["required"]
     assert schema["hidden"] == {"unique_id": "UNIQUE_ID"}
     assert MiniMaxH3PlanV2PromptReview.RETURN_NAMES[:2] == (
         "approved_prompt",

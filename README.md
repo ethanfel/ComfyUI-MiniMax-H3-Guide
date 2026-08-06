@@ -16,8 +16,9 @@ chain instead of asking one large form or an LLM to infer what each file means:
         -> optional Subject Binding nodes
         -> optional Character Replacement nodes
         -> Shot 1
+        -> optional Attach Keyframe / Attach Motion nodes for Shot 1
         -> optional Dialogue Event nodes
-        -> Shot 2 ...
+        -> Shot 2 -> its optional attachments ...
         -> MiniMax H3 Prompt Merge (Plan v2)
         -> optional Structured Prompt Enhancer (Plan v2)
         -> optional Apply Structured Prose (Plan v2)
@@ -25,11 +26,14 @@ chain instead of asking one large form or an LLM to infer what each file means:
         -> MiniMax H3 Apply Reference Plan (Plan v2)
         -> sampler
 
-Every node consumes and returns one **MINIMAX_H3_PLAN_V2** value. Reference
-nodes are accepted only before the first Shot. A Shot uses one cut time; the
-next cut or Project duration computes its end. Dialogue Events attach to the
-most recently opened Shot, allowing Prompt Merge to assign S1, S2, and later
-speaker IDs from actual vocal-event order.
+Every node consumes and returns one **MINIMAX_H3_PLAN_V2** value. Global
+Reference nodes are accepted before the first Shot. A Shot uses one cut time;
+the next cut or Project duration computes its end and the Shot also returns a
+stable `shot_handle`. Attach Keyframe and Attach Motion consume that handle and
+assign their media to exactly that Shot without a numeric `shot_scope` field.
+Their forwarded Plan and Shot handle allow multiple attachments before the next
+Shot. Dialogue Events attach to the most recently opened Shot, allowing Prompt
+Merge to assign S1, S2, and later speaker IDs from actual vocal-event order.
 
 The three media nodes require an exact relationship:
 
@@ -38,6 +42,13 @@ The three media nodes require an exact relationship:
   only when reusable visible content is explicitly selected.
 - Video Reference distinguishes source editing, continuation, visible content,
   motion/action transfer, and camera/cut/temporal structure.
+- Attach Keyframe to Shot registers one image as that Shot's concrete
+  composition anchor and explicitly marks it as the opening frame, an internal
+  keyframe, or the ending frame. Attach Motion to Shot transfers one video
+  clip's action to an upstream Subject only in that Shot. In accordance with
+  the H3 guide, the physical clip keeps its native Video route while its reusable
+  pose/action/motion compiles as a separate Subject sourced from that Video.
+  Users do not write labels or scopes manually.
 - Character Replacement maps one precisely described performer in a source-edit
   Video to one upstream identity Subject. Its appearance policy separately
   controls identity, body, and wardrobe, while preservation switches retain the
@@ -59,8 +70,9 @@ scopes such as 3,4 or 3-4, canonicalizes native media order, and returns:
    labels, roles, retention, speakers, dialogue, and cut times;
 3. **plan_context** — the compiled typed plan for the structured enhancer and
    native Apply Reference Plan adapter;
-4. **problems_report** — readiness, mode, timing, inventory, and exact native
-   routes;
+4. **problems_report** — readiness, mode, timing, inventory, exact native
+   routes, and a nonblocking 350-500-word detail check for reference-generation
+   prompts, following the official guide;
 5. **h3_length** — the Project Setup native frame length.
 
 Reference Sheet remains the reusable media library: connect its selected image
@@ -73,6 +85,28 @@ badges, fixes the first Shot at 0.000 seconds, and replaces the Shot description
 box with an editor that opens an upstream reference menu when `<` is typed.
 These conveniences do not replace Python validation and are not required in
 API/headless mode.
+
+For per-Shot composition, keep reusable identities before the timeline, then
+chain each Shot through its own media attachments:
+
+```text
+Project -> global Subject references
+        -> Shot 1 -> Attach Keyframe
+        -> Shot 2 -> Attach Keyframe
+        -> Shot 3 -> Attach Keyframe -> Attach Motion (target Subject)
+        -> Shot 4 -> Attach Keyframe
+        -> Shot 5 -> Attach Keyframe
+        -> Prompt Merge
+```
+
+The five keyframes become five native `ref_image_N` routes and are cited only
+inside their matching Shot fields. The example marks each one as its Shot's
+opening frame; change the attachment dropdown for an internal or ending anchor.
+Motion clips become native `ref_video_N` routes, but their visible performance
+is described by a compiler-assigned action `Subject N`, not as a standalone
+whole-video motion relationship. H3 still limits a plan to nine pictures,
+three videos, twelve mixed reference files, and approximately fifteen
+cumulative reference-video seconds.
 
 For a character transfer, build the setup chain in this order:
 
@@ -208,6 +242,13 @@ is routed as identity-only evidence, the video supplies the complete timeline,
 and its paired soundtrack is reused as the complete synchronized output track.
 The review gate feeds Apply Reference Plan, the official H3 video and audio
 VAEs, sampling, joint decode, and Save Video without manual reference wiring.
+
+`MiniMax H3 Plan v2 - Five Shot Keyframe Composition.json` demonstrates the
+shot-composition chain directly: five Shots, one loaded keyframe attached to
+each Shot as its opening frame, and one optional motion clip whose reusable
+action Subject is transferred to the established identity Subject only in Shot
+3. Replace the placeholder media and prose, then extend Prompt Merge into the
+enhancer/review/native generation tail when desired.
 
 `MiniMax H3 Plan v2 - Video Extension with Audio Continuity.json` is a complete
 one-pass character-transfer continuation example. Load a replacement-character

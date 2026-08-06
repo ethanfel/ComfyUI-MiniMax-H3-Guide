@@ -19,9 +19,14 @@ from plan_v2 import (
     CONTENT_OBJECT,
     IMAGE_DEFINE_VISIBLE,
     IMAGE_FIRST_FRAME,
+    IMAGE_KEYFRAME,
     IMAGE_LAST_FRAME,
     IMAGE_STORYBOARD,
+    KEYFRAME_SHOT_ENDING,
+    KEYFRAME_SHOT_INTERNAL,
+    KEYFRAME_SHOT_OPENING,
     PLAN_TYPE,
+    SHOT_HANDLE_TYPE,
     RETENTION_AUTO,
     RETENTION_TRANSFER,
     UNASSIGNED_CONTENT_TYPE,
@@ -37,6 +42,8 @@ from plan_v2 import (
     MiniMaxH3PlanV2ProjectSetup,
     MiniMaxH3PlanV2PromptMerge,
     MiniMaxH3PlanV2Shot,
+    MiniMaxH3PlanV2ShotKeyframe,
+    MiniMaxH3PlanV2ShotMotionReference,
     MiniMaxH3PlanV2SubjectBinding,
     MiniMaxH3PlanV2VideoReference,
     NODE_CLASS_MAPPINGS,
@@ -111,6 +118,147 @@ def video_reference(
         RETENTION_AUTO,
         "",
     )
+
+
+def test_video_reference_accepts_only_the_native_15_second_padding_boundary():
+    plan = project(duration=15.0)
+    _plan, _handle, video, _preview = video_reference(
+        plan,
+        frames=torch.zeros(362, 8, 8, 3),
+    )
+
+    assert video.shape[0] == 362
+
+    with pytest.raises(
+        ValueError,
+        match=r"Received 363 frames at 24 FPS \(15\.125 seconds\)",
+    ):
+        video_reference(
+            plan,
+            frames=torch.zeros(363, 8, 8, 3),
+        )
+
+
+def test_five_shots_compose_keyframes_and_one_motion_reference_without_manual_scopes():
+    plan = project(
+        "A five-shot sequence follows the referenced woman across one continuous scene.",
+        duration=10.0,
+    )
+    plan, _subject_handle, _subject_image, _preview = image_reference(plan)
+
+    positions = (
+        KEYFRAME_SHOT_OPENING,
+        KEYFRAME_SHOT_INTERNAL,
+        KEYFRAME_SHOT_ENDING,
+        KEYFRAME_SHOT_OPENING,
+        KEYFRAME_SHOT_ENDING,
+    )
+    for number, (cut, position) in enumerate(
+        zip((0.0, 2.0, 4.0, 6.0, 8.0), positions),
+        start=1,
+    ):
+        plan, _timeline, handle = MiniMaxH3PlanV2Shot().add_shot(
+            plan,
+            cut,
+            f"<Subject 1> performs the visible action planned for shot {number}.",
+            f"Camera composition for shot {number}.",
+            "Direct cut",
+        )
+        plan, forwarded, _image, preview = MiniMaxH3PlanV2ShotKeyframe().attach_keyframe(
+            plan,
+            handle,
+            torch.zeros(1, 8, 8, 3),
+            f"shot {number} keyframe",
+            f"The exact composition and opening state for shot {number}.",
+            position,
+        )
+        assert forwarded == handle
+        assert f"[Shot {number}]" in preview
+        if number == 3:
+            plan, forwarded, video, preview = (
+                MiniMaxH3PlanV2ShotMotionReference().attach_motion(
+                    plan,
+                    handle,
+                    torch.zeros(48, 8, 8, 3),
+                    "woman",
+                    "shot 3 movement",
+                    "A controlled turn and two measured steps.",
+                    24.0,
+                )
+            )
+            assert forwarded == handle
+            assert video.shape[0] == 39
+            assert "<Video 1>" in preview
+            assert "<Subject 2>" in preview
+
+    prompt, _rewrite, report, compiled, _length = compile_h3_plan(plan)
+
+    keyframes = [
+        asset for asset in compiled["assets"] if asset["relationship"] == IMAGE_KEYFRAME
+    ]
+    assert [asset["shot_scope"] for asset in keyframes] == ["1", "2", "3", "4", "5"]
+    assert [asset["keyframe_position"] for asset in keyframes] == list(positions)
+    shot_lines = {
+        number: next(
+            line for line in prompt.splitlines() if line.startswith(f"[Shot {number}]")
+        )
+        for number in range(1, 6)
+    }
+    for number in range(1, 6):
+        label = f"<Picture {number + 1}>"
+        assert label in shot_lines[number]
+        assert all(
+            label not in line
+            for other_number, line in shot_lines.items()
+            if other_number != number
+        )
+    assert "<Subject 2>" in shot_lines[3]
+    assert "<Video 1>" not in shot_lines[3]
+    assert "performs the pose sequence, action, and motion timing" in shot_lines[3]
+    assert all("<Subject 2>" not in shot_lines[number] for number in (1, 2, 4, 5))
+    assert "<Subject 2> is the reusable pose, action, and motion from <Video 1>" in prompt
+    assert "<Video 1> is the motion and action reference" not in prompt
+    assert "<Subject 2> (appears in [Shot 3]): attribute_transfer" in prompt
+    assert "<Video 1> ([Shot 3]): attribute_transfer" not in prompt
+    assert "<Picture 2> ([Shot 1] opening frame): fully_preserved" in prompt
+    assert "<Picture 3> ([Shot 2] internal composition keyframe): fully_preserved" in prompt
+    assert "<Picture 4> ([Shot 3] ending frame): fully_preserved" in prompt
+    assert "The declared reference roles use" not in prompt
+    assert compiled["compiled"]["subject_labels"] == {"woman": "<Subject 1>"}
+    assert compiled["compiled"]["motion_subject_labels"] == {
+        "video-1": "<Subject 2>"
+    }
+    assert "the H3 reference guide normally recommends 350-500 English words" in report
+    assert [entry["route"] for entry in compiled["compiled"]["routes"]] == [
+        "ref_image_0",
+        "ref_image_1",
+        "ref_image_2",
+        "ref_image_3",
+        "ref_image_4",
+        "ref_image_5",
+        "ref_video_0",
+    ]
+
+
+def test_shot_attachments_reject_a_handle_for_another_timeline_position():
+    plan = project()
+    plan, _preview, handle = MiniMaxH3PlanV2Shot().add_shot(
+        plan,
+        0.0,
+        "The opening composition is established.",
+        "",
+        "Direct cut",
+    )
+    invalid = dict(handle, cut_at=1.0)
+
+    with pytest.raises(ValueError, match="does not belong"):
+        MiniMaxH3PlanV2ShotKeyframe().attach_keyframe(
+            plan,
+            invalid,
+            torch.zeros(1, 8, 8, 3),
+            "opening",
+            "Opening composition.",
+        )
 
 
 def audio_value(seconds=3.0, sample_rate=32_000):
@@ -971,7 +1119,7 @@ def test_motion_video_requires_and_targets_an_upstream_subject():
     plan = project("Transfer the supplied running motion to the woman.")
     plan, _handle, _image, _preview = image_reference(plan)
     frames = torch.zeros(48, 32, 48, 3)
-    plan, _video_handle, _video, _preview = MiniMaxH3PlanV2VideoReference().add_video(
+    plan, _video_handle, _video, preview = MiniMaxH3PlanV2VideoReference().add_video(
         plan,
         frames,
         VIDEO_MOTION,
@@ -984,15 +1132,20 @@ def test_motion_video_requires_and_targets_an_upstream_subject():
         RETENTION_AUTO,
         "",
     )
+    assert "<Subject 2> reusable action sourced from provisional <Video 1>" in preview
     plan = shot(plan, 0.0, "<Subject 1> performs the transferred running motion.")
 
     prompt, _rewrite, _report, _compiled, _length = compile_h3_plan(plan)
 
-    assert (
-        "<Video 1> is the motion and action reference transferred to <Subject 1>"
-        in prompt
+    assert "<Subject 2> is the reusable pose, action, and motion from <Video 1>" in prompt
+    assert "Transfer <Subject 2>'s visible performance to <Subject 1>" in prompt
+    assert "<Subject 2> (appears in [Shot 1]): attribute_transfer" in prompt
+    assert "<Video 1>: attribute_transfer" not in prompt
+    shot_line = next(
+        line for line in prompt.splitlines() if line.startswith("[Shot 1]")
     )
-    assert "<Video 1>: attribute_transfer" in prompt
+    assert "<Subject 2>" in shot_line
+    assert "<Video 1>" not in shot_line
 
 
 def test_temporal_structure_video_uses_weak_reference_not_attribute_transfer():
@@ -1143,10 +1296,24 @@ def test_node_contract_exposes_the_complete_phase_one_chain():
         "MiniMaxH3PlanV2CharacterReplacement",
         "MiniMaxH3PlanV2AudioReference",
         "MiniMaxH3PlanV2Shot",
+        "MiniMaxH3PlanV2ShotKeyframe",
+        "MiniMaxH3PlanV2ShotMotionReference",
         "MiniMaxH3PlanV2DialogueEvent",
         "MiniMaxH3PlanV2PromptMerge",
     }
     assert MiniMaxH3PlanV2ProjectSetup.RETURN_TYPES[0] == PLAN_TYPE
+    assert MiniMaxH3PlanV2Shot.RETURN_TYPES[-1] == SHOT_HANDLE_TYPE
+    assert MiniMaxH3PlanV2ShotKeyframe.RETURN_TYPES[1] == SHOT_HANDLE_TYPE
+    assert MiniMaxH3PlanV2ShotMotionReference.RETURN_TYPES[1] == SHOT_HANDLE_TYPE
+    keyframe_position = MiniMaxH3PlanV2ShotKeyframe.INPUT_TYPES()["required"][
+        "keyframe_position"
+    ]
+    assert keyframe_position[0] == [
+        KEYFRAME_SHOT_OPENING,
+        KEYFRAME_SHOT_INTERNAL,
+        KEYFRAME_SHOT_ENDING,
+    ]
+    assert keyframe_position[1]["default"] == KEYFRAME_SHOT_OPENING
     assert MiniMaxH3PlanV2PromptMerge.RETURN_TYPES[2] == PLAN_TYPE
     assert list(MiniMaxH3PlanV2AudioReference.INPUT_TYPES()["optional"]) == [
         "paired_video"

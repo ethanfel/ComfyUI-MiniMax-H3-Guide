@@ -17,6 +17,7 @@ from typing import Any
 PLAN_VERSION = 2
 PLAN_TYPE = "MINIMAX_H3_PLAN_V2"
 REFERENCE_HANDLE_TYPE = "MINIMAX_H3_REFERENCE_HANDLE_V2"
+SHOT_HANDLE_TYPE = "MINIMAX_H3_SHOT_HANDLE_V2"
 
 H3_FPS = 24
 H3_FRAME_MODULUS = 17
@@ -39,6 +40,15 @@ IMAGE_USES = [
     IMAGE_LAST_FRAME,
     IMAGE_KEYFRAME,
     IMAGE_STORYBOARD,
+]
+
+KEYFRAME_SHOT_OPENING = "Shot opening frame"
+KEYFRAME_SHOT_INTERNAL = "Internal composition keyframe"
+KEYFRAME_SHOT_ENDING = "Shot ending frame"
+SHOT_KEYFRAME_POSITIONS = [
+    KEYFRAME_SHOT_OPENING,
+    KEYFRAME_SHOT_INTERNAL,
+    KEYFRAME_SHOT_ENDING,
 ]
 
 UNASSIGNED_VIDEO_USE = "Choose a video relationship"
@@ -321,6 +331,33 @@ def _resolved_handle(plan: dict, handle: Any, *, allowed_kinds: set[str]) -> dic
     return asset
 
 
+def _shot_handle(shot: dict) -> dict:
+    return {
+        "version": PLAN_VERSION,
+        "shot_number": int(shot["shot_number"]),
+        "cut_at": float(shot["cut_at"]),
+    }
+
+
+def _resolved_shot_handle(plan: dict, handle: Any) -> dict:
+    if not isinstance(handle, dict) or handle.get("version") != PLAN_VERSION:
+        raise ValueError("shot_handle must come from a Plan v2 Shot node.")
+    try:
+        number = int(handle["shot_number"])
+        handle_cut = float(handle["cut_at"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("shot_handle contains invalid Shot identity data.") from error
+    shot = next(
+        (entry for entry in plan["shots"] if int(entry["shot_number"]) == number),
+        None,
+    )
+    if shot is None or not math.isclose(
+        float(shot["cut_at"]), handle_cut, abs_tol=0.0005
+    ):
+        raise ValueError("shot_handle does not belong to the connected h3_plan timeline.")
+    return shot
+
+
 def _validate_image(image: Any) -> None:
     shape = getattr(image, "shape", None)
     if shape is None or len(shape) != 4 or int(shape[0]) != 1 or int(shape[-1]) < 3:
@@ -342,9 +379,19 @@ def _prepare_video_frames(video_frames: Any, source_fps: float, h3_length: int):
         )
     source_count = int(shape[0])
     source_duration = source_count / fps
-    if source_duration < 2.0 - 0.0005 or source_duration > 15.0 + 0.0005:
+    # A requested 15-second H3 clip is padded upward to the native 17k+5 grid:
+    # 362 frames at 24 FPS, or 15.0833 seconds. Accept exactly that model-native
+    # boundary, but do not turn the tolerance into permission for longer footage.
+    max_native_reference_duration = native_frame_count(15.0) / H3_FPS
+    if (
+        source_duration < 2.0 - 0.0005
+        or source_duration > max_native_reference_duration + 0.0005
+    ):
         raise ValueError(
-            "Every H3 reference video must last from 2 through 15 seconds."
+            "Every H3 reference video must last from 2 through 15 seconds; only "
+            "native 17k+5 padding through 362 frames at 24 FPS (15.083 seconds) "
+            f"is tolerated. Received {source_count} frames at {fps:g} FPS "
+            f"({source_duration:.3f} seconds)."
         )
 
     resampled_count = max(1, math.ceil(source_duration * H3_FPS - 1e-9))
@@ -537,6 +584,15 @@ def _scope_text(numbers: list[int]) -> str:
     return f"{', '.join(labels[:-1])}, and {labels[-1]}"
 
 
+def _motion_scope(asset: dict, plan: dict) -> list[int]:
+    explicit = _parse_shot_scope(asset.get("shot_scope", ""), len(plan["shots"]))
+    if explicit:
+        return explicit
+    # A legacy/global Motion Reference without shot_scope applies wherever the
+    # generated plan plays. Explicit Shot Attachment nodes always provide one.
+    return list(range(1, max(1, len(plan["shots"])) + 1))
+
+
 def _audio_retention(audio_use: str) -> str:
     if audio_use == AUDIO_COPY_COMPLETE:
         return AUDIO_FULL_COPY
@@ -596,9 +652,12 @@ def _validate_reference_counts(plan: dict) -> None:
         raise ValueError("MiniMax H3 accepts at most 3 reference-audio clips.")
     if len(pictures) + len(videos) + len(audios) > 12:
         raise ValueError("MiniMax H3 accepts at most 12 mixed reference media files.")
-    if sum(float(asset["source_duration"]) for asset in videos) > 15.0 + 0.0005:
+    video_total = sum(float(asset["source_duration"]) for asset in videos)
+    max_native_reference_duration = native_frame_count(15.0) / H3_FPS
+    if video_total > max_native_reference_duration + 0.0005:
         raise ValueError(
-            "Reference videos total more than MiniMax H3's 15-second limit."
+            f"Reference-video chain totals {video_total:.3f}s, beyond MiniMax H3's "
+            "15-second limit plus its native 362-frame padding tolerance."
         )
     audio_total = sum(float(asset["duration"]) for asset in audios)
     if audio_total > 15.0 + 0.0005:
@@ -702,6 +761,38 @@ def _catalog(plan: dict) -> dict:
             subjects_by_alias[key] = group
         subjects_by_alias[key]["bindings"].append(binding)
 
+    # The H3 guide treats reusable motion/action from a video as visible
+    # <Subject N> content. The physical clip still keeps its <Video N> source
+    # label and native ref_video_N route, but it is not a standalone whole-video
+    # relationship in subject_definitions or retention_analysis.
+    motion_subjects_by_asset: dict[str, dict] = {}
+    for asset in videos:
+        if asset["relationship"] != VIDEO_MOTION:
+            continue
+        binding = {
+            "binding_id": f"compiler-motion-{asset['asset_id']}",
+            "asset_id": asset["asset_id"],
+            "subject_name": _clean_inline(
+                asset.get("reference_name"),
+                "referenced motion",
+            ),
+            "content_type": CONTENT_ACTION,
+            "retention": RETENTION_TRANSFER,
+            "shot_scope": _clean_inline(asset.get("shot_scope")),
+            "notes": _clean_block(asset.get("description")),
+            "transfer_target_subject": _clean_inline(asset.get("target_subject")),
+            "compiler_managed_scope": True,
+        }
+        group = {
+            "label": f"<Subject {len(subject_groups) + 1}>",
+            "subject_name": binding["subject_name"],
+            "bindings": [binding],
+            "source_relationship": VIDEO_MOTION,
+            "source_asset_id": asset["asset_id"],
+        }
+        subject_groups.append(group)
+        motion_subjects_by_asset[asset["asset_id"]] = group
+
     speaker_ids: dict[str, str] = {}
     for event in plan["dialogue_events"]:
         key = _alias_key(event["speaker"])
@@ -718,6 +809,7 @@ def _catalog(plan: dict) -> dict:
         "presentation": presentation,
         "subject_groups": subject_groups,
         "subjects_by_alias": subjects_by_alias,
+        "motion_subjects_by_asset": motion_subjects_by_asset,
         "speaker_ids": speaker_ids,
     }
 
@@ -978,6 +1070,8 @@ def _validate_scopes(plan: dict, catalog: dict) -> None:
     for group in catalog["subject_groups"]:
         for binding in group["bindings"]:
             numbers = _parse_shot_scope(binding["shot_scope"], shot_count)
+            if binding.get("compiler_managed_scope"):
+                continue
             missing = [
                 number
                 for number in numbers
@@ -986,6 +1080,14 @@ def _validate_scopes(plan: dict, catalog: dict) -> None:
                     number,
                     group["label"],
                     group["subject_name"],
+                )
+                and not any(
+                    asset["relationship"] == VIDEO_MOTION
+                    and _alias_key(asset.get("target_subject", ""))
+                    == _alias_key(group["subject_name"])
+                    and number
+                    in _parse_shot_scope(asset.get("shot_scope", ""), shot_count)
+                    for asset in catalog["videos"]
                 )
                 and not _replacement_covers_subject_shot(
                     plan, group["subject_name"], number
@@ -1252,7 +1354,82 @@ def _replacement_shot_instruction(
     return " ".join(lines)
 
 
+def _shot_scoped_reference_instructions(
+    shot_number: int,
+    plan: dict,
+    catalog: dict,
+) -> list[str]:
+    """Compile direct keyframe/motion roles into their exact Shot field."""
+
+    instructions: list[str] = []
+    for asset in catalog["pictures"]:
+        if asset["relationship"] != IMAGE_KEYFRAME:
+            continue
+        scope = _parse_shot_scope(asset.get("shot_scope", ""), len(plan["shots"]))
+        if shot_number not in scope:
+            continue
+        label = catalog["picture_labels"][asset["asset_id"]]
+        position = asset.get("keyframe_position", KEYFRAME_SHOT_INTERNAL)
+        if position == KEYFRAME_SHOT_OPENING:
+            anchor = f"The shot begins from {label}"
+        elif position == KEYFRAME_SHOT_ENDING:
+            anchor = f"The shot ends on {label}"
+        else:
+            anchor = f"The shot's keyframe corresponds to {label}"
+        instructions.append(
+            f"{anchor}; preserve its defined framing, subject placement, scene layout, "
+            "and visible state at that exact point in the shot."
+        )
+    for asset in catalog["videos"]:
+        scope = (
+            _motion_scope(asset, plan)
+            if asset["relationship"] == VIDEO_MOTION
+            else _parse_shot_scope(
+                asset.get("shot_scope", ""),
+                len(plan["shots"]),
+            )
+        )
+        if shot_number not in scope:
+            continue
+        label = catalog["video_labels"][asset["asset_id"]]
+        if asset["relationship"] == VIDEO_MOTION:
+            motion = catalog["motion_subjects_by_asset"][asset["asset_id"]]
+            target = catalog["subjects_by_alias"].get(
+                _alias_key(asset.get("target_subject", ""))
+            )
+            target_text = target["label"] if target else asset.get("target_subject", "")
+            instructions.append(
+                f"During this shot, {target_text} performs the pose sequence, action, and "
+                f"motion timing defined by {motion['label']}; transfer only that visible "
+                "performance without importing the source identity, setting, or composition."
+            )
+        elif asset["relationship"] == VIDEO_STRUCTURE:
+            instructions.append(
+                f"Apply the camera movement, cuts, rhythm, and temporal structure from {label} "
+                "during this Shot without copying its subjects or setting."
+            )
+    return instructions
+
+
 def _subject_definition(group: dict, plan: dict, catalog: dict) -> str:
+    if group.get("source_relationship") == VIDEO_MOTION:
+        asset_id = group["source_asset_id"]
+        asset = _asset_by_id(plan)[asset_id]
+        source = catalog["video_labels"][asset_id]
+        target = catalog["subjects_by_alias"].get(
+            _alias_key(asset.get("target_subject", ""))
+        )
+        target_text = target["label"] if target else asset.get("target_subject", "")
+        description = _clause(
+            asset.get("description"),
+            "the supplied pose sequence, action, and motion timing",
+        )
+        return (
+            f"{group['label']} is the reusable pose, action, and motion from {source}: "
+            f"{description}. Transfer {group['label']}'s visible performance to "
+            f"{target_text}."
+        )
+
     definition_clauses: list[str] = []
     transfer_clauses: list[str] = []
     for binding in group["bindings"]:
@@ -1302,11 +1479,15 @@ def _direct_picture_definition(asset: dict, label: str, plan: dict) -> str | Non
         )
     if relationship == IMAGE_KEYFRAME:
         scope = _parse_shot_scope(asset["shot_scope"], len(plan["shots"]))
-        scope_text = f" for {_scope_text(scope)}" if scope else ""
-        return (
-            f"{label} is the concrete keyframe and composition anchor{scope_text}, "
-            f"showing {description}."
-        )
+        scope_text = _scope_text(scope)
+        position = asset.get("keyframe_position", KEYFRAME_SHOT_INTERNAL)
+        if position == KEYFRAME_SHOT_OPENING:
+            role = f"the opening frame of {scope_text}"
+        elif position == KEYFRAME_SHOT_ENDING:
+            role = f"the ending frame of {scope_text}"
+        else:
+            role = f"a concrete composition keyframe within {scope_text}"
+        return f"{label} is {role}, showing {description}."
     if relationship == IMAGE_STORYBOARD:
         scope = _parse_shot_scope(asset["shot_scope"], len(plan["shots"]))
         scope_text = f" for {_scope_text(scope)}" if scope else ""
@@ -1342,13 +1523,9 @@ def _direct_video_definition(
             f"{description}."
         )
     if relationship == VIDEO_MOTION:
-        target = catalog["subjects_by_alias"].get(_alias_key(asset["target_subject"]))
-        target_text = target["label"] if target else asset["target_subject"]
-        return (
-            f"{label} is the motion and action reference transferred to {target_text}"
-            f"{scope_text}: "
-            f"{description}."
-        )
+        # Motion clips are provenance for a reusable action <Subject N>, not a
+        # standalone whole-video role. _subject_definition cites this source.
+        return None
     if relationship == VIDEO_STRUCTURE:
         return (
             f"{label} is the camera, cuts, rhythm, and temporal-structure reference"
@@ -1505,6 +1682,30 @@ def _task_types(plan: dict, catalog: dict) -> list[str]:
     return tasks or ["reference generation"]
 
 
+def _list_text(values: list[str]) -> str:
+    unique = list(dict.fromkeys(value for value in values if value))
+    if not unique:
+        return ""
+    if len(unique) == 1:
+        return unique[0]
+    if len(unique) == 2:
+        return f"{unique[0]} and {unique[1]}"
+    return f"{', '.join(unique[:-1])}, and {unique[-1]}"
+
+
+def _summary_premise(plan: dict) -> str:
+    source = _clean_inline(plan["project"].get("initial_prompt"))
+    if not source and plan["shots"]:
+        source = _clean_inline(plan["shots"][0].get("description"))
+    if not source:
+        return ""
+    # A deterministic compiler cannot safely paraphrase arbitrary prose. Keep
+    # the author's first complete premise sentence instead of replacing it with
+    # an inventory-only summary.
+    first = re.split(r"(?<=[.!?])\s+", source, maxsplit=1)[0]
+    return _sentence(first)
+
+
 def _summary(plan: dict, catalog: dict) -> str:
     tasks = _task_types(plan, catalog)
     sentences: list[str] = [f"[{' + '.join(tasks)}]"]
@@ -1515,23 +1716,124 @@ def _summary(plan: dict, catalog: dict) -> str:
         elif video["relationship"] == VIDEO_CONTINUE:
             if _replacements_for_video(plan, video["asset_id"]):
                 sentences.append(
-                    f"The target video first recreates and edits {label}, then continues "
-                    f"causally beyond its endpoint."
+                    f"The target video is an edited version of {label}."
+                )
+                sentences.append(
+                    f"After recreating that edited source timeline, the target continues "
+                    f"causally beyond {label}'s endpoint."
                 )
             else:
                 sentences.append(f"The target video continues after {label}.")
+    premise = _summary_premise(plan)
+    if premise:
+        sentences.append(premise)
     sentences.extend(
         _replacement_mapping_sentence(replacement, plan, catalog)
         for replacement in plan["character_replacements"]
     )
-    role_labels = [
-        *(group["label"] for group in catalog["subject_groups"]),
-        *catalog["picture_labels"].values(),
-        *catalog["video_labels"].values(),
-        *catalog["audio_labels"].values(),
-    ]
-    if role_labels:
-        sentences.append(f"The declared reference roles use {', '.join(role_labels)}.")
+
+    for group in catalog["subject_groups"]:
+        if group.get("source_relationship") == VIDEO_MOTION:
+            continue
+        scopes = sorted(
+            {
+                number
+                for binding in group["bindings"]
+                for number in _parse_shot_scope(
+                    binding["shot_scope"],
+                    len(plan["shots"]),
+                )
+            }
+            | {
+                number
+                for replacement in plan["character_replacements"]
+                if _alias_key(replacement["replacement_subject"])
+                == _alias_key(group["subject_name"])
+                for number in _replacement_scope(replacement, plan)
+            }
+        )
+        where = f" in {_scope_text(scopes)}" if scopes else " wherever it appears"
+        sentences.append(
+            f"{group['label']} supplies its declared reusable visible content{where}."
+        )
+
+    keyframe_mappings: list[str] = []
+    storyboard_mappings: list[str] = []
+    for asset in catalog["pictures"]:
+        label = catalog["picture_labels"][asset["asset_id"]]
+        scope = _scope_text(
+            _parse_shot_scope(asset.get("shot_scope", ""), len(plan["shots"]))
+        )
+        if asset["relationship"] == IMAGE_KEYFRAME:
+            position = asset.get("keyframe_position", KEYFRAME_SHOT_INTERNAL)
+            role = {
+                KEYFRAME_SHOT_OPENING: "the opening frame of",
+                KEYFRAME_SHOT_INTERNAL: "a composition keyframe within",
+                KEYFRAME_SHOT_ENDING: "the ending frame of",
+            }[position]
+            keyframe_mappings.append(f"{label} as {role} {scope}")
+        elif asset["relationship"] == IMAGE_STORYBOARD:
+            storyboard_mappings.append(f"{label} for {scope}")
+    if keyframe_mappings:
+        sentences.append(
+            f"The concrete frame anchors are {_list_text(keyframe_mappings)}."
+        )
+    if storyboard_mappings:
+        sentences.append(
+            f"Storyboard planning uses {_list_text(storyboard_mappings)}."
+        )
+
+    for asset in catalog["videos"]:
+        label = catalog["video_labels"][asset["asset_id"]]
+        if asset["relationship"] == VIDEO_MOTION:
+            scope = _scope_text(_motion_scope(asset, plan))
+            motion = catalog["motion_subjects_by_asset"][asset["asset_id"]]
+            target = catalog["subjects_by_alias"].get(
+                _alias_key(asset.get("target_subject", ""))
+            )
+            target_text = target["label"] if target else asset.get("target_subject", "")
+            sentences.append(
+                f"In {scope}, {target_text} performs {motion['label']}, the reusable "
+                f"action sourced from {label}."
+            )
+        elif asset["relationship"] == VIDEO_STRUCTURE:
+            scope = _scope_text(
+                _parse_shot_scope(
+                    asset.get("shot_scope", ""),
+                    len(plan["shots"]),
+                )
+            )
+            sentences.append(
+                f"{label} guides camera movement, cuts, rhythm, and temporal structure"
+                + (f" in {scope}." if scope else ".")
+            )
+
+    relationships = {entry["asset_id"]: entry for entry in plan["audio_relationships"]}
+    for asset in catalog["audios"]:
+        relationship = relationships[asset["asset_id"]]
+        label = catalog["audio_labels"][asset["asset_id"]]
+        use = relationship["use"]
+        scope = _scope_text(
+            _parse_shot_scope(relationship.get("shot_scope", ""), len(plan["shots"]))
+        )
+        if use == AUDIO_COPY_COMPLETE:
+            sentences.append(f"{label} supplies the complete final audio track.")
+        elif use == AUDIO_COPY_PARTIAL:
+            sentences.append(f"{label} supplies only its declared copied ranges or layers.")
+        elif use == AUDIO_VOICE:
+            target = catalog["subjects_by_alias"].get(
+                _alias_key(relationship.get("target_speaker", ""))
+            )
+            target_text = target["label"] if target else relationship["target_speaker"]
+            sentences.append(
+                f"{label} guides {target_text}'s voice timbre and delivery"
+                + (f" in {scope}." if scope else ".")
+            )
+        else:
+            sentences.append(
+                f"{label} supplies the declared {use.lower()} guidance"
+                + (f" in {scope}." if scope else ".")
+            )
     return " ".join(sentences)
 
 
@@ -1556,6 +1858,9 @@ def _subject_retention_line(group: dict, plan: dict, catalog: dict) -> str:
             for number in _replacement_scope(replacement, plan)
         }
     )
+    if group.get("source_relationship") == VIDEO_MOTION:
+        asset = _asset_by_id(plan)[group["source_asset_id"]]
+        scopes = _motion_scope(asset, plan)
     context = (
         f" (appears in {_scope_text(scopes)})"
         if scopes
@@ -1610,24 +1915,34 @@ def _retention_analysis(plan: dict, catalog: dict) -> list[str]:
             continue
         label = catalog["picture_labels"][asset["asset_id"]]
         marker = asset["retention"]
-        role = {
-            IMAGE_FIRST_FRAME: "[Shot 1] first frame",
-            IMAGE_LAST_FRAME: f"[Shot {max(1, len(plan['shots']))}] final frame",
-            IMAGE_KEYFRAME: "concrete keyframe/composition anchor",
-            IMAGE_STORYBOARD: "storyboard/shot-planning reference",
-        }[relationship]
+        if relationship == IMAGE_KEYFRAME:
+            scope = _scope_text(
+                _parse_shot_scope(asset["shot_scope"], len(plan["shots"]))
+            )
+            position = asset.get("keyframe_position", KEYFRAME_SHOT_INTERNAL)
+            position_text = {
+                KEYFRAME_SHOT_OPENING: "opening frame",
+                KEYFRAME_SHOT_INTERNAL: "internal composition keyframe",
+                KEYFRAME_SHOT_ENDING: "ending frame",
+            }[position]
+            role = f"{scope} {position_text}"
+        else:
+            role = {
+                IMAGE_FIRST_FRAME: "[Shot 1] first frame",
+                IMAGE_LAST_FRAME: f"[Shot {max(1, len(plan['shots']))}] final frame",
+                IMAGE_STORYBOARD: "storyboard/shot-planning reference",
+            }[relationship]
         lines.append(
             f"{label} ({role}): {marker} - its declared reference role is retained."
         )
     for asset in catalog["videos"]:
         relationship = asset["relationship"]
-        if relationship == VIDEO_DEFINE_VISIBLE:
+        if relationship in {VIDEO_DEFINE_VISIBLE, VIDEO_MOTION}:
             continue
         label = catalog["video_labels"][asset["asset_id"]]
         marker = {
             VIDEO_EDIT: RETENTION_PARTIAL,
             VIDEO_CONTINUE: RETENTION_PARTIAL,
-            VIDEO_MOTION: RETENTION_TRANSFER,
             VIDEO_STRUCTURE: RETENTION_WEAK,
         }[relationship]
         scope = _parse_shot_scope(asset["shot_scope"], len(plan["shots"]))
@@ -1804,8 +2119,15 @@ def _detailed_description(plan: dict, catalog: dict) -> str:
             for replacement in plan["character_replacements"]
             if number in _replacement_scope(replacement, plan)
         ]
-        if replacement_instructions:
-            description = " ".join((description, *replacement_instructions))
+        reference_instructions = _shot_scoped_reference_instructions(
+            number,
+            plan,
+            catalog,
+        )
+        if replacement_instructions or reference_instructions:
+            description = " ".join(
+                (description, *replacement_instructions, *reference_instructions)
+            )
         camera = _sentence(shot["camera_direction"])
         if number == 1:
             line = f"[Shot 1] {description}"
@@ -2018,6 +2340,31 @@ def _problems_report(
         lines.extend(f"- {entry['label']} -> {entry['route']}" for entry in routes)
     else:
         lines.append("- none")
+    video_uses = {asset["relationship"] for asset in catalog["videos"]}
+    if mode == MODE_REF2VA and not video_uses.intersection(
+        {VIDEO_EDIT, VIDEO_CONTINUE}
+    ):
+        detailed_words = len(
+            re.findall(r"\b[\w'-]+\b", _detailed_description(plan, catalog))
+        )
+        if detailed_words < 350:
+            lines.append(
+                f"Guide detail check: detailed_description has about {detailed_words} words; "
+                "the H3 reference guide normally recommends 350-500 English words for "
+                "generation tasks. Add observable shot detail or run the Structured Prompt "
+                "Enhancer before generation."
+            )
+        elif detailed_words <= 500:
+            lines.append(
+                f"Guide detail check: detailed_description has about {detailed_words} words, "
+                "within the guide's usual 350-500-word generation range."
+            )
+        else:
+            lines.append(
+                f"Guide detail check: detailed_description has about {detailed_words} words, "
+                "above the guide's usual 350-500-word generation range; keep only useful "
+                "observable production detail."
+            )
     lines.append(
         "Locked by the compiler: labels, roles, character replacements, retention, speakers, "
         "exact dialogue, and cut times."
@@ -2099,7 +2446,13 @@ def compile_h3_plan(plan: Any) -> tuple[str, str, str, dict, int]:
         "checkpoint": checkpoint,
         "routes": [dict(entry) for entry in routes],
         "subject_labels": {
-            group["subject_name"]: group["label"] for group in catalog["subject_groups"]
+            group["subject_name"]: group["label"]
+            for group in catalog["subject_groups"]
+            if group.get("source_relationship") != VIDEO_MOTION
+        },
+        "motion_subject_labels": {
+            asset_id: group["label"]
+            for asset_id, group in catalog["motion_subjects_by_asset"].items()
         },
         "speaker_ids": {
             next(
@@ -2397,6 +2750,9 @@ class MiniMaxH3PlanV2ImageReference:
             "retention": resolved_retention,
             "shot_scope": _clean_inline(shot_scope),
             "target_subject": "",
+            "keyframe_position": (
+                KEYFRAME_SHOT_INTERNAL if image_use == IMAGE_KEYFRAME else ""
+            ),
         }
         updated = _copy_plan(plan)
         updated["assets"].append(asset)
@@ -2579,7 +2935,9 @@ class MiniMaxH3PlanV2VideoReference:
     )
     DESCRIPTION = (
         "Registers an IMAGE frame batch as one H3 reference video. Editing, continuation, "
-        "motion transfer, structure transfer, and visible-content definition remain distinct."
+        "motion transfer, structure transfer, and visible-content definition remain distinct. "
+        "For motion transfer, the clip is routed as Video provenance while the compiler creates "
+        "the reusable action Subject required by the H3 prompt guide."
     )
 
     @classmethod
@@ -2772,8 +3130,17 @@ class MiniMaxH3PlanV2VideoReference:
         video_number = len(
             [entry for entry in updated["assets"] if entry["media_kind"] == "video"]
         )
+        role_preview = f"Provisional <Video {video_number}>: {video_use}."
+        if video_use == VIDEO_MOTION:
+            catalog = _catalog(updated)
+            motion = catalog["motion_subjects_by_asset"][asset["asset_id"]]
+            target_group = catalog["subjects_by_alias"][_alias_key(target)]
+            role_preview = (
+                f"{motion['label']} reusable action sourced from provisional "
+                f"<Video {video_number}> and transferred to {target_group['label']}."
+            )
         preview = (
-            f"Provisional <Video {video_number}>: {video_use}. Source "
+            f"{role_preview} Source "
             f"{source_duration:.3f}s -> native {native_count} frames/"
             f"{native_count / H3_FPS:.3f}s at 24 FPS; route ref_video_{video_number - 1}."
         )
@@ -3286,11 +3653,12 @@ class MiniMaxH3PlanV2Shot:
 
     CATEGORY = "MiniMax H3/Plan v2"
     FUNCTION = "add_shot"
-    RETURN_TYPES = (PLAN_TYPE, "STRING")
-    RETURN_NAMES = ("h3_plan", "shot_preview")
+    RETURN_TYPES = (PLAN_TYPE, "STRING", SHOT_HANDLE_TYPE)
+    RETURN_NAMES = ("h3_plan", "shot_preview", "shot_handle")
     OUTPUT_TOOLTIPS = (
-        "Connect to Dialogue Event, the next Shot, or Prompt Merge.",
+        "Connect to a Shot attachment, Dialogue Event, the next Shot, or Prompt Merge.",
         "Complete timeline with each end computed from the next cut or Project duration.",
+        "Stable handle for attaching keyframes and motion references to this exact Shot.",
     )
     DESCRIPTION = (
         "Adds one Shot in playback order. Shot 1 begins at zero; every later Shot uses "
@@ -3395,7 +3763,282 @@ class MiniMaxH3PlanV2Shot:
         updated = _copy_plan(plan)
         updated["phase"] = PHASE_TIMELINE
         updated["shots"].append(shot)
-        return updated, _shot_chain_preview(updated)
+        return updated, _shot_chain_preview(updated), _shot_handle(shot)
+
+
+class MiniMaxH3PlanV2ShotKeyframe:
+    """Attach one concrete image composition anchor to an existing Shot."""
+
+    CATEGORY = "MiniMax H3/Plan v2/Shot Composition"
+    FUNCTION = "attach_keyframe"
+    RETURN_TYPES = (PLAN_TYPE, SHOT_HANDLE_TYPE, "IMAGE", "STRING")
+    RETURN_NAMES = ("h3_plan", "shot_handle", "h3_image", "attachment_preview")
+    OUTPUT_TOOLTIPS = (
+        "Continue to another attachment or the next Shot.",
+        "The same Shot handle, forwarded for another attachment.",
+        "Exact connected keyframe image carried by the compiled Plan.",
+        "Resolved Shot number, provisional Picture label, and native route.",
+    )
+    DESCRIPTION = (
+        "Attaches one supplied image as the concrete keyframe and composition anchor for "
+        "exactly one Shot. Shot scope and prompt placement are assigned automatically."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "h3_plan": (
+                    PLAN_TYPE,
+                    {
+                        "tooltip": (
+                            "Connect the Plan output from the matching Shot or its preceding "
+                            "Shot attachment."
+                        )
+                    },
+                ),
+                "shot_handle": (
+                    SHOT_HANDLE_TYPE,
+                    {"tooltip": "Connect shot_handle from the exact Shot being composed."},
+                ),
+                "image": (
+                    "IMAGE",
+                    {
+                        "tooltip": (
+                            "Exactly one keyframe image. It becomes a native ref_image route "
+                            "and is cited only in the selected Shot."
+                        )
+                    },
+                ),
+                "reference_name": (
+                    "STRING",
+                    {
+                        "default": "shot keyframe",
+                        "placeholder": "Example: Shot 3 truck interior keyframe",
+                        "tooltip": "Human-readable name used in previews and reports.",
+                    },
+                ),
+                "description": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "dynamicPrompts": False,
+                        "placeholder": (
+                            "Visible composition, subject placement, pose, lighting, and state "
+                            "that this keyframe establishes."
+                        ),
+                        "tooltip": (
+                            "Describe only the concrete visual facts that the keyframe anchors."
+                        ),
+                    },
+                ),
+                "keyframe_position": (
+                    SHOT_KEYFRAME_POSITIONS,
+                    {
+                        "default": KEYFRAME_SHOT_OPENING,
+                        "tooltip": (
+                            "Choose whether this exact image is the Shot's opening frame, "
+                            "an internal composition keyframe, or its ending frame. For an "
+                            "internal keyframe, describe its timing in the Shot prose."
+                        ),
+                    },
+                ),
+            }
+        }
+
+    def attach_keyframe(
+        self,
+        h3_plan,
+        shot_handle,
+        image,
+        reference_name: str,
+        description: str,
+        keyframe_position: str = KEYFRAME_SHOT_OPENING,
+    ):
+        plan = validated_plan(h3_plan, allowed_phases={PHASE_TIMELINE})
+        shot = _resolved_shot_handle(plan, shot_handle)
+        _validate_image(image)
+        if keyframe_position not in SHOT_KEYFRAME_POSITIONS:
+            raise ValueError("Choose a valid keyframe position within the Shot.")
+        asset = {
+            "asset_id": _next_asset_id(plan, "image"),
+            "media_kind": "image",
+            "media": image,
+            "relationship": IMAGE_KEYFRAME,
+            "reference_name": _clean_inline(reference_name, "shot keyframe"),
+            "description": _clean_block(
+                description,
+                "the supplied keyframe composition",
+            ),
+            "retention": RETENTION_FULL,
+            "shot_scope": str(shot["shot_number"]),
+            "target_subject": "",
+            "keyframe_position": keyframe_position,
+        }
+        updated = _copy_plan(plan)
+        updated["assets"].append(asset)
+        _validate_reference_counts(updated)
+        picture_number = sum(
+            entry["media_kind"] == "image" for entry in updated["assets"]
+        )
+        preview = (
+            f"[Shot {shot['shot_number']}] <- provisional <Picture {picture_number}> "
+            f"as {keyframe_position.lower()} -> ref_image_{picture_number - 1}."
+        )
+        return updated, _shot_handle(shot), image, preview
+
+
+class MiniMaxH3PlanV2ShotMotionReference:
+    """Attach one subject-motion video reference to an existing Shot."""
+
+    CATEGORY = "MiniMax H3/Plan v2/Shot Composition"
+    FUNCTION = "attach_motion"
+    RETURN_TYPES = (PLAN_TYPE, SHOT_HANDLE_TYPE, "IMAGE", "STRING")
+    RETURN_NAMES = ("h3_plan", "shot_handle", "h3_video", "attachment_preview")
+    OUTPUT_TOOLTIPS = (
+        "Continue to another attachment or the next Shot.",
+        "The same Shot handle, forwarded for another attachment.",
+        "Prepared native-grid motion-reference frames carried by the compiled Plan.",
+        "Resolved Shot, reusable action Subject, target Subject, source Video, duration, and route.",
+    )
+    DESCRIPTION = (
+        "Attaches one video as a motion/action reference for one upstream Subject in exactly "
+        "one Shot. The clip keeps its native Video route but compiles as a reusable action "
+        "Subject, as required by the H3 guide. Shot scope and prompt placement are assigned "
+        "automatically; identity, setting, and composition are not copied from the motion clip."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "h3_plan": (
+                    PLAN_TYPE,
+                    {
+                        "tooltip": (
+                            "Connect the Plan output from the matching Shot or its preceding "
+                            "Shot attachment."
+                        )
+                    },
+                ),
+                "shot_handle": (
+                    SHOT_HANDLE_TYPE,
+                    {"tooltip": "Connect shot_handle from the exact Shot receiving the motion."},
+                ),
+                "video_frames": (
+                    "IMAGE",
+                    {
+                        "tooltip": (
+                            "A 2–15 second IMAGE frame batch. The clip supplies motion/action "
+                            "only and is prepared on H3's native frame grid."
+                        )
+                    },
+                ),
+                "target_subject": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "placeholder": "Choose an upstream Subject alias",
+                        "tooltip": (
+                            "The already-defined Subject that performs the referenced motion "
+                            "inside this Shot."
+                        ),
+                    },
+                ),
+                "reference_name": (
+                    "STRING",
+                    {
+                        "default": "shot motion",
+                        "placeholder": "Example: Shot 3 running motion",
+                        "tooltip": "Human-readable name used in previews and reports.",
+                    },
+                ),
+                "description": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "dynamicPrompts": False,
+                        "placeholder": "The pose sequence, action, and movement timing to transfer.",
+                        "tooltip": "Describe the motion/action evidence to transfer in this Shot.",
+                    },
+                ),
+                "source_fps": (
+                    "FLOAT",
+                    {
+                        "default": 24.0,
+                        "min": 0.01,
+                        "max": 240.0,
+                        "step": 0.01,
+                        "tooltip": "Frame rate represented by the connected IMAGE batch.",
+                    },
+                ),
+            }
+        }
+
+    def attach_motion(
+        self,
+        h3_plan,
+        shot_handle,
+        video_frames,
+        target_subject: str,
+        reference_name: str,
+        description: str,
+        source_fps: float,
+    ):
+        plan = validated_plan(h3_plan, allowed_phases={PHASE_TIMELINE})
+        shot = _resolved_shot_handle(plan, shot_handle)
+        target = _clean_inline(target_subject)
+        aliases = {_alias_key(entry["subject_name"]) for entry in plan["bindings"]}
+        if not target or _alias_key(target) not in aliases:
+            raise ValueError(
+                f"Motion target {target!r} is not an upstream Subject. "
+                "Define the target image/Subject before opening the Shot timeline."
+            )
+        h3_video, source_duration, resampled_count, native_count = (
+            _prepare_video_frames(
+                video_frames,
+                source_fps,
+                plan["project"]["h3_length"],
+            )
+        )
+        asset = {
+            "asset_id": _next_asset_id(plan, "video"),
+            "media_kind": "video",
+            "media": h3_video,
+            "relationship": VIDEO_MOTION,
+            "reference_name": _clean_inline(reference_name, "shot motion"),
+            "description": _clean_block(
+                description,
+                "the supplied motion and action",
+            ),
+            "retention": RETENTION_TRANSFER,
+            "shot_scope": str(shot["shot_number"]),
+            "target_subject": target,
+            "source_duration": source_duration,
+            "source_fps": float(source_fps),
+            "resampled_frame_count": resampled_count,
+            "native_frame_count": native_count,
+            "native_duration": native_count / H3_FPS,
+        }
+        updated = _copy_plan(plan)
+        updated["assets"].append(asset)
+        _validate_reference_counts(updated)
+        video_number = sum(
+            entry["media_kind"] == "video" for entry in updated["assets"]
+        )
+        catalog = _catalog(updated)
+        subject = catalog["subjects_by_alias"][_alias_key(target)]
+        motion = catalog["motion_subjects_by_asset"][asset["asset_id"]]
+        preview = (
+            f"[Shot {shot['shot_number']}] <- {motion['label']} reusable action sourced from "
+            f"<Video {video_number}> and transferred to {subject['label']} "
+            f"({subject['subject_name']}); "
+            f"{source_duration:.3f}s -> {native_count} native frames -> "
+            f"ref_video_{video_number - 1}."
+        )
+        return updated, _shot_handle(shot), h3_video, preview
 
 
 class MiniMaxH3PlanV2DialogueEvent:
@@ -3585,6 +4228,8 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxH3PlanV2CharacterReplacement": MiniMaxH3PlanV2CharacterReplacement,
     "MiniMaxH3PlanV2AudioReference": MiniMaxH3PlanV2AudioReference,
     "MiniMaxH3PlanV2Shot": MiniMaxH3PlanV2Shot,
+    "MiniMaxH3PlanV2ShotKeyframe": MiniMaxH3PlanV2ShotKeyframe,
+    "MiniMaxH3PlanV2ShotMotionReference": MiniMaxH3PlanV2ShotMotionReference,
     "MiniMaxH3PlanV2DialogueEvent": MiniMaxH3PlanV2DialogueEvent,
     "MiniMaxH3PlanV2PromptMerge": MiniMaxH3PlanV2PromptMerge,
 }
@@ -3597,6 +4242,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3PlanV2CharacterReplacement": "MiniMax H3 Character Replacement (Plan v2)",
     "MiniMaxH3PlanV2AudioReference": "MiniMax H3 Audio Reference (Plan v2)",
     "MiniMaxH3PlanV2Shot": "MiniMax H3 Shot (Plan v2)",
+    "MiniMaxH3PlanV2ShotKeyframe": "MiniMax H3 Attach Keyframe to Shot (Plan v2)",
+    "MiniMaxH3PlanV2ShotMotionReference": "MiniMax H3 Attach Motion to Shot (Plan v2)",
     "MiniMaxH3PlanV2DialogueEvent": "MiniMax H3 Dialogue Event (Plan v2)",
     "MiniMaxH3PlanV2PromptMerge": "MiniMax H3 Prompt Merge (Plan v2)",
 }

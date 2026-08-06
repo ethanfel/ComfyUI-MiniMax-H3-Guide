@@ -29,6 +29,7 @@ def test_phase3_workflow_templates_have_consistent_graph_links():
 
     assert set(workflows) == {
         "MiniMax H3 Plan v2 - Character Replacement.json",
+        "MiniMax H3 Plan v2 - Five Shot Keyframe Composition.json",
         "MiniMax H3 Plan v2 - First and Last Frames.json",
         "MiniMax H3 Plan v2 - Identity and Voice.json",
         "MiniMax H3 Plan v2 - Prompt Builder App.json",
@@ -67,6 +68,9 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
     replacement = workflows["MiniMax H3 Plan v2 - Character Replacement.json"]
     continuation = workflows[
         "MiniMax H3 Plan v2 - Video Extension with Audio Continuity.json"
+    ]
+    composition = workflows[
+        "MiniMax H3 Plan v2 - Five Shot Keyframe Composition.json"
     ]
 
     identity_types = [node["type"] for node in identity["nodes"]]
@@ -148,7 +152,21 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
         for value in continuation_values
     )
 
-    for workflow in (identity, endpoints, replacement, continuation):
+    composition_types = [node["type"] for node in composition["nodes"]]
+    assert composition_types.count("MiniMaxH3PlanV2Shot") == 5
+    assert composition_types.count("MiniMaxH3PlanV2ShotKeyframe") == 5
+    assert composition_types.count("MiniMaxH3PlanV2ShotMotionReference") == 1
+    assert all(
+        "shot_scope" not in {
+            input_slot["name"]
+            for input_slot in node.get("inputs", [])
+        }
+        for node in composition["nodes"]
+        if node["type"]
+        in {"MiniMaxH3PlanV2ShotKeyframe", "MiniMaxH3PlanV2ShotMotionReference"}
+    )
+
+    for workflow in (identity, endpoints, replacement, continuation, composition):
         assert any(
             node["type"] == "MiniMaxH3PlanV2PromptMerge" for node in workflow["nodes"]
         )
@@ -222,6 +240,70 @@ def test_character_replacement_template_compiles_with_placeholder_media():
         "ref_video_audio_0",
         "ref_video_0",
     ]
+    assert "Plan ready: 0 errors" in report
+
+
+def test_five_shot_composition_template_compiles_automatic_media_scopes():
+    workflow = _workflows()[
+        "MiniMax H3 Plan v2 - Five Shot Keyframe Composition.json"
+    ]
+    nodes = {node["id"]: node for node in workflow["nodes"]}
+    plan = plan_v2.MiniMaxH3PlanV2ProjectSetup().start(
+        *nodes[1]["widgets_values"]
+    )[0]
+    plan, _handle, _image, _preview = (
+        plan_v2.MiniMaxH3PlanV2ImageReference().add_image(
+            plan,
+            torch.zeros(1, 48, 64, 3),
+            *nodes[3]["widgets_values"],
+        )
+    )
+
+    for shot_id, keyframe_id in ((4, 6), (7, 9), (10, 12), (15, 17), (18, 20)):
+        plan, _preview, shot_handle = plan_v2.MiniMaxH3PlanV2Shot().add_shot(
+            plan,
+            *nodes[shot_id]["widgets_values"],
+        )
+        plan, shot_handle, _image, _preview = (
+            plan_v2.MiniMaxH3PlanV2ShotKeyframe().attach_keyframe(
+                plan,
+                shot_handle,
+                torch.zeros(1, 48, 64, 3),
+                *nodes[keyframe_id]["widgets_values"],
+            )
+        )
+        if shot_id == 10:
+            plan, _shot_handle, _video, _preview = (
+                plan_v2.MiniMaxH3PlanV2ShotMotionReference().attach_motion(
+                    plan,
+                    shot_handle,
+                    torch.zeros(48, 48, 64, 3),
+                    *nodes[14]["widgets_values"],
+                )
+            )
+
+    prompt, _rewrite, context, report, _length = (
+        plan_v2.MiniMaxH3PlanV2PromptMerge().merge(plan)
+    )
+
+    keyframe_scopes = [
+        asset["shot_scope"]
+        for asset in context["assets"]
+        if asset["relationship"] == plan_v2.IMAGE_KEYFRAME
+    ]
+    assert keyframe_scopes == ["1", "2", "3", "4", "5"]
+    assert all(
+        asset["keyframe_position"] == plan_v2.KEYFRAME_SHOT_OPENING
+        for asset in context["assets"]
+        if asset["relationship"] == plan_v2.IMAGE_KEYFRAME
+    )
+    shot_three = next(
+        line for line in prompt.splitlines() if line.startswith("[Shot 3]")
+    )
+    assert "<Subject 2>" in shot_three
+    assert "<Video 1>" not in shot_three
+    assert "<Subject 2> is the reusable pose, action, and motion from <Video 1>" in prompt
+    assert "<Video 1> ([Shot 3]): attribute_transfer" not in prompt
     assert "Plan ready: 0 errors" in report
 
 
@@ -321,7 +403,7 @@ def test_phase3_release_and_manual_migration_document_are_present():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     migration = (ROOT / "MIGRATION_TO_PLAN_V2.md").read_text(encoding="utf-8")
 
-    assert metadata["project"]["version"] == "0.13.0"
+    assert metadata["project"]["version"] == "0.14.0"
     assert "There is intentionally no automatic conversion" in migration
     assert "Reference Sheet.selected_audio -> Audio Reference.audio" in migration
     assert "Apply Reference Plan" in migration
@@ -335,6 +417,11 @@ def test_plan_v2_browser_logic_handles_auto_transfer_and_clears_hidden_role_data
     assert 'setWidgetValue(node, "target_subject", "")' in source
     assert 'const APPLY_REFERENCE = "MiniMaxH3PlanV2ApplyReferencePlan"' in source
     assert 'const REPLACEMENT = "MiniMaxH3PlanV2CharacterReplacement"' in source
+    assert 'const SHOT_KEYFRAME = "MiniMaxH3PlanV2ShotKeyframe"' in source
+    assert 'const SHOT_MOTION = "MiniMaxH3PlanV2ShotMotionReference"' in source
+    assert "const motionSubjectLabels = new Map()" in source
+    assert "catalog.motionSubjectLabels.get(node.id)" in source
+    assert 'node.addOutput?.("shot_handle", "MINIMAX_H3_SHOT_HANDLE_V2")' in source
     assert 'const VIDEO_CONTINUE = "Source video to continue"' in source
     assert "[VIDEO_EDIT, VIDEO_CONTINUE].includes(sourceUse)" in source
     assert '"Replacement Subject"' in source

@@ -217,7 +217,7 @@
       ],
       "title": "9. Verify identity mapping and forward audio continuity",
       "properties": {"Node name for S&R": "MiniMaxH3PlanV2PromptReview"},
-      "widgets_values": ["Pause for approval", 20, "review-character-transfer-video-extension"]
+      "widgets_values": ["Pause for approval", 20]
     },
     {
       "id": 10,

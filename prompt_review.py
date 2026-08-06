@@ -744,13 +744,6 @@ class MiniMaxH3PlanV2PromptReview:
                         "tooltip": "Maximum approved text revisions saved for this review node.",
                     },
                 ),
-                "history_key": (
-                    "STRING",
-                    {
-                        "default": "",
-                        "tooltip": "Stable per-node history ID managed by the browser extension.",
-                    },
-                ),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -765,7 +758,6 @@ class MiniMaxH3PlanV2PromptReview:
         plan_context,
         review_mode: str,
         history_limit: int,
-        history_key: str,
         unique_id=None,
     ):
         if review_mode not in REVIEW_MODES:
@@ -777,7 +769,10 @@ class MiniMaxH3PlanV2PromptReview:
             )
             return reviewed, approved, "Prompt review bypassed without pausing. " + report
 
-        key = _node_history_key(history_key, unique_id)
+        # The ComfyUI node id is already stable within a saved workflow and unique
+        # after copy/paste. Keeping history identity out of widgets avoids custom DOM
+        # widgets shifting serialized review_mode/history_limit values.
+        key = _node_history_key("review", unique_id)
         history = PromptReviewHistory()
 
         def approve(candidate: str):
