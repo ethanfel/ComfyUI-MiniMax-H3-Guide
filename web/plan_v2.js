@@ -1084,6 +1084,9 @@ function refreshBadgeAndOutputs(node, catalog) {
             text += " · " + scope.text;
             color = COLORS.error;
         } else {
+            if (sourceUse === VIDEO_CONTINUE) {
+                text += " · edit source → continue edited endpoint";
+            }
             text += " · " + scope.text;
             color = COLORS.ready;
         }

@@ -2,6 +2,7 @@ import json
 import math
 import wave
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy
 import pytest
@@ -245,6 +246,30 @@ def test_integrated_sheet_accepts_connected_batches_without_asset_names(sheet_en
         768,
     )
     assert selected_image[0, 0, 0].tolist() == pytest.approx([32 / 255, 96 / 255, 208 / 255])
+
+
+def test_integrated_sheet_accepts_lazy_audio_mappings(sheet_environment):
+    input_dir, _library_dir = sheet_environment
+    lazy_audio = MappingProxyType(_load_wav_fallback(input_dir / "voice.wav"))
+
+    result = MiniMaxH3ReferenceSheet().manage(
+        CREATE_SHEET,
+        "(no saved reference sheets)",
+        "Lazy Audio",
+        "",
+        "",
+        False,
+        "",
+        "",
+        audio_1=lazy_audio,
+    )
+
+    sheet, selected_image, _report, selected_audio = result["result"]
+    manifest, _root = reference_sheet_manifest(sheet)
+    assert selected_image is None
+    assert [asset["key"] for asset in manifest["assets"]] == ["audio_1"]
+    assert isinstance(selected_audio, dict)
+    assert selected_audio["waveform"].shape[-1] == 24_000
 
 
 def test_sheet_update_requires_confirmation_and_checksum_tampering_is_detected(

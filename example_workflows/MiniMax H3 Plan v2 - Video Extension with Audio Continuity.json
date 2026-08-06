@@ -18,14 +18,14 @@
         {"name": "h3_length", "type": "INT", "links": null, "slot_index": 1},
         {"name": "project_preview", "type": "STRING", "links": null, "slot_index": 2}
       ],
-      "title": "1. Describe the new extension after the source endpoint",
+      "title": "1. Total target = edited source portion + continuation",
       "properties": {"Node name for S&R": "MiniMaxH3PlanV2ProjectSetup"},
       "widgets_values": [
-        "Continue immediately after the supplied source video's final frame while replacing the selected source performer with the supplied reference character in only the newly generated frames. Preserve the source endpoint's performance, environment, lighting, composition, motion direction, camera behavior, and causal state, then develop the action naturally forward without replaying the source timeline.",
-        6.0,
+        "First recreate the supplied source video's timeline while replacing only the selected performer with the supplied reference character from the first source-derived frame. At the source endpoint, continue that already-edited scene and replacement character naturally forward. The character picture supplies identity and appearance only; never animate it or use it as an opening frame, composition, or separate shot.",
+        15.0,
         "cinematic, live-action matching the source video",
-        "Continue the established ambience and physical sounds seamlessly while synchronizing every newly generated sound with the extension's visible action.",
-        "If audience-only music is already present, continue its established instrumentation and progression forward without restarting or looping it; otherwise N/A."
+        "Keep the source-derived portion's ambience and physical sounds synchronized, then develop them forward after the source endpoint without an audio restart or loop.",
+        "If audience-only music is present in the source soundtrack, maintain its progression through the source-derived portion and continue it forward after the endpoint without restarting or looping it; otherwise N/A."
       ]
     },
     {
@@ -46,7 +46,7 @@
         {"name": "audio", "type": "AUDIO", "links": [4], "slot_index": 2, "shape": 3},
         {"name": "video_info", "type": "VHS_VIDEOINFO", "links": null, "slot_index": 3, "shape": 3}
       ],
-      "title": "2. Load source video with soundtrack (2-15 seconds, 24 FPS)",
+      "title": "2. Load source video with soundtrack (2-10 seconds, 24 FPS)",
       "properties": {"Node name for S&R": "VHS_LoadVideo"},
       "widgets_values": {
         "video": "",
@@ -54,7 +54,7 @@
         "force_size": "Disabled",
         "custom_width": 512,
         "custom_height": 512,
-        "frame_load_cap": 360,
+        "frame_load_cap": 240,
         "skip_first_frames": 0,
         "select_every_nth": 1,
         "choose video to upload": "image",
@@ -84,7 +84,7 @@
       "widgets_values": [
         "Source video to continue",
         "source clip to extend",
-        "The supplied source video whose final audiovisual state starts the extension. Continue its final subjects, environment, lighting, composition, motion direction, camera behavior, and causal state.",
+        "The source timeline to recreate with one performer replaced, followed by a causal continuation from its edited endpoint. Preserve every non-replaced subject, action, environment, prop, light, camera movement, cut, composition, and spatial relationship.",
         24.0,
         "Choose visible content type",
         "",
@@ -120,7 +120,7 @@
         "",
         "",
         "the established ambience, action sounds, speech cadence, and soundtrack progression",
-        "Continue from the final audible state at the source endpoint. Generate new evolving audio synchronized with the extension; never restart, replay, repeat, or loop any earlier source audio.",
+        "Keep the audio synchronized with the recreated source-derived portion. At the endpoint, develop new audio forward from the final audible state; never restart, replay, repeat, or loop earlier source audio.",
         "all"
       ]
     },
@@ -139,12 +139,12 @@
         {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [7], "slot_index": 0},
         {"name": "shot_preview", "type": "STRING", "links": null, "slot_index": 1}
       ],
-      "title": "7. Describe only the newly generated continuation",
+      "title": "7. Describe the edited source portion and its continuation",
       "properties": {"Node name for S&R": "MiniMaxH3PlanV2Shot"},
       "widgets_values": [
         0.0,
-        "The extension begins immediately after <Video 1>'s final frame. The selected source performer continues as <Subject 1> in only the newly generated frames, beginning from the final pose, position, gaze, expression, physical interaction, and motion direction, then moving causally forward. Preserve all other visible endpoint state. <Audio 1> begins from the final audible state of the source and develops into newly generated synchronized sound without replaying or looping earlier material.",
-        "Continue the source camera's final movement, framing, lens behavior, and pace smoothly; do not reset the viewpoint.",
+        "From the first source-derived frame, <Subject 1> replaces only the selected performer while the target follows <Video 1>'s actions, timing, setting, and camera. At <Video 1>'s exact endpoint, keep <Subject 1> in the same pose, position, interaction, and motion trajectory and continue the edited scene causally forward. <Audio 1> stays synchronized across the source-derived portion and then develops forward without replaying or looping earlier material.",
+        "Follow the source camera and cuts during the source-derived portion; at the endpoint, continue its final movement, framing, lens behavior, and pace smoothly without resetting the viewpoint.",
         "Direct cut"
       ]
     },
@@ -434,7 +434,7 @@
       "mode": 0,
       "inputs": [{"name": "video", "type": "VIDEO", "link": 31}],
       "outputs": [{"name": "video", "type": "VIDEO", "links": null, "slot_index": 0}],
-      "title": "11. Save the generated extension clip",
+      "title": "11. Save the complete edited-and-continued target",
       "properties": {"Node name for S&R": "SaveVideo"},
       "widgets_values": ["video/MiniMax_H3_Character_Transfer_Video_Extension", "auto", "auto"]
     },
@@ -478,7 +478,7 @@
       "widgets_values": [
         "Define reusable visible content",
         "replacement character",
-        "The referenced identity and visible appearance to use for the selected performer in only the newly generated continuation frames.",
+        "Identity and visible appearance for the selected performer throughout both the source-derived edit and its continuation. This picture is never a target frame or shot.",
         "Identity or appearance",
         "replacement character",
         "Auto for this relationship",
@@ -506,12 +506,12 @@
       "properties": {"Node name for S&R": "MiniMaxH3PlanV2CharacterReplacement"},
       "widgets_values": [
         "replacement character",
-        "the performer visible at the source video's final frame",
+        "the main performer present throughout the source timeline and visible at its final frame",
         "Replace identity and body; keep source wardrobe",
         true,
         true,
         "all",
-        "Maintain seamless replacement identity continuity across the source endpoint, profile changes, motion blur, and occlusion in only the newly generated continuation frames."
+        "Maintain the replacement identity from the first source-derived frame through every source cut, profile change, motion blur, and occlusion, then across the endpoint throughout the continuation. Never display or animate the replacement Picture as a separate target segment."
       ]
     }
   ],
@@ -553,10 +553,10 @@
     [35, 26, 0, 5, 0, "MINIMAX_H3_PLAN_V2"]
   ],
   "groups": [
-    {"id": 1, "title": "1. Replacement identity + source audiovisual continuation setup", "bounding": [-50, -90, 3360, 1160], "color": "#3f789e", "flags": {}},
-    {"id": 2, "title": "2. Compile and review one-pass replacement continuation", "bounding": [3290, -340, 1900, 960], "color": "#3f789e", "flags": {}},
+    {"id": 1, "title": "1. Replacement identity + one-pass source edit then continuation", "bounding": [-50, -90, 3360, 1160], "color": "#3f789e", "flags": {}},
+    {"id": 2, "title": "2. Compile and review the fused edit-continuation timeline", "bounding": [3290, -340, 1900, 960], "color": "#3f789e", "flags": {}},
     {"id": 3, "title": "3. Official H3 Ref2VA generation", "bounding": [1600, 650, 2100, 660], "color": "#3f789e", "flags": {}},
-    {"id": 4, "title": "4. Decode and save generated extension only (stitch after source externally)", "bounding": [3650, 680, 1320, 390], "color": "#3f789e", "flags": {}}
+    {"id": 4, "title": "4. Decode and save the complete one-pass target", "bounding": [3650, 680, 1320, 390], "color": "#3f789e", "flags": {}}
   ],
   "config": {},
   "extra": {"ds": {"scale": 0.72, "offset": [260, 190]}},

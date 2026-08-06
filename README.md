@@ -202,17 +202,23 @@ Reference Plan to demonstrate the prompt-only pause while all media stays in
 
 `MiniMax H3 Plan v2 - Video Extension with Audio Continuity.json` is a complete
 one-pass character-transfer continuation example. Load a replacement-character
-image and one 2–15 second source video with audio. The image defines the
+image and one 2–10 second source video with audio. The image defines the
 replacement Subject; the video is registered as `Source video to continue`; and
 Character Replacement maps one precisely described source performer to that
-Subject only in newly generated frames. The loader's audio is registered as
+Subject from the first source-derived frame through the continuation. Attaching
+Character Replacement to a continuation source deliberately compiles a combined
+`reference generation + video editing + video continuation` target: it first
+recreates the source timeline with that performer replaced, then continues the
+edited endpoint. The Picture supplies identity and appearance only and is
+explicitly forbidden from becoming an opening frame, standalone shot, or
+animated segment. The loader's audio is registered as
 `Audio continuity` and paired to that exact Video Reference. The compiled prompt
-continues the source performance and scene across the endpoint under the new
-identity, while requiring newly generated sound to develop forward without
-restarting, replaying, repeating, or looping the source signal. This is one H3
-generation, not a second replacement pass. The original source clip remains
-unchanged, and the saved result is the generated extension only; concatenate it
-after the original externally when a single combined file is required.
+keeps audio synchronized with the source-derived portion, then requires it to
+develop forward without restarting, replaying, repeating, or looping after the
+endpoint. Project duration is the total edited-plus-continued output duration,
+so it must be longer than the loaded source video. This is one H3 generation,
+not a second replacement pass; the saved result already contains both the
+character-transferred source-derived portion and its continuation.
 
 For existing graphs, see [Migrating existing workflows to Plan v2](MIGRATION_TO_PLAN_V2.md).
 Old node IDs remain registered so saved workflows load, but the monolithic

@@ -133,9 +133,10 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
     assert "Audio continuity" in continuation_values
     assert "Replace identity and body; keep source wardrobe" in continuation_values
     assert any(
-        "only the newly generated continuation frames" in str(value)
+        "never display or animate" in str(value).casefold()
         for value in continuation_values
     )
+    assert any("source-derived" in str(value) for value in continuation_values)
     assert any(
         "never restart, replay, repeat, or loop" in str(value)
         for value in continuation_values
@@ -247,10 +248,14 @@ def test_video_extension_template_compiles_paired_non_looping_audio_routes():
         plan_v2.MiniMaxH3PlanV2PromptMerge().merge(plan)
     )
 
-    assert "[reference generation + video continuation + audio reference]" in prompt
-    assert "do not copy, restart, replay, repeat, or loop" in prompt
-    assert "in only the newly generated frames" in prompt
-    assert "evolve the performance forward without replaying the source timeline" in prompt
+    assert (
+        "[reference generation + video editing + video continuation + audio reference]"
+        in prompt
+    )
+    assert "without restarting, replaying, repeating, or looping" in prompt
+    assert "from the first source-derived frame onward" in prompt
+    assert "never use it as a target frame, opening composition" in prompt
+    assert "evolve the performance forward without restarting or replaying it" in prompt
     assert [entry["route"] for entry in context["compiled"]["routes"]] == [
         "ref_image_0",
         "ref_video_audio_0",

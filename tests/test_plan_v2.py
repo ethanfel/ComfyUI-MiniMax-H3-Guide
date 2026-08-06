@@ -1,3 +1,5 @@
+from types import MappingProxyType
+
 import pytest
 import torch
 
@@ -419,6 +421,29 @@ def test_audio_reference_chain_reports_the_cumulative_duration_limit():
     assert "15-second cumulative limit" in message
 
 
+def test_audio_reference_accepts_and_normalizes_lazy_audio_mappings():
+    plan = project()
+    lazy_audio = MappingProxyType(audio_value(seconds=3.25))
+
+    plan, normalized_audio, preview = MiniMaxH3PlanV2AudioReference().add_audio(
+        plan,
+        lazy_audio,
+        AUDIO_VOICE,
+        "lazy loader voice",
+        "woman",
+        "",
+        "",
+        "",
+        "Natural delivery.",
+        "all",
+    )
+
+    assert isinstance(normalized_audio, dict)
+    assert normalized_audio["waveform"] is lazy_audio["waveform"]
+    assert plan["assets"][0]["media"] is normalized_audio
+    assert "3.250s" in preview
+
+
 def test_mixed_paired_music_and_standalone_voice_follow_native_label_order():
     plan = project()
     plan, _picture_handle, _image, _preview = image_reference(plan)
@@ -822,7 +847,7 @@ def test_character_replacement_maps_source_performer_and_injects_locked_shot_ins
     assert "character replacement mapping(s)" in report
 
 
-def test_character_replacement_maps_only_new_video_continuation_frames():
+def test_character_replacement_edits_source_then_continues_same_character():
     plan = project(
         "Continue after the source endpoint with the referenced replacement character."
     )
@@ -854,23 +879,41 @@ def test_character_replacement_maps_only_new_video_continuation_frames():
 
     prompt, _rewrite, _report, compiled, _length = compile_h3_plan(plan)
 
-    assert "[reference generation + video continuation]" in prompt
+    assert "[reference generation + video editing + video continuation]" in prompt
     assert (
-        "the source performer described as the woman in the red jacket at "
-        "<Video 1>'s endpoint is continued as <Subject 1> in the newly generated frames"
+        "<Subject 1> replaces only the source performer described as the woman in the "
+        "red jacket throughout the target portion derived from <Video 1> and remains "
+        "the same character when the target continues beyond <Video 1>'s endpoint"
     ) in prompt
     assert (
-        "Using <Video 1> as the continuation source, carry the source performer "
-        "described as the woman in the red jacket across the endpoint as <Subject 1> "
-        "in only the newly generated frames."
+        "Using <Video 1> as both the source timeline and continuation anchor, replace "
+        "only the source performer described as the woman in the red jacket with "
+        "<Subject 1> from the first source-derived frame onward."
     ) in prompt
-    assert "evolve the performance forward without replaying the source timeline" in prompt
-    assert "from <Video 1>'s endpoint without a reset" in prompt
     assert (
-        "the selected performer is continued as the declared replacement Subject only "
-        "in newly generated frames"
+        "<Picture 1> provides identity and appearance only; never use it as a target "
+        "frame, opening composition, standalone shot, or animated segment."
+    ) in prompt
+    assert "evolve the performance forward without restarting or replaying it" in prompt
+    assert "then continue them beyond its endpoint without a reset" in prompt
+    assert (
+        "the source timeline is recreated with only the selected performer replaced "
+        "by the declared Subject, then that edited state continues beyond the endpoint"
     ) in prompt
     assert compiled["character_replacements"][0]["source_video_asset_id"] == "video-1"
+
+
+def test_character_replacement_continuation_requires_total_duration_beyond_source():
+    plan = project(duration=6.0)
+    plan, _image_handle, _image, _preview = image_reference(plan)
+    plan, video_handle, _video, _preview = video_reference(
+        plan,
+        use=VIDEO_CONTINUE,
+        frames=torch.zeros(168, 32, 48, 3),
+    )
+
+    with pytest.raises(ValueError, match="Project duration.*longer than the source video"):
+        character_replacement(plan, video_handle)
 
 
 def test_character_replacement_scope_is_the_subject_citation_only_for_selected_shots():

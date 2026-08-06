@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import uuid
 import wave
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -228,8 +229,8 @@ def _load_audio(path: Path) -> dict:
     return {"waveform": waveform.unsqueeze(0), "sample_rate": sample_rate}
 
 
-def _audio_duration(audio: dict) -> float:
-    if not isinstance(audio, dict) or "waveform" not in audio or "sample_rate" not in audio:
+def _audio_duration(audio: Mapping) -> float:
+    if not isinstance(audio, Mapping) or "waveform" not in audio or "sample_rate" not in audio:
         raise ValueError("Audio must use ComfyUI's waveform/sample_rate AUDIO format.")
     waveform = audio["waveform"]
     sample_rate = audio["sample_rate"]
@@ -241,7 +242,7 @@ def _audio_duration(audio: dict) -> float:
 
 
 def _trim_audio_for_h3(
-    audio: dict,
+    audio: Mapping,
     start_seconds: float,
     duration_seconds: float,
 ) -> tuple[dict, float, float, float]:
@@ -264,8 +265,9 @@ def _trim_audio_for_h3(
         raise ValueError("Audio trim duration must be from 2 through 15 seconds.")
 
     full_duration = _audio_duration(audio)
-    waveform = audio["waveform"]
-    sample_rate = int(audio["sample_rate"])
+    normalized_audio = dict(audio)
+    waveform = normalized_audio["waveform"]
+    sample_rate = int(normalized_audio["sample_rate"])
     sample_count = int(waveform.shape[-1])
     start_sample = round(requested_start * sample_rate)
     if start_sample >= sample_count:
@@ -279,9 +281,9 @@ def _trim_audio_for_h3(
 
     actual_start = start_sample / sample_rate
     if start_sample == 0 and end_sample == sample_count:
-        trimmed = audio
+        trimmed = normalized_audio
     else:
-        trimmed = dict(audio)
+        trimmed = normalized_audio
         trimmed["waveform"] = waveform[..., start_sample:end_sample].clone()
     return trimmed, actual_start, actual_duration, full_duration
 
@@ -960,7 +962,8 @@ def _connected_media_entries(image_inputs: list[tuple[str, object]], audio_input
         if audio is None:
             continue
         _audio_duration(audio)
-        waveform = audio["waveform"]
+        normalized_audio = dict(audio)
+        waveform = normalized_audio["waveform"]
         if int(waveform.shape[0]) != 1:
             raise ValueError(f"{input_name} must contain exactly one AUDIO batch item.")
         audio_number += 1
@@ -968,7 +971,7 @@ def _connected_media_entries(image_inputs: list[tuple[str, object]], audio_input
             {
                 "key": f"audio_{audio_number}",
                 "kind": "audio",
-                "value": audio,
+                "value": normalized_audio,
                 "source_name": f"{input_name} connection",
             }
         )
@@ -986,7 +989,7 @@ def _write_connected_image(path: Path, image) -> None:
     Image.fromarray(pixels).save(path, format="PNG")
 
 
-def _write_connected_audio(path: Path, audio: dict) -> None:
+def _write_connected_audio(path: Path, audio: Mapping) -> None:
     import numpy
 
     waveform = audio["waveform"].detach().to(device="cpu").float()[0].clamp(-1.0, 1.0).numpy()
