@@ -23,6 +23,7 @@ from plan_v2 import (
     RETENTION_AUTO,
     RETENTION_TRANSFER,
     UNASSIGNED_CONTENT_TYPE,
+    VIDEO_CONTINUE,
     VIDEO_DEFINE_VISIBLE,
     VIDEO_EDIT,
     VIDEO_MOTION,
@@ -471,6 +472,49 @@ def test_mixed_paired_music_and_standalone_voice_follow_native_label_order():
     assert "ref_video_audio_0" in report
 
 
+def test_paired_continuation_audio_explicitly_forbids_source_looping():
+    plan = project(
+        prompt="Continue naturally after the final frame of the supplied source video.",
+        soundscape="Continue the established location ambience and synchronized action sounds.",
+    )
+    plan, video_handle, _h3_video, _preview = video_reference(
+        plan,
+        use=VIDEO_CONTINUE,
+        name="source clip to extend",
+        description="The supplied source video whose final audiovisual state starts the extension.",
+    )
+    plan, _audio, _preview = audio_reference(
+        plan,
+        use=AUDIO_CONTINUITY,
+        name="source synchronized soundtrack",
+        layer="the established ambience, action sounds, and soundtrack progression",
+        instructions="Preserve a seamless tonal and spatial transition at the boundary.",
+        paired_video=video_handle,
+    )
+    plan = shot(
+        plan,
+        0.0,
+        "The action resumes immediately after <Video 1>'s final frame and moves forward.",
+    )
+
+    prompt, _rewrite, report, compiled, _length = compile_h3_plan(plan)
+
+    assert "[video continuation + audio reference]" in prompt
+    assert (
+        "<Audio 1> is the synchronized soundtrack of <Video 1> and the "
+        "audio-continuity reference"
+    ) in prompt
+    assert "Generate new audio beginning after the source endpoint" in prompt
+    assert "do not copy, restart, replay, repeat, or loop the source signal" in prompt
+    assert "guides newly generated audio after <Video 1>'s endpoint" in prompt
+    assert "newly generated, forward-developing audio" in prompt
+    assert [entry["route"] for entry in compiled["compiled"]["routes"]] == [
+        "ref_video_audio_0",
+        "ref_video_0",
+    ]
+    assert "<Audio 1> -> ref_video_audio_0" in report
+
+
 @pytest.mark.parametrize(
     ("audio_use", "expected_definition", "expected_retention"),
     [
@@ -778,6 +822,57 @@ def test_character_replacement_maps_source_performer_and_injects_locked_shot_ins
     assert "character replacement mapping(s)" in report
 
 
+def test_character_replacement_maps_only_new_video_continuation_frames():
+    plan = project(
+        "Continue after the source endpoint with the referenced replacement character."
+    )
+    plan, _image_handle, _image, _preview = image_reference(
+        plan,
+        name="replacement character",
+        subject="replacement character",
+    )
+    plan, video_handle, _video, _preview = video_reference(
+        plan,
+        use=VIDEO_CONTINUE,
+        name="source clip to continue",
+        description=(
+            "A woman in a red jacket runs toward the truck as the camera pans right."
+        ),
+    )
+    plan, _preview = character_replacement(
+        plan,
+        video_handle,
+        subject="replacement character",
+        source_character="the woman in the red jacket",
+        scope="all",
+    )
+    plan = shot(
+        plan,
+        0.0,
+        "The action continues after <Video 1>'s endpoint as the performer reaches the truck.",
+    )
+
+    prompt, _rewrite, _report, compiled, _length = compile_h3_plan(plan)
+
+    assert "[reference generation + video continuation]" in prompt
+    assert (
+        "the source performer described as the woman in the red jacket at "
+        "<Video 1>'s endpoint is continued as <Subject 1> in the newly generated frames"
+    ) in prompt
+    assert (
+        "Using <Video 1> as the continuation source, carry the source performer "
+        "described as the woman in the red jacket across the endpoint as <Subject 1> "
+        "in only the newly generated frames."
+    ) in prompt
+    assert "evolve the performance forward without replaying the source timeline" in prompt
+    assert "from <Video 1>'s endpoint without a reset" in prompt
+    assert (
+        "the selected performer is continued as the declared replacement Subject only "
+        "in newly generated frames"
+    ) in prompt
+    assert compiled["character_replacements"][0]["source_video_asset_id"] == "video-1"
+
+
 def test_character_replacement_scope_is_the_subject_citation_only_for_selected_shots():
     plan = project()
     plan, _image_handle, _image, _preview = image_reference(plan)
@@ -794,13 +889,13 @@ def test_character_replacement_scope_is_the_subject_citation_only_for_selected_s
     assert "Using <Video 1> as the source timeline" in shot_two
 
 
-def test_character_replacement_rejects_non_edit_video_and_non_identity_subject():
+def test_character_replacement_rejects_non_edit_or_continuation_video_and_non_identity_subject():
     plan = project()
     plan, _image_handle, _image, _preview = image_reference(plan)
     plan, video_handle, _video, _preview = video_reference(
         plan, use=VIDEO_STRUCTURE
     )
-    with pytest.raises(ValueError, match="Source video to edit"):
+    with pytest.raises(ValueError, match="Source video to edit or Source video to continue"):
         character_replacement(plan, video_handle)
 
     plan = project()

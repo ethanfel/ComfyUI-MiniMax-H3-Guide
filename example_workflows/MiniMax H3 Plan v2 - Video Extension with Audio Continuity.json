@@ -1,0 +1,564 @@
+{
+  "id": "62e5322b-a525-4961-a1c7-7cafcd49a4ea",
+  "revision": 0,
+  "last_node_id": 26,
+  "last_link_id": 35,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "MiniMaxH3PlanV2ProjectSetup",
+      "pos": [-20, -40],
+      "size": [500, 390],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [1], "slot_index": 0},
+        {"name": "h3_length", "type": "INT", "links": null, "slot_index": 1},
+        {"name": "project_preview", "type": "STRING", "links": null, "slot_index": 2}
+      ],
+      "title": "1. Describe the new extension after the source endpoint",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2ProjectSetup"},
+      "widgets_values": [
+        "Continue immediately after the supplied source video's final frame while replacing the selected source performer with the supplied reference character in only the newly generated frames. Preserve the source endpoint's performance, environment, lighting, composition, motion direction, camera behavior, and causal state, then develop the action naturally forward without replaying the source timeline.",
+        6.0,
+        "cinematic, live-action matching the source video",
+        "Continue the established ambience and physical sounds seamlessly while synchronizing every newly generated sound with the extension's visible action.",
+        "If audience-only music is already present, continue its established instrumentation and progression forward without restarting or looping it; otherwise N/A."
+      ]
+    },
+    {
+      "id": 2,
+      "type": "VHS_LoadVideo",
+      "pos": [-20, 390],
+      "size": [500, 620],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {"name": "meta_batch", "type": "VHS_BatchManager", "link": null, "shape": 7},
+        {"name": "vae", "type": "VAE", "link": null, "shape": 7}
+      ],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [2], "slot_index": 0, "shape": 3},
+        {"name": "frame_count", "type": "INT", "links": null, "slot_index": 1, "shape": 3},
+        {"name": "audio", "type": "AUDIO", "links": [4], "slot_index": 2, "shape": 3},
+        {"name": "video_info", "type": "VHS_VIDEOINFO", "links": null, "slot_index": 3, "shape": 3}
+      ],
+      "title": "2. Load source video with soundtrack (2-15 seconds, 24 FPS)",
+      "properties": {"Node name for S&R": "VHS_LoadVideo"},
+      "widgets_values": {
+        "video": "",
+        "force_rate": 24,
+        "force_size": "Disabled",
+        "custom_width": 512,
+        "custom_height": 512,
+        "frame_load_cap": 360,
+        "skip_first_frames": 0,
+        "select_every_nth": 1,
+        "choose video to upload": "image",
+        "videopreview": {"hidden": false, "paused": false, "params": {}}
+      }
+    },
+    {
+      "id": 3,
+      "type": "MiniMaxH3PlanV2VideoReference",
+      "pos": [1070, -40],
+      "size": [510, 620],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "link": 33},
+        {"name": "video_frames", "type": "IMAGE", "link": 2}
+      ],
+      "outputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [3], "slot_index": 0},
+        {"name": "reference_handle", "type": "MINIMAX_H3_REFERENCE_HANDLE_V2", "links": [5, 34], "slot_index": 1},
+        {"name": "h3_video", "type": "IMAGE", "links": null, "slot_index": 2},
+        {"name": "reference_preview", "type": "STRING", "links": null, "slot_index": 3}
+      ],
+      "title": "4. Declare the video as a continuation source",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2VideoReference"},
+      "widgets_values": [
+        "Source video to continue",
+        "source clip to extend",
+        "The supplied source video whose final audiovisual state starts the extension. Continue its final subjects, environment, lighting, composition, motion direction, camera behavior, and causal state.",
+        24.0,
+        "Choose visible content type",
+        "",
+        "",
+        "Auto for this relationship",
+        "all"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "MiniMaxH3PlanV2AudioReference",
+      "pos": [1620, -40],
+      "size": [530, 650],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "link": 3},
+        {"name": "audio", "type": "AUDIO", "link": 4},
+        {"name": "paired_video", "type": "MINIMAX_H3_REFERENCE_HANDLE_V2", "link": 5}
+      ],
+      "outputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [6], "slot_index": 0},
+        {"name": "h3_audio", "type": "AUDIO", "links": null, "slot_index": 1},
+        {"name": "reference_preview", "type": "STRING", "links": null, "slot_index": 2}
+      ],
+      "title": "5. Pair soundtrack as continuity—not copied audio",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2AudioReference"},
+      "widgets_values": [
+        "Audio continuity",
+        "source synchronized soundtrack",
+        "",
+        "",
+        "",
+        "the established ambience, action sounds, speech cadence, and soundtrack progression",
+        "Continue from the final audible state at the source endpoint. Generate new evolving audio synchronized with the extension; never restart, replay, repeat, or loop any earlier source audio.",
+        "all"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "MiniMaxH3PlanV2Shot",
+      "pos": [2770, -40],
+      "size": [540, 520],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "link": 35}
+      ],
+      "outputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [7], "slot_index": 0},
+        {"name": "shot_preview", "type": "STRING", "links": null, "slot_index": 1}
+      ],
+      "title": "7. Describe only the newly generated continuation",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2Shot"},
+      "widgets_values": [
+        0.0,
+        "The extension begins immediately after <Video 1>'s final frame. The selected source performer continues as <Subject 1> in only the newly generated frames, beginning from the final pose, position, gaze, expression, physical interaction, and motion direction, then moving causally forward. Preserve all other visible endpoint state. <Audio 1> begins from the final audible state of the source and develops into newly generated synchronized sound without replaying or looping earlier material.",
+        "Continue the source camera's final movement, framing, lens behavior, and pace smoothly; do not reset the viewpoint.",
+        "Direct cut"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "MiniMaxH3PlanV2PromptMerge",
+      "pos": [3330, -40],
+      "size": [510, 360],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "link": 7}
+      ],
+      "outputs": [
+        {"name": "h3_prompt", "type": "STRING", "links": [8, 9], "slot_index": 0},
+        {"name": "rewrite_request", "type": "STRING", "links": null, "slot_index": 1},
+        {"name": "plan_context", "type": "MINIMAX_H3_PLAN_V2", "links": [10], "slot_index": 2},
+        {"name": "problems_report", "type": "STRING", "links": [11], "slot_index": 3},
+        {"name": "h3_length", "type": "INT", "links": null, "slot_index": 4}
+      ],
+      "title": "8. Compile replacement-continuation prompt and native routes",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2PromptMerge"},
+      "widgets_values": []
+    },
+    {
+      "id": 7,
+      "type": "PreviewAny",
+      "pos": [3890, -300],
+      "size": [560, 350],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [{"name": "source", "type": "*", "link": 8}],
+      "outputs": [{"name": "STRING", "type": "STRING", "links": null, "slot_index": 0}],
+      "title": "Compiled extension prompt",
+      "properties": {"Node name for S&R": "PreviewAny"},
+      "widgets_values": []
+    },
+    {
+      "id": 8,
+      "type": "PreviewAny",
+      "pos": [3890, 90],
+      "size": [560, 350],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [{"name": "source", "type": "*", "link": 11}],
+      "outputs": [{"name": "STRING", "type": "STRING", "links": null, "slot_index": 0}],
+      "title": "Validation and paired native routes",
+      "properties": {"Node name for S&R": "PreviewAny"},
+      "widgets_values": []
+    },
+    {
+      "id": 9,
+      "type": "MiniMaxH3PlanV2PromptReview",
+      "pos": [4500, -80],
+      "size": [640, 650],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {"name": "h3_prompt", "type": "STRING", "link": 9},
+        {"name": "plan_context", "type": "MINIMAX_H3_PLAN_V2", "link": 10}
+      ],
+      "outputs": [
+        {"name": "approved_prompt", "type": "STRING", "links": [12], "slot_index": 0},
+        {"name": "approved_plan_context", "type": "MINIMAX_H3_PLAN_V2", "links": [13], "slot_index": 1},
+        {"name": "review_report", "type": "STRING", "links": null, "slot_index": 2}
+      ],
+      "title": "9. Verify identity mapping and forward audio continuity",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2PromptReview"},
+      "widgets_values": ["Pause for approval", 20, "review-character-transfer-video-extension"]
+    },
+    {
+      "id": 10,
+      "type": "CLIPLoader",
+      "pos": [1640, 700],
+      "size": [500, 130],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "CLIP", "type": "CLIP", "links": [14], "slot_index": 0}],
+      "properties": {"Node name for S&R": "CLIPLoader"},
+      "widgets_values": ["qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "minimax", "default"]
+    },
+    {
+      "id": 11,
+      "type": "VAELoader",
+      "pos": [1640, 870],
+      "size": [500, 100],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "VAE", "type": "VAE", "links": [15, 26], "slot_index": 0}],
+      "title": "MiniMax H3 video VAE",
+      "properties": {"Node name for S&R": "VAELoader"},
+      "widgets_values": ["minimax_h3_video_vae_fp16.safetensors"]
+    },
+    {
+      "id": 12,
+      "type": "VAELoader",
+      "pos": [1640, 1010],
+      "size": [500, 100],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "VAE", "type": "VAE", "links": [16, 28], "slot_index": 0}],
+      "title": "MiniMax H3 audio VAE",
+      "properties": {"Node name for S&R": "VAELoader"},
+      "widgets_values": ["minimax_h3_audio_vae_fp32.safetensors"]
+    },
+    {
+      "id": 13,
+      "type": "UNETLoader",
+      "pos": [1640, 1150],
+      "size": [500, 110],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "MODEL", "type": "MODEL", "links": [17, 18], "slot_index": 0}],
+      "properties": {"Node name for S&R": "UNETLoader"},
+      "widgets_values": ["minimax_h3_ref2va_pruned_int8_convrot.safetensors", "default"]
+    },
+    {
+      "id": 14,
+      "type": "MiniMaxH3PlanV2ApplyReferencePlan",
+      "pos": [2230, 700],
+      "size": [530, 420],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": 14},
+        {"name": "vae", "type": "VAE", "link": 15},
+        {"name": "h3_prompt", "type": "STRING", "link": 12},
+        {"name": "plan_context", "type": "MINIMAX_H3_PLAN_V2", "link": 13},
+        {"name": "audio_vae", "type": "VAE", "link": 16}
+      ],
+      "outputs": [
+        {"name": "positive", "type": "CONDITIONING", "links": [19], "slot_index": 0},
+        {"name": "latent", "type": "LATENT", "links": [24], "slot_index": 1},
+        {"name": "applied_prompt", "type": "STRING", "links": null, "slot_index": 2},
+        {"name": "h3_length", "type": "INT", "links": null, "slot_index": 3},
+        {"name": "adapter_report", "type": "STRING", "links": null, "slot_index": 4}
+      ],
+      "title": "10. Native H3 one-pass character transfer and AV continuation",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2ApplyReferencePlan"},
+      "widgets_values": [1344, 768, "match"]
+    },
+    {
+      "id": 15,
+      "type": "RandomNoise",
+      "pos": [2820, 700],
+      "size": [320, 100],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "NOISE", "type": "NOISE", "links": [20], "slot_index": 0}],
+      "properties": {"Node name for S&R": "RandomNoise"},
+      "widgets_values": [157368968253448, "randomize"]
+    },
+    {
+      "id": 16,
+      "type": "BasicScheduler",
+      "pos": [2820, 840],
+      "size": [320, 140],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [{"name": "model", "type": "MODEL", "link": 17}],
+      "outputs": [{"name": "SIGMAS", "type": "SIGMAS", "links": [23], "slot_index": 0}],
+      "properties": {"Node name for S&R": "BasicScheduler"},
+      "widgets_values": ["simple", 20, 1]
+    },
+    {
+      "id": 17,
+      "type": "KSamplerSelect",
+      "pos": [2820, 1020],
+      "size": [320, 80],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "SAMPLER", "type": "SAMPLER", "links": [22], "slot_index": 0}],
+      "properties": {"Node name for S&R": "KSamplerSelect"},
+      "widgets_values": ["res_multistep"]
+    },
+    {
+      "id": 18,
+      "type": "BasicGuider",
+      "pos": [2820, 1140],
+      "size": [320, 120],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {"name": "model", "type": "MODEL", "link": 18},
+        {"name": "conditioning", "type": "CONDITIONING", "link": 19}
+      ],
+      "outputs": [{"name": "GUIDER", "type": "GUIDER", "links": [21], "slot_index": 0}],
+      "properties": {"Node name for S&R": "BasicGuider"},
+      "widgets_values": []
+    },
+    {
+      "id": 19,
+      "type": "SamplerCustomAdvanced",
+      "pos": [3210, 760],
+      "size": [420, 330],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {"name": "noise", "type": "NOISE", "link": 20},
+        {"name": "guider", "type": "GUIDER", "link": 21},
+        {"name": "sampler", "type": "SAMPLER", "link": 22},
+        {"name": "sigmas", "type": "SIGMAS", "link": 23},
+        {"name": "latent_image", "type": "LATENT", "link": 24}
+      ],
+      "outputs": [
+        {"name": "output", "type": "LATENT", "links": [25, 27], "slot_index": 0},
+        {"name": "denoised_output", "type": "LATENT", "links": [], "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "SamplerCustomAdvanced"},
+      "widgets_values": []
+    },
+    {
+      "id": 20,
+      "type": "VAEDecode",
+      "pos": [3690, 730],
+      "size": [330, 120],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 25},
+        {"name": "vae", "type": "VAE", "link": 26}
+      ],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [29], "slot_index": 0}],
+      "properties": {"Node name for S&R": "VAEDecode"},
+      "widgets_values": []
+    },
+    {
+      "id": 21,
+      "type": "VAEDecodeAudio",
+      "pos": [3690, 900],
+      "size": [330, 120],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 27},
+        {"name": "vae", "type": "VAE", "link": 28}
+      ],
+      "outputs": [{"name": "AUDIO", "type": "AUDIO", "links": [30], "slot_index": 0}],
+      "properties": {"Node name for S&R": "VAEDecodeAudio"},
+      "widgets_values": []
+    },
+    {
+      "id": 22,
+      "type": "CreateVideo",
+      "pos": [4080, 790],
+      "size": [350, 180],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 29},
+        {"name": "audio", "type": "AUDIO", "shape": 7, "link": 30}
+      ],
+      "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": [31], "slot_index": 0}],
+      "properties": {"Node name for S&R": "CreateVideo"},
+      "widgets_values": [24, 8]
+    },
+    {
+      "id": 23,
+      "type": "SaveVideo",
+      "pos": [4490, 790],
+      "size": [430, 220],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [{"name": "video", "type": "VIDEO", "link": 31}],
+      "outputs": [{"name": "video", "type": "VIDEO", "links": null, "slot_index": 0}],
+      "title": "11. Save the generated extension clip",
+      "properties": {"Node name for S&R": "SaveVideo"},
+      "widgets_values": ["video/MiniMax_H3_Character_Transfer_Video_Extension", "auto", "auto"]
+    },
+    {
+      "id": 24,
+      "type": "LoadImage",
+      "pos": [530, 730],
+      "size": [490, 330],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [32], "slot_index": 0},
+        {"name": "MASK", "type": "MASK", "links": null, "slot_index": 1}
+      ],
+      "title": "2. Load the replacement character image",
+      "properties": {"Node name for S&R": "LoadImage"},
+      "widgets_values": ["", "image"]
+    },
+    {
+      "id": 25,
+      "type": "MiniMaxH3PlanV2ImageReference",
+      "pos": [530, -40],
+      "size": [490, 720],
+      "flags": {},
+      "order": 24,
+      "mode": 0,
+      "inputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "link": 1},
+        {"name": "image", "type": "IMAGE", "link": 32}
+      ],
+      "outputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [33], "slot_index": 0},
+        {"name": "reference_handle", "type": "MINIMAX_H3_REFERENCE_HANDLE_V2", "links": null, "slot_index": 1},
+        {"name": "h3_image", "type": "IMAGE", "links": null, "slot_index": 2},
+        {"name": "reference_preview", "type": "STRING", "links": null, "slot_index": 3}
+      ],
+      "title": "3. Define the replacement character identity",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2ImageReference"},
+      "widgets_values": [
+        "Define reusable visible content",
+        "replacement character",
+        "The referenced identity and visible appearance to use for the selected performer in only the newly generated continuation frames.",
+        "Identity or appearance",
+        "replacement character",
+        "Auto for this relationship",
+        "all",
+        ""
+      ]
+    },
+    {
+      "id": 26,
+      "type": "MiniMaxH3PlanV2CharacterReplacement",
+      "pos": [2190, -40],
+      "size": [530, 740],
+      "flags": {},
+      "order": 25,
+      "mode": 0,
+      "inputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "link": 6},
+        {"name": "source_video", "type": "MINIMAX_H3_REFERENCE_HANDLE_V2", "link": 34}
+      ],
+      "outputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [35], "slot_index": 0},
+        {"name": "replacement_preview", "type": "STRING", "links": null, "slot_index": 1}
+      ],
+      "title": "6. EDIT THIS: identify the source performer precisely",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2CharacterReplacement"},
+      "widgets_values": [
+        "replacement character",
+        "the performer visible at the source video's final frame",
+        "Replace identity and body; keep source wardrobe",
+        true,
+        true,
+        "all",
+        "Maintain seamless replacement identity continuity across the source endpoint, profile changes, motion blur, and occlusion in only the newly generated continuation frames."
+      ]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 25, 0, "MINIMAX_H3_PLAN_V2"],
+    [2, 2, 0, 3, 1, "IMAGE"],
+    [3, 3, 0, 4, 0, "MINIMAX_H3_PLAN_V2"],
+    [4, 2, 2, 4, 1, "AUDIO"],
+    [5, 3, 1, 4, 2, "MINIMAX_H3_REFERENCE_HANDLE_V2"],
+    [6, 4, 0, 26, 0, "MINIMAX_H3_PLAN_V2"],
+    [7, 5, 0, 6, 0, "MINIMAX_H3_PLAN_V2"],
+    [8, 6, 0, 7, 0, "STRING"],
+    [9, 6, 0, 9, 0, "STRING"],
+    [10, 6, 2, 9, 1, "MINIMAX_H3_PLAN_V2"],
+    [11, 6, 3, 8, 0, "STRING"],
+    [12, 9, 0, 14, 2, "STRING"],
+    [13, 9, 1, 14, 3, "MINIMAX_H3_PLAN_V2"],
+    [14, 10, 0, 14, 0, "CLIP"],
+    [15, 11, 0, 14, 1, "VAE"],
+    [16, 12, 0, 14, 4, "VAE"],
+    [17, 13, 0, 16, 0, "MODEL"],
+    [18, 13, 0, 18, 0, "MODEL"],
+    [19, 14, 0, 18, 1, "CONDITIONING"],
+    [20, 15, 0, 19, 0, "NOISE"],
+    [21, 18, 0, 19, 1, "GUIDER"],
+    [22, 17, 0, 19, 2, "SAMPLER"],
+    [23, 16, 0, 19, 3, "SIGMAS"],
+    [24, 14, 1, 19, 4, "LATENT"],
+    [25, 19, 0, 20, 0, "LATENT"],
+    [26, 11, 0, 20, 1, "VAE"],
+    [27, 19, 0, 21, 0, "LATENT"],
+    [28, 12, 0, 21, 1, "VAE"],
+    [29, 20, 0, 22, 0, "IMAGE"],
+    [30, 21, 0, 22, 1, "AUDIO"],
+    [31, 22, 0, 23, 0, "VIDEO"],
+    [32, 24, 0, 25, 1, "IMAGE"],
+    [33, 25, 0, 3, 0, "MINIMAX_H3_PLAN_V2"],
+    [34, 3, 1, 26, 1, "MINIMAX_H3_REFERENCE_HANDLE_V2"],
+    [35, 26, 0, 5, 0, "MINIMAX_H3_PLAN_V2"]
+  ],
+  "groups": [
+    {"id": 1, "title": "1. Replacement identity + source audiovisual continuation setup", "bounding": [-50, -90, 3360, 1160], "color": "#3f789e", "flags": {}},
+    {"id": 2, "title": "2. Compile and review one-pass replacement continuation", "bounding": [3290, -340, 1900, 960], "color": "#3f789e", "flags": {}},
+    {"id": 3, "title": "3. Official H3 Ref2VA generation", "bounding": [1600, 650, 2100, 660], "color": "#3f789e", "flags": {}},
+    {"id": 4, "title": "4. Decode and save generated extension only (stitch after source externally)", "bounding": [3650, 680, 1320, 390], "color": "#3f789e", "flags": {}}
+  ],
+  "config": {},
+  "extra": {"ds": {"scale": 0.72, "offset": [260, 190]}},
+  "version": 0.4
+}

@@ -200,6 +200,20 @@ reference-socket wiring. It places Prompt Review Gate directly before Apply
 Reference Plan to demonstrate the prompt-only pause while all media stays in
 `plan_context`.
 
+`MiniMax H3 Plan v2 - Video Extension with Audio Continuity.json` is a complete
+one-pass character-transfer continuation example. Load a replacement-character
+image and one 2–15 second source video with audio. The image defines the
+replacement Subject; the video is registered as `Source video to continue`; and
+Character Replacement maps one precisely described source performer to that
+Subject only in newly generated frames. The loader's audio is registered as
+`Audio continuity` and paired to that exact Video Reference. The compiled prompt
+continues the source performance and scene across the endpoint under the new
+identity, while requiring newly generated sound to develop forward without
+restarting, replaying, repeating, or looping the source signal. This is one H3
+generation, not a second replacement pass. The original source clip remains
+unchanged, and the saved result is the generated extension only; concatenate it
+after the original externally when a single combined file is required.
+
 For existing graphs, see [Migrating existing workflows to Plan v2](MIGRATION_TO_PLAN_V2.md).
 Old node IDs remain registered so saved workflows load, but the monolithic
 Prompt Guide, Target Timing/Shot chain, visual/audio context builders, and

@@ -32,6 +32,7 @@ def test_phase3_workflow_templates_have_consistent_graph_links():
         "MiniMax H3 Plan v2 - First and Last Frames.json",
         "MiniMax H3 Plan v2 - Identity and Voice.json",
         "MiniMax H3 Plan v2 - Prompt Builder App.json",
+        "MiniMax H3 Plan v2 - Video Extension with Audio Continuity.json",
     }
     for workflow in workflows.values():
         assert workflow["version"] == 0.4
@@ -64,6 +65,9 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
     identity = workflows["MiniMax H3 Plan v2 - Identity and Voice.json"]
     endpoints = workflows["MiniMax H3 Plan v2 - First and Last Frames.json"]
     replacement = workflows["MiniMax H3 Plan v2 - Character Replacement.json"]
+    continuation = workflows[
+        "MiniMax H3 Plan v2 - Video Extension with Audio Continuity.json"
+    ]
 
     identity_types = [node["type"] for node in identity["nodes"]]
     assert "MiniMaxH3PlanV2ImageReference" in identity_types
@@ -108,7 +112,36 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
     assert "Source video to edit" in replacement_values
     assert "Replace identity and body; keep source wardrobe" in replacement_values
 
-    for workflow in (identity, endpoints, replacement):
+    continuation_types = [node["type"] for node in continuation["nodes"]]
+    continuation_values = [
+        value
+        for node in continuation["nodes"]
+        for value in (
+            node.get("widgets_values", {}).values()
+            if isinstance(node.get("widgets_values"), dict)
+            else node.get("widgets_values", [])
+        )
+    ]
+    assert "VHS_LoadVideo" in continuation_types
+    assert "LoadImage" in continuation_types
+    assert "MiniMaxH3PlanV2ImageReference" in continuation_types
+    assert "MiniMaxH3PlanV2VideoReference" in continuation_types
+    assert "MiniMaxH3PlanV2AudioReference" in continuation_types
+    assert "MiniMaxH3PlanV2CharacterReplacement" in continuation_types
+    assert "MiniMaxH3PlanV2PromptReview" in continuation_types
+    assert "Source video to continue" in continuation_values
+    assert "Audio continuity" in continuation_values
+    assert "Replace identity and body; keep source wardrobe" in continuation_values
+    assert any(
+        "only the newly generated continuation frames" in str(value)
+        for value in continuation_values
+    )
+    assert any(
+        "never restart, replay, repeat, or loop" in str(value)
+        for value in continuation_values
+    )
+
+    for workflow in (identity, endpoints, replacement, continuation):
         assert any(
             node["type"] == "MiniMaxH3PlanV2PromptMerge" for node in workflow["nodes"]
         )
@@ -169,6 +202,64 @@ def test_character_replacement_template_compiles_with_placeholder_media():
     assert "Plan ready: 0 errors" in report
 
 
+def test_video_extension_template_compiles_paired_non_looping_audio_routes():
+    workflow = _workflows()[
+        "MiniMax H3 Plan v2 - Video Extension with Audio Continuity.json"
+    ]
+    workflow_nodes = {node["id"]: node for node in workflow["nodes"]}
+
+    plan = plan_v2.MiniMaxH3PlanV2ProjectSetup().start(
+        *workflow_nodes[1]["widgets_values"]
+    )[0]
+    plan, _image_handle, _image, _preview = (
+        plan_v2.MiniMaxH3PlanV2ImageReference().add_image(
+            plan,
+            torch.zeros(1, 48, 64, 3),
+            *workflow_nodes[25]["widgets_values"],
+        )
+    )
+    plan, video_handle, _video, _preview = (
+        plan_v2.MiniMaxH3PlanV2VideoReference().add_video(
+            plan,
+            torch.zeros(48, 48, 64, 3),
+            *workflow_nodes[3]["widgets_values"],
+        )
+    )
+    audio = {
+        "waveform": torch.zeros(1, 1, 64_000),
+        "sample_rate": 32_000,
+    }
+    plan, _audio, _preview = plan_v2.MiniMaxH3PlanV2AudioReference().add_audio(
+        plan,
+        audio,
+        *workflow_nodes[4]["widgets_values"],
+        video_handle,
+    )
+    plan, _preview = plan_v2.MiniMaxH3PlanV2CharacterReplacement().add_replacement(
+        plan,
+        video_handle,
+        *workflow_nodes[26]["widgets_values"],
+    )
+    plan = plan_v2.MiniMaxH3PlanV2Shot().add_shot(
+        plan, *workflow_nodes[5]["widgets_values"]
+    )[0]
+    prompt, _rewrite, context, report, _length = (
+        plan_v2.MiniMaxH3PlanV2PromptMerge().merge(plan)
+    )
+
+    assert "[reference generation + video continuation + audio reference]" in prompt
+    assert "do not copy, restart, replay, repeat, or loop" in prompt
+    assert "in only the newly generated frames" in prompt
+    assert "evolve the performance forward without replaying the source timeline" in prompt
+    assert [entry["route"] for entry in context["compiled"]["routes"]] == [
+        "ref_image_0",
+        "ref_video_audio_0",
+        "ref_video_0",
+    ]
+    assert len(context["character_replacements"]) == 1
+    assert "Plan ready: 0 errors" in report
+
+
 def test_phase3_nodes_and_legacy_labels_remain_registered():
     assert "MiniMaxH3PlanV2ApplyReferencePlan" in plan_adapter.NODE_CLASS_MAPPINGS
     assert "MiniMaxH3PlanV2PromptReview" in prompt_review.NODE_CLASS_MAPPINGS
@@ -217,6 +308,8 @@ def test_plan_v2_browser_logic_handles_auto_transfer_and_clears_hidden_role_data
     assert 'setWidgetValue(node, "target_subject", "")' in source
     assert 'const APPLY_REFERENCE = "MiniMaxH3PlanV2ApplyReferencePlan"' in source
     assert 'const REPLACEMENT = "MiniMaxH3PlanV2CharacterReplacement"' in source
+    assert 'const VIDEO_CONTINUE = "Source video to continue"' in source
+    assert "[VIDEO_EDIT, VIDEO_CONTINUE].includes(sourceUse)" in source
     assert '"Replacement Subject"' in source
     assert "const endpointConflict = hasEndpoint && requiresRef2va" in source
     assert "unassignedReferenceIds" in source

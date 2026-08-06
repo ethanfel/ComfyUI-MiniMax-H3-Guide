@@ -42,6 +42,7 @@ const IMAGE_STORYBOARD = "Storyboard / shot planning";
 
 const UNASSIGNED_VIDEO_USE = "Choose a video relationship";
 const VIDEO_EDIT = "Source video to edit";
+const VIDEO_CONTINUE = "Source video to continue";
 const VIDEO_DEFINE_VISIBLE = "Define reusable visible content";
 const VIDEO_MOTION = "Motion or action reference";
 const VIDEO_STRUCTURE = "Camera, cuts, rhythm, or temporal-structure reference";
@@ -1076,8 +1077,8 @@ function refreshBadgeAndOutputs(node, catalog) {
             (subject ? subject.label + " · " + subject.alias : "Subject required");
         if (!video || !subject || !sourceCharacter) {
             color = COLORS.warning;
-        } else if (sourceUse !== VIDEO_EDIT) {
-            text += " · source must use Source video to edit";
+        } else if (![VIDEO_EDIT, VIDEO_CONTINUE].includes(sourceUse)) {
+            text += " · source must use video edit or continuation";
             color = COLORS.error;
         } else if (!scope.valid) {
             text += " · " + scope.text;

@@ -855,9 +855,10 @@ def _replacement_video(replacement: dict, plan: dict) -> dict:
         raise ValueError(
             "A Character Replacement refers to a source video that is not present in h3_plan."
         )
-    if asset.get("relationship") != VIDEO_EDIT:
+    if asset.get("relationship") not in {VIDEO_EDIT, VIDEO_CONTINUE}:
         raise ValueError(
-            "Character Replacement requires a Video Reference set to Source video to edit."
+            "Character Replacement requires a Video Reference set to Source video to edit "
+            "or Source video to continue."
         )
     return asset
 
@@ -1138,8 +1139,14 @@ def _replacement_mapping_sentence(
     replacement: dict, plan: dict, catalog: dict
 ) -> str:
     subject, video = _replacement_labels(replacement, plan, catalog)
+    source_video = _replacement_video(replacement, plan)
     scope = _scope_text(_replacement_scope(replacement, plan))
     source_character = _clause(replacement["source_character_description"])
+    if source_video["relationship"] == VIDEO_CONTINUE:
+        return (
+            f"In {scope}, the source performer described as {source_character} at "
+            f"{video}'s endpoint is continued as {subject} in the newly generated frames."
+        )
     return (
         f"In {scope}, {subject} replaces only the source performer described as "
         f"{source_character} from {video}."
@@ -1150,11 +1157,20 @@ def _replacement_shot_instruction(
     replacement: dict, plan: dict, catalog: dict
 ) -> str:
     subject, video = _replacement_labels(replacement, plan, catalog)
+    source_video = _replacement_video(replacement, plan)
+    continuation = source_video["relationship"] == VIDEO_CONTINUE
     source_character = _clause(replacement["source_character_description"])
-    lines = [
-        f"Using {video} as the source timeline, replace only the source performer "
-        f"described as {source_character} with {subject}."
-    ]
+    if continuation:
+        lines = [
+            f"Using {video} as the continuation source, carry the source performer "
+            f"described as {source_character} across the endpoint as {subject} in only "
+            "the newly generated frames."
+        ]
+    else:
+        lines = [
+            f"Using {video} as the source timeline, replace only the source performer "
+            f"described as {source_character} with {subject}."
+        ]
     policy = replacement["appearance_policy"]
     if policy == REPLACEMENT_IDENTITY_KEEP_BODY_WARDROBE:
         lines.append(
@@ -1171,15 +1187,28 @@ def _replacement_shot_instruction(
             f"Apply {subject}'s complete referenced identity and appearance, including wardrobe."
         )
     if replacement["preserve_performance"]:
-        lines.append(
-            "Preserve that source performer's pose, motion, timing, gaze, expression, "
-            f"and physical interactions from {video}."
-        )
+        if continuation:
+            lines.append(
+                "Begin from that source performer's final pose, position, motion direction, "
+                "gaze, expression, and physical interactions, then evolve the performance "
+                "forward without replaying the source timeline."
+            )
+        else:
+            lines.append(
+                "Preserve that source performer's pose, motion, timing, gaze, expression, "
+                f"and physical interactions from {video}."
+            )
     if replacement["preserve_scene"]:
-        lines.append(
-            "Keep every other person, the environment, props, lighting, camera movement, "
-            f"framing, and cuts from {video} unchanged."
-        )
+        if continuation:
+            lines.append(
+                "Continue every other person, the environment, props, lighting, camera "
+                f"movement, framing, and spatial state from {video}'s endpoint without a reset."
+            )
+        else:
+            lines.append(
+                "Keep every other person, the environment, props, lighting, camera movement, "
+                f"framing, and cuts from {video} unchanged."
+            )
     instructions = _sentence(replacement["instructions"])
     if instructions:
         lines.append(instructions)
@@ -1325,6 +1354,23 @@ def _audio_definition(
             f"<d>[{relationship['language']}] {relationship['transcript']}</d>.{suffix}"
         )
     if use == AUDIO_CONTINUITY:
+        paired_video_id = audio.get("paired_video_asset_id")
+        paired_video = next(
+            (
+                video
+                for video in catalog["videos"]
+                if video["asset_id"] == paired_video_id
+            ),
+            None,
+        )
+        if paired_video is not None and paired_video["relationship"] == VIDEO_CONTINUE:
+            video_label = catalog["video_labels"][paired_video_id]
+            return (
+                f"{label} is the synchronized soundtrack of {video_label} and the "
+                f"audio-continuity reference for {layer}. Generate new audio beginning after "
+                "the source endpoint and developing forward from its final audible state; do "
+                f"not copy, restart, replay, repeat, or loop the source signal.{suffix}"
+            )
         return f"{label} is the audio-continuity reference for {layer}.{suffix}"
     if use == AUDIO_COPY_COMPLETE:
         return f"{label} is reused as the complete final audio track."
@@ -1525,16 +1571,32 @@ def _retention_analysis(plan: dict, catalog: dict) -> list[str]:
             for replacement in plan["character_replacements"]
             if replacement["source_video_asset_id"] == asset["asset_id"]
         ]
-        if relationship == VIDEO_EDIT and replacements:
+        if relationship in {VIDEO_EDIT, VIDEO_CONTINUE} and replacements:
             preserved: list[str] = []
-            if any(entry["preserve_performance"] for entry in replacements):
-                preserved.append("source performance and timing")
-            if any(entry["preserve_scene"] for entry in replacements):
-                preserved.append("scene, other people, lighting, camera, framing, and cuts")
-            explanation = (
-                "the source timeline remains identifiable; only the declared character "
-                "replacement is applied"
-            )
+            if relationship == VIDEO_CONTINUE:
+                if any(entry["preserve_performance"] for entry in replacements):
+                    preserved.append(
+                        "endpoint pose, motion direction, gaze, expression, and interactions"
+                    )
+                if any(entry["preserve_scene"] for entry in replacements):
+                    preserved.append(
+                        "other people, environment, lighting, camera, framing, and spatial state"
+                    )
+                explanation = (
+                    "the source endpoint remains identifiable and the selected performer is "
+                    "continued as the declared replacement Subject only in newly generated frames"
+                )
+            else:
+                if any(entry["preserve_performance"] for entry in replacements):
+                    preserved.append("source performance and timing")
+                if any(entry["preserve_scene"] for entry in replacements):
+                    preserved.append(
+                        "scene, other people, lighting, camera, framing, and cuts"
+                    )
+                explanation = (
+                    "the source timeline remains identifiable; only the declared character "
+                    "replacement is applied"
+                )
             if preserved:
                 explanation += ". Its " + " plus ".join(preserved) + " are preserved"
             lines.append(f"{label}{context}: {marker} - {explanation}.")
@@ -1549,6 +1611,27 @@ def _retention_analysis(plan: dict, catalog: dict) -> list[str]:
         marker = relationship["retention"]
         scope = _parse_shot_scope(relationship["shot_scope"], len(plan["shots"]))
         context = f" ({_scope_text(scope)})" if scope else ""
+        paired_video_id = audio.get("paired_video_asset_id")
+        paired_video = next(
+            (
+                video
+                for video in catalog["videos"]
+                if video["asset_id"] == paired_video_id
+            ),
+            None,
+        )
+        if (
+            relationship["use"] == AUDIO_CONTINUITY
+            and paired_video is not None
+            and paired_video["relationship"] == VIDEO_CONTINUE
+        ):
+            video_label = catalog["video_labels"][paired_video_id]
+            lines.append(
+                f"{label}{context}: {marker} - it guides newly generated audio after "
+                f"{video_label}'s endpoint; the source signal is not copied, restarted, "
+                "replayed, repeated, or looped."
+            )
+            continue
         lines.append(
             f"{label}{context}: {marker} - its exact declared audio relationship is used."
         )
@@ -1734,9 +1817,31 @@ def _audio_sections(plan: dict, catalog: dict) -> tuple[str, str]:
             AUDIO_COPY_PARTIAL,
             AUDIO_BROAD,
         } and not _shot_prose_mentions_label(plan, label):
-            sound_references.append(
-                f"Apply {label} only according to its declared {relationship['use'].lower()} role."
+            paired_video_id = audio.get("paired_video_asset_id")
+            paired_video = next(
+                (
+                    video
+                    for video in catalog["videos"]
+                    if video["asset_id"] == paired_video_id
+                ),
+                None,
             )
+            if (
+                relationship["use"] == AUDIO_CONTINUITY
+                and paired_video is not None
+                and paired_video["relationship"] == VIDEO_CONTINUE
+            ):
+                video_label = catalog["video_labels"][paired_video_id]
+                sound_references.append(
+                    f"Using {label}, continue {relationship['target_layer_or_event']} after "
+                    f"{video_label}'s final audible state with newly generated, forward-developing "
+                    "audio; do not restart, replay, repeat, or loop the source signal."
+                )
+            else:
+                sound_references.append(
+                    f"Apply {label} only according to its declared "
+                    f"{relationship['use'].lower()} role."
+                )
     if sound_references:
         soundscape = " ".join([soundscape, *sound_references])
     if music_references:
@@ -2592,7 +2697,7 @@ class MiniMaxH3PlanV2VideoReference:
 
 
 class MiniMaxH3PlanV2CharacterReplacement:
-    """Map one performer in a source edit video to one referenced Subject."""
+    """Map one performer in a source edit or continuation to one referenced Subject."""
 
     CATEGORY = "MiniMax H3/Plan v2"
     FUNCTION = "add_replacement"
@@ -2603,9 +2708,9 @@ class MiniMaxH3PlanV2CharacterReplacement:
         "Resolved source performer, replacement Subject, appearance policy, and Shot scope.",
     )
     DESCRIPTION = (
-        "Declares an exact character replacement inside a source video edit. Select the "
-        "source Video handle and an upstream identity Subject; Prompt Merge writes and locks "
-        "the replacement instruction into every scoped Shot."
+        "Declares an exact character replacement inside a source video edit or newly generated "
+        "continuation. Select the source Video handle and an upstream identity Subject; Prompt "
+        "Merge writes and locks the relationship into every scoped Shot."
     )
 
     @classmethod
@@ -2626,8 +2731,8 @@ class MiniMaxH3PlanV2CharacterReplacement:
                     {
                         "tooltip": (
                             "Connect reference_handle from the Video Reference whose video_use "
-                            "is Source video to edit. This is the timeline containing the "
-                            "performer being replaced."
+                            "is Source video to edit or Source video to continue. For continuation, "
+                            "the mapping affects only newly generated frames after the endpoint."
                         )
                     },
                 ),
@@ -2672,8 +2777,9 @@ class MiniMaxH3PlanV2CharacterReplacement:
                     {
                         "default": True,
                         "tooltip": (
-                            "Keep the source performer's pose, motion, timing, gaze, expression, "
-                            "and physical interactions."
+                            "For an edit, keep the source performance and timing. For a "
+                            "continuation, begin from the endpoint pose, position, motion "
+                            "direction, gaze, expression, and interactions, then move forward."
                         ),
                     },
                 ),
@@ -2682,8 +2788,9 @@ class MiniMaxH3PlanV2CharacterReplacement:
                     {
                         "default": True,
                         "tooltip": (
-                            "Keep other people, environment, props, lighting, camera movement, "
-                            "framing, and cuts from the source video unchanged."
+                            "For an edit, keep the source scene and cuts. For a continuation, "
+                            "carry other people, environment, props, lighting, camera, framing, "
+                            "and spatial state forward from the endpoint without a reset."
                         ),
                     },
                 ),
@@ -2693,9 +2800,9 @@ class MiniMaxH3PlanV2CharacterReplacement:
                         "default": "all",
                         "placeholder": "Examples: 2, 2-4, all",
                         "tooltip": (
-                            "Shots where the source performer is replaced. The compiler inserts "
-                            "the typed replacement instruction into each selected Shot, so the "
-                            "Shot text does not need manual H3 labels."
+                            "Generated Shots where the source performer is replaced. For a "
+                            "continuation this never modifies frames inside the supplied source. "
+                            "The compiler inserts the typed mapping into every selected Shot."
                         ),
                     },
                 ),
@@ -2729,9 +2836,10 @@ class MiniMaxH3PlanV2CharacterReplacement:
     ):
         plan = validated_plan(h3_plan, allowed_phases={PHASE_SETUP})
         video = _resolved_handle(plan, source_video, allowed_kinds={"video"})
-        if video["relationship"] != VIDEO_EDIT:
+        if video["relationship"] not in {VIDEO_EDIT, VIDEO_CONTINUE}:
             raise ValueError(
-                "Character Replacement requires a Video Reference set to Source video to edit."
+                "Character Replacement requires a Video Reference set to Source video to edit "
+                "or Source video to continue."
             )
         alias = _clean_inline(replacement_subject)
         catalog = _catalog(plan)
