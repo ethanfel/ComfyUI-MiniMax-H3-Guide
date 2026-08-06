@@ -200,6 +200,15 @@ reference-socket wiring. It places Prompt Review Gate directly before Apply
 Reference Plan to demonstrate the prompt-only pause while all media stays in
 `plan_context`.
 
+`MiniMax H3 Plan v2 - Character Replacement.json` is the complete replacement-
+only generation preset. Set Project duration to the source video's duration,
+load the replacement identity image and a 2–15 second source video with audio,
+then identify exactly one source performer in Character Replacement. The image
+is routed as identity-only evidence, the video supplies the complete timeline,
+and its paired soundtrack is reused as the complete synchronized output track.
+The review gate feeds Apply Reference Plan, the official H3 video and audio
+VAEs, sampling, joint decode, and Save Video without manual reference wiring.
+
 `MiniMax H3 Plan v2 - Video Extension with Audio Continuity.json` is a complete
 one-pass character-transfer continuation example. Load a replacement-character
 image and one 2–10 second source video with audio. The image defines the

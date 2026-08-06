@@ -99,7 +99,12 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
 
     replacement_types = [node["type"] for node in replacement["nodes"]]
     assert "VHS_LoadVideo" in replacement_types
+    assert "MiniMaxH3PlanV2AudioReference" in replacement_types
     assert "MiniMaxH3PlanV2CharacterReplacement" in replacement_types
+    assert "MiniMaxH3PlanV2PromptReview" in replacement_types
+    assert "MiniMaxH3PlanV2ApplyReferencePlan" in replacement_types
+    assert "SamplerCustomAdvanced" in replacement_types
+    assert "SaveVideo" in replacement_types
     replacement_values = [
         value
         for node in replacement["nodes"]
@@ -110,6 +115,7 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
         )
     ]
     assert "Source video to edit" in replacement_values
+    assert "Copy complete signal" in replacement_values
     assert "Replace identity and body; keep source wardrobe" in replacement_values
 
     continuation_types = [node["type"] for node in continuation["nodes"]]
@@ -174,32 +180,48 @@ def test_character_replacement_template_compiles_with_placeholder_media():
         plan_v2.MiniMaxH3PlanV2ImageReference().add_image(
             plan,
             torch.zeros(1, 48, 64, 3),
-            *nodes[3]["widgets_values"],
+            *nodes[25]["widgets_values"],
         )
     )
     plan, video_handle, _video, _preview = (
         plan_v2.MiniMaxH3PlanV2VideoReference().add_video(
             plan,
             torch.zeros(144, 48, 64, 3),
-            *nodes[5]["widgets_values"],
+            *nodes[3]["widgets_values"],
         )
+    )
+    audio = {
+        "waveform": torch.zeros(1, 1, 192_000),
+        "sample_rate": 32_000,
+    }
+    plan, _audio, _preview = plan_v2.MiniMaxH3PlanV2AudioReference().add_audio(
+        plan,
+        audio,
+        *nodes[4]["widgets_values"],
+        video_handle,
     )
     plan, _preview = plan_v2.MiniMaxH3PlanV2CharacterReplacement().add_replacement(
         plan,
         video_handle,
-        *nodes[6]["widgets_values"],
+        *nodes[26]["widgets_values"],
     )
     plan = plan_v2.MiniMaxH3PlanV2Shot().add_shot(
-        plan, *nodes[7]["widgets_values"]
+        plan, *nodes[5]["widgets_values"]
     )[0]
 
     prompt, _rewrite, context, report, _length = (
         plan_v2.MiniMaxH3PlanV2PromptMerge().merge(plan)
     )
 
+    assert "[reference generation + video editing + audio reuse]" in prompt
     assert "replace only the source performer" in prompt
-    assert "<Video 1>" in prompt and "<Subject 1>" in prompt
+    assert "<Video 1>" in prompt and "<Subject 1>" in prompt and "<Audio 1>" in prompt
     assert context["character_replacements"][0]["shot_scope"] == "all"
+    assert [entry["route"] for entry in context["compiled"]["routes"]] == [
+        "ref_image_0",
+        "ref_video_audio_0",
+        "ref_video_0",
+    ]
     assert "Plan ready: 0 errors" in report
 
 
