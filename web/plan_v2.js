@@ -1211,11 +1211,16 @@ function refreshBadgeAndOutputs(node, catalog) {
         const local = buildCatalog(chainThrough(node));
         const speakerName = clean(widget(node, "speaker")?.value);
         const speaker = local.speakersByAlias.get(aliasKey(speakerName));
+        const startOffset = Number(widget(node, "start_offset_seconds")?.value ?? -1);
+        const timing = Number.isFinite(startOffset) && startOffset >= 0
+            ? " · +" + startOffset.toFixed(3) + "s"
+            : " · auto timing";
         text =
             "Shot " +
             local.shots.length +
             " · " +
-            (speaker ? speaker.id + " · " + speaker.alias : "speaker required");
+            (speaker ? speaker.id + " · " + speaker.alias : "speaker required") +
+            timing;
         color = speakerName ? COLORS.ready : COLORS.warning;
     } else if (type === MERGE) {
         if (catalog.unassignedReferenceIds.size) {

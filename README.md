@@ -35,6 +35,10 @@ assign their media to exactly that Shot without a numeric `shot_scope` field.
 Their forwarded Plan and Shot handle allow multiple attachments before the next
 Shot. Dialogue Events attach to the most recently opened Shot, allowing Prompt
 Merge to assign S1, S2, and later speaker IDs from actual vocal-event order.
+Each Dialogue Event can optionally set `start_offset_seconds`: `-1` leaves its
+placement automatic, `0` starts at the Shot opening, and a positive value starts
+that many seconds after the Shot begins. Prompt Merge converts the offset to an
+absolute timeline timestamp and rejects values outside the selected Shot.
 The continuity dropdown marks an utterance as complete, split across the next
 cut, carried from the previous cut, or interrupted by the video ending. Matching
 cross-cut events receive `<scenetrans>` in both dialogue parts; a final

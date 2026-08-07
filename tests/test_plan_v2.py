@@ -422,6 +422,7 @@ def dialogue(
     delivery="natural",
     voice_mode="On-screen speech",
     continuity_mode="Complete in this Shot",
+    start_offset_seconds=-1.0,
 ):
     return MiniMaxH3PlanV2DialogueEvent().add_dialogue(
         plan,
@@ -431,6 +432,7 @@ def dialogue(
         delivery,
         voice_mode,
         continuity_mode,
+        start_offset_seconds,
     )[0]
 
 
@@ -629,6 +631,48 @@ def test_voice_reference_is_exactly_bound_to_subject_and_dialogue_order():
     assert "<Subject 1> (appears in [Shot 1] and [Shot 2])" in prompt
     assert compiled["compiled"]["speaker_ids"] == {"woman": "S1"}
     assert "ref_audio_0" in report
+
+
+def test_dialogue_start_offset_compiles_to_absolute_timeline_timestamp():
+    plan = project()
+    plan, _handle, _image, _preview = image_reference(plan, scope="1-2")
+    plan = shot(plan, 0.0, "<Subject 1> waits before speaking.")
+    plan = dialogue(
+        plan,
+        "woman",
+        "The first timed line.",
+        start_offset_seconds=0.0,
+    )
+    plan = shot(plan, 2.5, "<Subject 1> continues in a closer view.")
+    plan = dialogue(
+        plan,
+        "woman",
+        "The second timed line.",
+        start_offset_seconds=0.5,
+    )
+
+    prompt, rewrite, report, _compiled, _length = compile_h3_plan(plan)
+
+    assert "At 00:00.000, <Subject 1> (S1) speaks" in prompt
+    assert "At 00:03.000, <Subject 1> (S1) speaks" in prompt
+    assert "dialogue timestamps" in rewrite
+    assert "dialogue start times" in report
+
+
+def test_dialogue_start_offset_must_fall_inside_its_shot():
+    plan = project()
+    plan, _handle, _image, _preview = image_reference(plan, scope="1-2")
+    plan = shot(plan, 0.0, "<Subject 1> waits before speaking.")
+    plan = dialogue(
+        plan,
+        "woman",
+        "This starts too late.",
+        start_offset_seconds=3.0,
+    )
+    plan = shot(plan, 2.5, "<Subject 1> appears after the cut.")
+
+    with pytest.raises(ValueError, match="falls outside Shot 1"):
+        compile_h3_plan(plan)
 
 
 def test_audio_reference_chain_reports_the_cumulative_duration_limit():

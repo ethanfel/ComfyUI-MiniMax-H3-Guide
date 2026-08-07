@@ -147,7 +147,7 @@
       "id": 7,
       "type": "MiniMaxH3PlanV2DialogueEvent",
       "pos": [2180, 0],
-      "size": [460, 440],
+      "size": [460, 472],
       "flags": {},
       "order": 6,
       "mode": 0,
@@ -165,7 +165,8 @@
         "Thanks for stopping.",
         "warm and relieved",
         "On-screen speech",
-        "Complete in this Shot"
+        "Complete in this Shot",
+        -1.0
       ]
     },
     {

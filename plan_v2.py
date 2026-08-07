@@ -1333,6 +1333,57 @@ def _dialogue_continuity(event: dict) -> str:
     return event.get("continuity_mode", DIALOGUE_CONTINUITY_COMPLETE)
 
 
+def _dialogue_start_offset(event: dict) -> float | None:
+    """Return a non-negative offset from the Shot start, or None for automatic timing."""
+
+    raw = event.get("start_offset_seconds", -1.0)
+    try:
+        offset = float(raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Dialogue Event contains an invalid start_offset_seconds.") from error
+    if not math.isfinite(offset) or offset < -1.0:
+        raise ValueError(
+            "Dialogue Event start_offset_seconds must be -1 for automatic timing or "
+            "a non-negative offset inside its Shot."
+        )
+    return None if offset < 0.0 else offset
+
+
+def _dialogue_absolute_start(event: dict, plan: dict) -> float | None:
+    offset = _dialogue_start_offset(event)
+    if offset is None:
+        return None
+    shot_number = int(event["shot_number"])
+    return float(plan["shots"][shot_number - 1]["cut_at"]) + offset
+
+
+def _validate_dialogue_timing(plan: dict) -> None:
+    if not plan["dialogue_events"]:
+        return
+    shots = plan["shots"]
+    effective_duration = float(plan["project"]["effective_duration"])
+    for event in plan["dialogue_events"]:
+        offset = _dialogue_start_offset(event)
+        if offset is None:
+            continue
+        shot_number = int(event["shot_number"])
+        if shot_number < 1 or shot_number > len(shots):
+            raise ValueError("Dialogue Event refers to a Shot that does not exist.")
+        shot_start = float(shots[shot_number - 1]["cut_at"])
+        shot_end = (
+            float(shots[shot_number]["cut_at"])
+            if shot_number < len(shots)
+            else effective_duration
+        )
+        absolute_start = shot_start + offset
+        if absolute_start >= shot_end - 0.0005:
+            raise ValueError(
+                f"Dialogue Event start offset {offset:.3f}s falls outside Shot "
+                f"{shot_number}, which spans {_format_timestamp(shot_start)}-"
+                f"{_format_timestamp(shot_end)}. Choose a smaller offset."
+            )
+
+
 def _validate_dialogue_continuity(plan: dict) -> None:
     events = plan["dialogue_events"]
     if not events:
@@ -1497,6 +1548,7 @@ def _validate_final_plan(plan: dict, catalog: dict, mode: str) -> None:
     _validate_character_replacements(plan, catalog)
     _validate_scopes(plan, catalog)
     _validate_speakers(plan, catalog)
+    _validate_dialogue_timing(plan)
     _validate_dialogue_continuity(plan)
     _validate_complete_audio_copy(plan, catalog)
 
@@ -2358,6 +2410,12 @@ def _voice_audio_for(speaker: str, plan: dict, catalog: dict) -> str | None:
 
 def _dialogue_text(event: dict, plan: dict, catalog: dict) -> str:
     speaker = _speaker_reference(event["speaker"], catalog)
+    absolute_start = _dialogue_absolute_start(event, plan)
+    timing_prefix = (
+        f"At {_format_timestamp(absolute_start)}, "
+        if absolute_start is not None
+        else ""
+    )
     audio_label = _voice_audio_for(event["speaker"], plan, catalog)
     voice_clause = (
         f" using the voice timbre and delivery referenced from {audio_label}"
@@ -2399,16 +2457,19 @@ def _dialogue_text(event: dict, plan: dict, catalog: dict) -> str:
     }[continuity]
     if event["voice_mode"] == "Voiceover":
         return (
-            f"{speaker} says in an off-screen voiceover{voice_clause}: {exact} "
+            f"{timing_prefix}{speaker} says in an off-screen voiceover{voice_clause}: {exact} "
             f"The on-screen character's lips remain completely closed."
             f"{continuity_clause}{delivery_clause}"
         )
     if event["voice_mode"] == "Off-screen speech":
         return (
-            f"{speaker} speaks off-screen{voice_clause}: {exact}"
+            f"{timing_prefix}{speaker} speaks off-screen{voice_clause}: {exact}"
             f"{continuity_clause}{delivery_clause}"
         )
-    return f"{speaker} speaks{voice_clause}: {exact}{continuity_clause}{delivery_clause}"
+    return (
+        f"{timing_prefix}{speaker} speaks{voice_clause}: {exact}"
+        f"{continuity_clause}{delivery_clause}"
+    )
 
 
 def _implicit_or_planned_shots(plan: dict) -> list[dict]:
@@ -2830,7 +2891,7 @@ def _problems_report(
             )
     lines.append(
         "Locked by the compiler: labels, roles, character replacements, retention, speakers, "
-        "exact dialogue, and cut times."
+        "exact dialogue, dialogue start times, and cut times."
     )
     return "\n".join(lines)
 
@@ -2861,7 +2922,7 @@ def _rewrite_request(
 {section_rule}
 Do not add, remove, rename, or renumber any <Subject N>, <Picture N>, <Video N>, or <Audio N> label.
 Do not change task types, retention markers, native roles, speaker IDs, exact <d> dialogue,
-languages, Shot order, or cut timestamps. Do not infer audio meaning from imagery. Return only
+languages, Shot order, dialogue timestamps, or cut timestamps. Do not infer audio meaning from imagery. Return only
 the complete enhanced H3 prompt. If an instruction conflicts with a locked fact, preserve the
 locked fact.{foley_rule}
 
@@ -4645,8 +4706,8 @@ class MiniMaxH3PlanV2DialogueEvent:
     )
     DESCRIPTION = (
         "Attaches one exact vocal event to the current Shot. Prompt Merge assigns S1, S2, "
-        "and later IDs from this actual playback order, then compiles cross-cut and "
-        "end-of-video continuity markers from the selected continuity mode."
+        "and later IDs from this actual playback order, supports an exact offset from the "
+        "Shot start, then compiles cross-cut and end-of-video continuity markers."
     )
 
     @classmethod
@@ -4717,6 +4778,21 @@ class MiniMaxH3PlanV2DialogueEvent:
                         ),
                     },
                 ),
+                "start_offset_seconds": (
+                    "FLOAT",
+                    {
+                        "default": -1.0,
+                        "min": -1.0,
+                        "max": 15.0,
+                        "step": 0.01,
+                        "round": 0.001,
+                        "tooltip": (
+                            "Dialogue start relative to the current Shot: -1 leaves placement "
+                            "automatic, 0 starts at the Shot opening, and 1.25 starts 1.25 seconds "
+                            "after the Shot begins. Prompt Merge emits the absolute timestamp."
+                        ),
+                    },
+                ),
             }
         }
 
@@ -4729,6 +4805,7 @@ class MiniMaxH3PlanV2DialogueEvent:
         delivery: str,
         voice_mode: str,
         continuity_mode: str = DIALOGUE_CONTINUITY_COMPLETE,
+        start_offset_seconds: float = -1.0,
     ):
         plan = validated_plan(h3_plan, allowed_phases={PHASE_TIMELINE})
         if not plan["shots"]:
@@ -4748,6 +4825,23 @@ class MiniMaxH3PlanV2DialogueEvent:
             raise ValueError("Choose a supported Dialogue Event voice_mode.")
         if continuity_mode not in DIALOGUE_CONTINUITIES:
             raise ValueError("Choose a supported Dialogue Event continuity_mode.")
+        try:
+            start_offset = float(start_offset_seconds)
+        except (TypeError, ValueError) as error:
+            raise ValueError("start_offset_seconds must be numeric.") from error
+        if not math.isfinite(start_offset) or start_offset < -1.0:
+            raise ValueError(
+                "start_offset_seconds must be -1 for automatic timing or a "
+                "non-negative offset inside the current Shot."
+            )
+        if start_offset >= 0.0:
+            shot_start = float(plan["shots"][-1]["cut_at"])
+            effective_duration = float(plan["project"]["effective_duration"])
+            if shot_start + start_offset >= effective_duration - 0.0005:
+                raise ValueError(
+                    "start_offset_seconds places the dialogue beyond the Project's "
+                    "native timeline. Choose a smaller offset."
+                )
         aliases = {_alias_key(entry["subject_name"]) for entry in plan["bindings"]}
         if voice_mode == "On-screen speech" and _alias_key(speaker_name) not in aliases:
             raise ValueError(
@@ -4763,6 +4857,7 @@ class MiniMaxH3PlanV2DialogueEvent:
             "delivery": _clean_inline(delivery),
             "voice_mode": voice_mode,
             "continuity_mode": continuity_mode,
+            "start_offset_seconds": start_offset,
         }
         updated = _copy_plan(plan)
         updated["dialogue_events"].append(event)
@@ -4777,8 +4872,13 @@ class MiniMaxH3PlanV2DialogueEvent:
             for index, name in enumerate(ordered_speakers, start=1)
             if _alias_key(name) == _alias_key(speaker_name)
         )
+        timing = (
+            f" at +{start_offset:.3f}s"
+            if start_offset >= 0.0
+            else " at automatic timing"
+        )
         preview = (
-            f"[Shot {event['shot_number']}] {speaker_name} ({speaker_id}), "
+            f"[Shot {event['shot_number']}{timing}] {speaker_name} ({speaker_id}), "
             f"{voice_mode}, {continuity_mode}: <d>[{source_language}] {words}</d>"
         )
         return updated, preview
