@@ -792,6 +792,30 @@ def test_audio_reference_chain_reports_the_cumulative_duration_limit():
     assert "15-second cumulative limit" in message
 
 
+@pytest.mark.parametrize(
+    ("seconds", "boundary"),
+    [
+        (1.5, "shorter than 2 seconds"),
+        (15.25, "longer than 15 seconds"),
+    ],
+)
+def test_audio_reference_duration_error_reports_the_received_audio(seconds, boundary):
+    with pytest.raises(ValueError) as caught:
+        audio_reference(
+            project(),
+            use=AUDIO_VOICE,
+            name="out-of-range voice",
+            speaker="woman",
+            seconds=seconds,
+        )
+
+    message = str(caught.value)
+    assert f"Received {seconds:.3f} seconds" in message
+    assert "samples at 32000 Hz" in message
+    assert boundary in message
+    assert "Trim the upstream AUDIO value" in message
+
+
 def test_audio_reference_accepts_and_normalizes_lazy_audio_mappings():
     plan = project()
     lazy_audio = MappingProxyType(audio_value(seconds=3.25))

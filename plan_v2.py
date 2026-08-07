@@ -567,8 +567,12 @@ def _audio_duration(audio: Any) -> float:
         raise ValueError("Audio sample_rate must be a positive integer.")
     duration = int(shape[-1]) / sample_rate
     if duration < 2.0 - 0.0005 or duration > 15.0 + 0.0005:
+        boundary = "shorter than 2 seconds" if duration < 2.0 else "longer than 15 seconds"
         raise ValueError(
-            "Every H3 reference-audio clip must last from 2 through 15 seconds."
+            "Every H3 reference-audio clip must last from 2 through 15 seconds. "
+            f"Received {duration:.3f} seconds ({int(shape[-1])} samples at "
+            f"{sample_rate} Hz), which is {boundary}. Trim the upstream AUDIO value "
+            "to the intended source interval before connecting Audio Reference."
         )
     return duration
 
