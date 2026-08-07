@@ -7,11 +7,14 @@ const RECOVER_ROUTE = "/minimax_h3/prompt_review/recover";
 const PAUSE_MODE = "Pause for approval";
 const PASS_THROUGH_MODE = "Pass through without pausing";
 const SETTINGS_PROPERTY = "minimax_h3_prompt_review_settings";
+const UI_STATE_ID_PROPERTY = "minimax_h3_prompt_review_ui_state_id";
 const DEFAULT_HISTORY_LIMIT = 20;
 const MIN_HISTORY_LIMIT = 1;
 const MAX_HISTORY_LIMIT = 50;
+const MAX_CACHED_UI_STATES = 32;
 const MIN_WIDTH = 540;
 const MIN_EDITOR_HEIGHT = 300;
+const reviewStateCache = new Map();
 let recoveryRequest = null;
 let recoveryTimer = null;
 let recoveryAgain = false;
@@ -108,22 +111,88 @@ function serializeSettings(node, serialized) {
     };
 }
 
-function hideWidget(target) {
-    if (!target) return;
-    target.hidden = true;
-    target.computeSize = () => [0, -4];
-}
-
-function makeHistoryKey() {
+function makeReviewStateId() {
     const random = globalThis.crypto?.randomUUID?.().replaceAll("-", "");
-    return "review-" + (random || `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    return "review-ui-" + (random || `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 }
 
-function ensureHistoryKey(node) {
-    const target = widget(node, "history_key");
-    if (!target) return;
-    if (!String(target.value || "").trim()) target.value = makeHistoryKey();
-    hideWidget(target);
+function reviewStateId(node) {
+    node.properties ||= {};
+    let stateId = String(node.properties[UI_STATE_ID_PROPERTY] || "").trim();
+    const cached = stateId ? reviewStateCache.get(stateId) : null;
+    // A copied node inherits arbitrary LiteGraph properties. Give the copy its
+    // own editor cache while allowing a recreated workflow-tab node (same id)
+    // to recover the original cache entry.
+    if (!stateId || (cached && cached.nodeId !== String(node.id))) {
+        stateId = makeReviewStateId();
+        node.properties[UI_STATE_ID_PROPERTY] = stateId;
+    }
+    return stateId;
+}
+
+function trimReviewStateCache() {
+    while (reviewStateCache.size > MAX_CACHED_UI_STATES) {
+        reviewStateCache.delete(reviewStateCache.keys().next().value);
+    }
+}
+
+function cacheReviewState(node) {
+    const state = node.__h3PromptReview;
+    if (!state) return;
+    const stateId = reviewStateId(node);
+    const snapshot = {
+        nodeId: String(node.id),
+        areaValue: state.area.value,
+        inputPrompt: state.inputPrompt,
+        // `populateHistory` accepts the backend's oldest-to-newest order and
+        // reverses it for display. Store that canonical order in the cache so
+        // repeated workflow-tab reconstruction cannot flip the dropdown.
+        entries: state.entries.slice().reverse().map((entry) => ({ ...entry })),
+        historyValue: state.history.value,
+        statusText: state.status.textContent,
+        statusKind: state.status.dataset.kind || "idle",
+        runId: state.runId,
+        token: state.token,
+        resolvedToken: state.resolvedToken,
+        active: state.active,
+        controlsDisabled: state.approve.disabled,
+    };
+    // Refresh insertion order so recently used workflow tabs are evicted last.
+    reviewStateCache.delete(stateId);
+    reviewStateCache.set(stateId, snapshot);
+    trimReviewStateCache();
+}
+
+function restoreCachedReviewState(node) {
+    const stateId = reviewStateId(node);
+    const cached = reviewStateCache.get(stateId);
+    const state = node.__h3PromptReview;
+    if (!cached || !state) return false;
+
+    state.inputPrompt = String(cached.inputPrompt || "");
+    state.area.value = String(cached.areaValue || "");
+    state.runId = cached.runId || null;
+    state.token = cached.token || null;
+    state.resolvedToken = cached.resolvedToken || null;
+    state.active = Boolean(cached.active);
+    populateHistory(node, cached.entries || []);
+    const selected = String(cached.historyValue || "");
+    if ([...state.history.options].some((option) => option.value === selected)) {
+        state.history.value = selected;
+    }
+    setButtonsDisabled(node, Boolean(cached.controlsDisabled));
+    if (state.active && !cached.controlsDisabled) {
+        updateDirtyState(node);
+    } else {
+        setStatus(node, String(cached.statusText || "Waiting for a queued prompt"), cached.statusKind);
+    }
+    return true;
+}
+
+function serializeReviewState(node, serialized) {
+    cacheReviewState(node);
+    serialized.properties ||= {};
+    serialized.properties[UI_STATE_ID_PROPERTY] = reviewStateId(node);
 }
 
 async function sendDecision(node, action, prompt = "") {
@@ -236,6 +305,7 @@ function activateReview(data) {
     populateHistory(node, data.history || []);
     setButtonsDisabled(node, false);
     updateDirtyState(node);
+    cacheReviewState(node);
     state.area.focus();
     return true;
 }
@@ -263,11 +333,8 @@ function scheduleRecovery() {
 }
 
 function setupNode(node) {
-    if (node.__h3PromptReview) {
-        ensureHistoryKey(node);
-        return;
-    }
-    ensureHistoryKey(node);
+    if (node.__h3PromptReview) return;
+    reviewStateId(node);
 
     const root = document.createElement("div");
     root.className = "h3-review-root";
@@ -324,50 +391,62 @@ function setupNode(node) {
     node.__h3ReviewWidget.serialize = false;
     trackSettings(node);
 
-    area.addEventListener("input", () => updateDirtyState(node));
+    area.addEventListener("input", () => {
+        updateDirtyState(node);
+        cacheReviewState(node);
+    });
     history.addEventListener("change", () => {
         if (!history.value) return;
         const index = Number(history.value);
         if (!Number.isInteger(index) || !node.__h3PromptReview.entries[index]) return;
         area.value = String(node.__h3PromptReview.entries[index].prompt || "");
         updateDirtyState(node);
+        cacheReviewState(node);
         area.focus();
     });
     restore.addEventListener("click", () => {
         area.value = node.__h3PromptReview.inputPrompt;
         history.value = "";
         updateDirtyState(node);
+        cacheReviewState(node);
         area.focus();
     });
     approve.addEventListener("click", async () => {
         setButtonsDisabled(node, true);
         setStatus(node, "Validating prompt locks…", "working");
+        cacheReviewState(node);
         try {
             await sendDecision(node, "approve", area.value);
             node.__h3PromptReview.active = false;
             node.__h3PromptReview.resolvedToken = node.__h3PromptReview.token;
             setStatus(node, "Approved — downstream H3 generation is resuming", "approved");
+            cacheReviewState(node);
         } catch (error) {
             setButtonsDisabled(node, false);
             setStatus(node, error.message || String(error), "error");
+            cacheReviewState(node);
         }
     });
     reject.addEventListener("click", async () => {
         setButtonsDisabled(node, true);
         setStatus(node, "Rejecting queued run…", "working");
+        cacheReviewState(node);
         try {
             await sendDecision(node, "reject");
             node.__h3PromptReview.active = false;
             node.__h3PromptReview.resolvedToken = node.__h3PromptReview.token;
             setStatus(node, "Run rejected; no H3 generation was started", "rejected");
+            cacheReviewState(node);
         } catch (error) {
             setButtonsDisabled(node, false);
             setStatus(node, error.message || String(error), "error");
+            cacheReviewState(node);
         }
     });
 
     populateHistory(node, []);
     setButtonsDisabled(node, true);
+    restoreCachedReviewState(node);
     const onResize = node.onResize;
     node.onResize = function () {
         const result = onResize?.apply(this, arguments);
@@ -457,6 +536,7 @@ app.registerExtension({
         const onSerialize = nodeType.prototype.onSerialize;
         nodeType.prototype.onSerialize = function (serialized) {
             const result = onSerialize?.apply(this, arguments);
+            serializeReviewState(this, serialized);
             serializeSettings(this, serialized);
             return result;
         };

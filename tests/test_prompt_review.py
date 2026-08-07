@@ -558,6 +558,11 @@ def test_review_node_and_frontend_contract_are_registered():
     assert "recoveryAgain" in source
     assert f'const PASS_THROUGH_MODE = "{REVIEW_MODE_PASSTHROUGH}"' in source
     assert 'const SETTINGS_PROPERTY = "minimax_h3_prompt_review_settings"' in source
+    assert 'const UI_STATE_ID_PROPERTY = "minimax_h3_prompt_review_ui_state_id"' in source
+    assert "const reviewStateCache = new Map()" in source
+    assert "cacheReviewState(node)" in source
+    assert "restoreCachedReviewState(node)" in source
+    assert "serializeReviewState(this, serialized)" in source
     assert "node.__h3ReviewWidget.serialize = false" in source
     assert "serialized.widgets_values = [settings.review_mode, settings.history_limit]" in source
     assert "serialized.widgets_values_named = {" in source
