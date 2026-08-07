@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 
 const PROJECT = "MiniMaxH3PlanV2ProjectSetup";
+const FOLEY = "MiniMaxH3PlanV2FoleyTarget";
 const IMAGE = "MiniMaxH3PlanV2ImageReference";
 const BINDING = "MiniMaxH3PlanV2SubjectBinding";
 const VIDEO = "MiniMaxH3PlanV2VideoReference";
@@ -18,6 +19,7 @@ const PROMPT_REVIEW = "MiniMaxH3PlanV2PromptReview";
 
 const PLAN_CLASSES = new Set([
     PROJECT,
+    FOLEY,
     IMAGE,
     BINDING,
     VIDEO,
@@ -269,6 +271,7 @@ function addSubject(subjects, aliases, node, name) {
 
 function buildCatalog(chain) {
     const project = chain.find((node) => className(node) === PROJECT) || null;
+    const foley = chain.find((node) => className(node) === FOLEY) || null;
     const pictures = chain.filter(isPictureNode);
     const videos = chain.filter(isVideoNode);
     const replacements = chain.filter((node) => className(node) === REPLACEMENT);
@@ -382,7 +385,7 @@ function buildCatalog(chain) {
         subjects.length ||
         (pictures.length && !endpointsOnly)
     );
-    const endpointConflict = hasEndpoint && requiresRef2va;
+    const endpointConflict = hasEndpoint && (requiresRef2va || Boolean(foley));
     let mode = "T2VA";
     if (endpointConflict) {
         mode = "Invalid mixed routes";
@@ -409,6 +412,7 @@ function buildCatalog(chain) {
 
     return {
         project,
+        foley,
         pictures,
         videos,
         replacements,
@@ -1102,6 +1106,19 @@ function refreshBadgeAndOutputs(node, catalog) {
             (frames / 24).toFixed(3) +
             "s native";
         color = COLORS.ready;
+    } else if (type === FOLEY) {
+        const requested = Number(
+            widget(catalog.project, "duration_seconds")?.value || 6
+        );
+        const frames = nativeFrameCount(requested);
+        text =
+            "Foley · video mask 0 · audio mask 1 · " +
+            frames +
+            "f / " +
+            (frames / 24).toFixed(3) +
+            "s";
+        setOutputLabel(node, "h3_video", "locked picture track");
+        color = catalog.endpointConflict ? COLORS.error : COLORS.ready;
     } else if (isPictureNode(node) || isVideoNode(node) || type === AUDIO) {
         text = referenceBadge(node, catalog);
         const scope = scopeWidgetStatus(node, catalog);

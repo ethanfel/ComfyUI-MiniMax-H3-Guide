@@ -33,6 +33,8 @@ def test_phase3_workflow_templates_have_consistent_graph_links():
         "MiniMax H3 Plan v2 - First and Last Frames.json",
         "MiniMax H3 Plan v2 - Identity and Voice.json",
         "MiniMax H3 Plan v2 - Prompt Builder App.json",
+        "MiniMax H3 Plan v2 - Video to Audio Foley.json",
+        "MiniMax H3 Plan v2 - Video to Audio Foley with Sound Reference.json",
         "MiniMax H3 Plan v2 - Video Extension with Audio Continuity.json",
     }
     for workflow in workflows.values():
@@ -71,6 +73,10 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
     ]
     composition = workflows[
         "MiniMax H3 Plan v2 - Five Shot Keyframe Composition.json"
+    ]
+    foley = workflows["MiniMax H3 Plan v2 - Video to Audio Foley.json"]
+    foley_reference = workflows[
+        "MiniMax H3 Plan v2 - Video to Audio Foley with Sound Reference.json"
     ]
 
     identity_types = [node["type"] for node in identity["nodes"]]
@@ -174,7 +180,32 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
         in {"MiniMaxH3PlanV2ShotKeyframe", "MiniMaxH3PlanV2ShotMotionReference"}
     )
 
-    for workflow in (identity, endpoints, replacement, continuation, composition):
+    foley_types = [node["type"] for node in foley["nodes"]]
+    assert "VHS_LoadVideo" in foley_types
+    assert "MiniMaxH3PlanV2FoleyTarget" in foley_types
+    assert "MiniMaxH3PlanV2VideoReference" not in foley_types
+    assert "MiniMaxH3PlanV2PromptMerge" in foley_types
+    assert "MiniMaxH3PlanV2ApplyReferencePlan" in foley_types
+    assert any(
+        "video-mask-0 + audio-mask-1" in str(node.get("title", ""))
+        for node in foley["nodes"]
+    )
+
+    foley_reference_types = [node["type"] for node in foley_reference["nodes"]]
+    assert "MiniMaxH3PlanV2FoleyTarget" in foley_reference_types
+    assert "MiniMaxH3PlanV2AudioReference" in foley_reference_types
+    assert "MiniMaxH3PlanV2VideoReference" not in foley_reference_types
+    assert foley_reference_types.count("VAELoader") == 2
+
+    for workflow in (
+        identity,
+        endpoints,
+        replacement,
+        continuation,
+        composition,
+        foley,
+        foley_reference,
+    ):
         assert any(
             node["type"] == "MiniMaxH3PlanV2PromptMerge" for node in workflow["nodes"]
         )
@@ -249,6 +280,72 @@ def test_character_replacement_template_compiles_with_placeholder_media():
         "ref_video_0",
     ]
     assert "Plan ready: 0 errors" in report
+
+
+def test_foley_template_compiles_locked_video_without_reference_route():
+    workflow = _workflows()["MiniMax H3 Plan v2 - Video to Audio Foley.json"]
+    nodes = {node["id"]: node for node in workflow["nodes"]}
+
+    plan = plan_v2.MiniMaxH3PlanV2ProjectSetup().start(
+        *nodes[1]["widgets_values"]
+    )[0]
+    plan, prepared, preview = plan_v2.MiniMaxH3PlanV2FoleyTarget().set_foley_target(
+        plan,
+        torch.zeros(144, 48, 64, 3),
+        *nodes[3]["widgets_values"],
+    )
+    plan = plan_v2.MiniMaxH3PlanV2Shot().add_shot(
+        plan,
+        *nodes[4]["widgets_values"],
+    )[0]
+    prompt, _rewrite, context, report, length = (
+        plan_v2.MiniMaxH3PlanV2PromptMerge().merge(plan)
+    )
+
+    assert prepared.shape[0] == length == 158
+    assert "video=0" in preview and "audio=1" in preview
+    assert "picture track remains exactly unchanged" in prompt
+    assert "<Video 1>" not in prompt
+    assert context["compiled"]["target_task"] == plan_v2.TARGET_FOLEY
+    assert context["compiled"]["routes"] == []
+    assert "video mask = 0" in report and "audio mask = 1" in report
+
+
+def test_foley_sound_reference_template_compiles_ref2va_audio_only_route():
+    workflow = _workflows()[
+        "MiniMax H3 Plan v2 - Video to Audio Foley with Sound Reference.json"
+    ]
+    nodes = {node["id"]: node for node in workflow["nodes"]}
+
+    plan = plan_v2.MiniMaxH3PlanV2ProjectSetup().start(
+        *nodes[1]["widgets_values"]
+    )[0]
+    plan = plan_v2.MiniMaxH3PlanV2FoleyTarget().set_foley_target(
+        plan,
+        torch.zeros(144, 48, 64, 3),
+        *nodes[3]["widgets_values"],
+    )[0]
+    plan = plan_v2.MiniMaxH3PlanV2AudioReference().add_audio(
+        plan,
+        {"waveform": torch.zeros(1, 1, 96000), "sample_rate": 48000},
+        *nodes[5]["widgets_values"],
+    )[0]
+    plan = plan_v2.MiniMaxH3PlanV2Shot().add_shot(
+        plan,
+        *nodes[6]["widgets_values"],
+    )[0]
+    prompt, _rewrite, context, report, _length = (
+        plan_v2.MiniMaxH3PlanV2PromptMerge().merge(plan)
+    )
+
+    assert context["compiled"]["mode"] == "Ref2VA"
+    assert [entry["route"] for entry in context["compiled"]["routes"]] == [
+        "ref_audio_0"
+    ]
+    assert "<Audio 1>" in prompt and "<Video 1>" not in prompt
+    assert "Sound-effect texture" not in prompt
+    assert "sound-effect texture reference" in prompt
+    assert "video mask = 0" in report and "audio mask = 1" in report
 
 
 def test_five_shot_composition_template_compiles_automatic_media_scopes():
@@ -411,7 +508,7 @@ def test_phase3_release_and_manual_migration_document_are_present():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     migration = (ROOT / "MIGRATION_TO_PLAN_V2.md").read_text(encoding="utf-8")
 
-    assert metadata["project"]["version"] == "0.14.0"
+    assert metadata["project"]["version"] == "0.15.0"
     assert "There is intentionally no automatic conversion" in migration
     assert "Reference Sheet.selected_audio -> Audio Reference.audio" in migration
     assert "Apply Reference Plan" in migration
@@ -427,12 +524,13 @@ def test_plan_v2_browser_logic_handles_auto_transfer_and_clears_hidden_role_data
     assert 'const REPLACEMENT = "MiniMaxH3PlanV2CharacterReplacement"' in source
     assert 'const SHOT_KEYFRAME = "MiniMaxH3PlanV2ShotKeyframe"' in source
     assert 'const SHOT_MOTION = "MiniMaxH3PlanV2ShotMotionReference"' in source
+    assert 'const FOLEY = "MiniMaxH3PlanV2FoleyTarget"' in source
     assert "const motionSubjectLabels = new Map()" in source
     assert "catalog.motionSubjectLabels.get(node.id)" in source
     assert 'node.addOutput?.("shot_handle", "MINIMAX_H3_SHOT_HANDLE_V2")' in source
     assert 'const VIDEO_CONTINUE = "Source video to continue"' in source
     assert "[VIDEO_EDIT, VIDEO_CONTINUE].includes(sourceUse)" in source
     assert '"Replacement Subject"' in source
-    assert "const endpointConflict = hasEndpoint && requiresRef2va" in source
+    assert "const endpointConflict = hasEndpoint && (requiresRef2va || Boolean(foley))" in source
     assert "unassignedReferenceIds" in source
     assert "endpoint and Ref2VA roles need separate plans" in source

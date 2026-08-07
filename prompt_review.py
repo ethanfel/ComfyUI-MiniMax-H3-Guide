@@ -117,6 +117,11 @@ def _tensor_free_plan(plan_context: Any) -> dict:
         "version": plan["version"],
         "phase": plan["phase"],
         "project": dict(plan["project"]),
+        "target": {
+            key: value
+            for key, value in plan.get("target", {}).items()
+            if key != "media"
+        },
         "assets": [
             {key: value for key, value in asset.items() if key != "media"}
             for asset in plan["assets"]

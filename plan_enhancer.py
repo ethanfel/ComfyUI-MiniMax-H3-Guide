@@ -38,6 +38,7 @@ try:
         PHASE_SETUP,
         PHASE_TIMELINE,
         PLAN_TYPE,
+        TARGET_FOLEY,
         _catalog,
         _copy_plan,
         compile_h3_plan,
@@ -68,6 +69,7 @@ except ImportError:
         PHASE_SETUP,
         PHASE_TIMELINE,
         PLAN_TYPE,
+        TARGET_FOLEY,
         _catalog,
         _copy_plan,
         compile_h3_plan,
@@ -131,6 +133,11 @@ def _source_plan(plan_context: Any) -> dict:
     source["phase"] = PHASE_TIMELINE if source["shots"] else PHASE_SETUP
     source.pop("compiled", None)
     return source
+
+
+def _is_foley_context(plan_context: Any) -> bool:
+    plan = validated_plan(plan_context)
+    return plan.get("target", {}).get("task") == TARGET_FOLEY
 
 
 def _base_package(plan_context: Any) -> tuple[str, str, dict, int]:
@@ -267,6 +274,7 @@ def _compose_intent_locked_prose(
         if str(addenda[key]).strip():
             ignored.append(key)
 
+    foley = _is_foley_context(plan_context)
     for source_shot, addendum_shot, combined_shot in zip(
         source["shots"], addenda["shots"], combined["shots"]
     ):
@@ -292,6 +300,8 @@ def _compose_intent_locked_prose(
                 f"Shot {source_shot['shot_number']} camera_direction "
                 f"(introduced {', '.join(unexpected_labels)})"
             )
+        elif camera_addendum and foley:
+            ignored.append(f"Shot {source_shot['shot_number']} camera_direction (Foley picture lock)")
         elif camera_addendum and source_shot["camera_direction"].strip():
             combined_shot["camera_direction"] = _append_prose(
                 source_shot["camera_direction"], camera_addendum
@@ -589,6 +599,11 @@ def _locked_signature(plan: dict) -> dict:
             key: plan["project"][key]
             for key in ("duration_seconds", "h3_length", "effective_duration")
         },
+        "target": {
+            key: value
+            for key, value in plan.get("target", {"task": "audiovisual_generation"}).items()
+            if key != "media"
+        },
         "assets": [
             {key: value for key, value in asset.items() if key != "media"}
             for asset in plan["assets"]
@@ -641,6 +656,26 @@ def apply_editable_prose(
     labels_before = _reference_label_signature(source)
     prose_before = editable_prose_payload(original)
     payload = parse_editable_prose(editable_prose, original)
+
+    if _is_foley_context(original):
+        if payload["visual_style"] != prose_before["visual_style"]:
+            raise ValueError(
+                "Foley enhancement cannot change visual_style because the source picture "
+                "track is latent-locked. Change only sound-generation prose."
+            )
+        changed_cameras = [
+            str(source_shot["shot_number"])
+            for source_shot, candidate_shot in zip(
+                prose_before["shots"], payload["shots"]
+            )
+            if candidate_shot["camera_direction"]
+            != source_shot["camera_direction"]
+        ]
+        if changed_cameras:
+            raise ValueError(
+                "Foley enhancement cannot change camera_direction for latent-locked "
+                f"Shot(s) {', '.join(changed_cameras)}. Change only synchronized sound prose."
+            )
 
     updated = _copy_plan(source)
     updated["project"]["visual_style"] = payload["visual_style"]
@@ -722,6 +757,24 @@ def _analysis_entries(
     if maximum < 2 or maximum > 32:
         raise ValueError("max_analysis_frames must be from 2 through 32.")
 
+    target = plan.get("target", {})
+    if target.get("task") == TARGET_FOLEY:
+        media = target["media"][..., :3]
+        sampled, timestamps = _video_analysis_frames(media, H3_FPS, fps, maximum)
+        minimax_sampled, minimax_timestamps = _minimax_video_analysis_frames(media)
+        entries.append(
+            {
+                "kind": "video",
+                "label": "Foley source picture track (latent-locked; not an H3 reference)",
+                "analysis_media": _resize_long_edge(sampled, long_edge),
+                "timestamps": timestamps,
+                "minimax_analysis_media": _resize_long_edge(
+                    minimax_sampled, long_edge
+                ),
+                "minimax_timestamps": minimax_timestamps,
+            }
+        )
+
     for asset in catalog["pictures"]:
         media = asset["media"]
         evidence = _resize_long_edge(media[:1, ..., :3], long_edge)
@@ -768,6 +821,14 @@ def _plan_inventory(plan_context: Any) -> str:
             replacement["source_video_asset_id"], []
         ).append(replacement)
     lines = []
+    target = plan.get("target", {})
+    if target.get("task") == TARGET_FOLEY:
+        lines.append(
+            "FOLEY TARGET: the source picture track is latent-locked and is not a reference "
+            f"asset; duration={target['native_duration']:.3f}s; "
+            f"frames={target['native_frame_count']} at 24 FPS; video mask=0 preserves it; "
+            "audio mask=1 generates the complete target audio stream."
+        )
     for asset in catalog["pictures"]:
         label = catalog["picture_labels"][asset["asset_id"]]
         lines.append(
@@ -878,6 +939,23 @@ def _effective_system_prompt(
             "- Presentation choices may be added only when they preserve every source fact, "
             "emphasis, intensity, role, and negative constraint."
         )
+    foley_contract = (
+        "\n\nFOLEY PICTURE-LOCK CONTRACT:\n"
+        "- The supplied source picture track is authoritative and cannot change. Do not add, "
+        "remove, restage, or reinterpret any visible subject, action, cut, composition, camera "
+        "movement, lighting, or timing.\n"
+        "- Improve only audio-generation prose: concrete diegetic sounds synchronized to visible "
+        "actions, continuous ambience grounded in the visible setting, non-verbal human sounds, "
+        "explicit supplied dialogue, and explicitly requested non-diegetic music.\n"
+        "- In Shot descriptions, use visible actions only as concise timing anchors for sound. "
+        "Never invent an off-screen source, speech, music, or an event that pixels do not support.\n"
+        "- For this Foley task only, this contract overrides the general rule against inferring "
+        "audio from pixels: infer ordinary physical Foley only when a visible action or source "
+        "supports it; never infer words, voice identity, music, or unseen events.\n"
+        "- Keep every camera_direction addendum empty because the camera track is already locked."
+        if _is_foley_context(plan_context)
+        else ""
+    )
     return (
         base_prompt.strip()
         + "\n\nLOCKED OUTPUT CONTRACT — these instructions take precedence over any "
@@ -893,7 +971,7 @@ def _effective_system_prompt(
         "and other negative constraints.\n"
         + "- Compiler-managed dialogue lines are masked in the read-only scene context. Never "
         "reconstruct dialogue wording, H3 dialogue-tag markup, speaker IDs, voice-reference clauses, or "
-        "delivery clauses inside editable prose." + mode_contract
+        "delivery clauses inside editable prose." + mode_contract + foley_contract
     )
 
 
@@ -905,17 +983,33 @@ def _llm_user_prompt(
     enhancement_mode: str = ENHANCEMENT_MODE_INTENT_LOCKED,
 ) -> str:
     enhancement_mode = _validate_enhancement_mode(enhancement_mode)
-    visual_note = (
-        "Reference images and timestamped video samples are attached. Use them only according "
-        "to REFERENCE INVENTORY."
-        if visual_analysis == VISUAL_ANALYSIS_ENABLED
-        else "No pixels are attached. Use text metadata only."
-    )
+    if visual_analysis == VISUAL_ANALYSIS_ENABLED and _is_foley_context(plan_context):
+        visual_note = (
+            "Timestamped samples from the latent-locked Foley source picture track are attached, "
+            "along with any declared reference visuals. Use visible actions as sound-sync evidence "
+            "under the FOLEY PICTURE-LOCK CONTRACT."
+        )
+    elif visual_analysis == VISUAL_ANALYSIS_ENABLED:
+        visual_note = (
+            "Reference images and timestamped video samples are attached. Use them only according "
+            "to REFERENCE INVENTORY."
+        )
+    else:
+        visual_note = "No pixels are attached. Use text metadata only."
     shot_count = len(editable_prose_payload(plan_context)["shots"])
+    foley = _is_foley_context(plan_context)
     if enhancement_mode == ENHANCEMENT_MODE_INTENT_LOCKED:
         detail_target = (
-            f"Write addenda for all {shot_count} Shot descriptions. Aim for 30-70 useful words "
-            "per Shot without restating, replacing, softening, or intensifying the locked source."
+            (
+                f"Write sound-only addenda for all {shot_count} Shot descriptions. Use concise "
+                "visible sync anchors and concrete audible results; do not add visual production "
+                "detail to the locked picture track."
+            )
+            if foley
+            else (
+                f"Write addenda for all {shot_count} Shot descriptions. Aim for 30-70 useful words "
+                "per Shot without restating, replacing, softening, or intensifying the locked source."
+            )
         )
         output_material = f"""LOCKED ORIGINAL PROSE — context only; Python preserves it verbatim
 {editable_prose_json(plan_context)}
@@ -924,6 +1018,13 @@ ADDENDA JSON TEMPLATE — return this exact schema with additions only
 {intent_addenda_json(plan_context)}"""
     else:
         detail_target = (
+            (
+                f"Rewrite all {shot_count} Shot descriptions as precise sound cues grounded in "
+                "the locked source picture track. Preserve every visible fact and leave camera "
+                "directions unchanged."
+            )
+            if foley
+            else
             f"Materially expand all {shot_count} Shot descriptions. Aim for 80-140 useful words per "
             "Shot plus one concise camera_direction per Shot, unless the supplied prose is already "
             "equally specific."

@@ -29,6 +29,7 @@ try:
         PHASE_SETUP,
         PHASE_TIMELINE,
         PLAN_TYPE,
+        TARGET_FOLEY,
         _copy_plan,
         compile_h3_plan,
         validated_plan,
@@ -44,6 +45,7 @@ except ImportError:
         PHASE_SETUP,
         PHASE_TIMELINE,
         PLAN_TYPE,
+        TARGET_FOLEY,
         _copy_plan,
         compile_h3_plan,
         validated_plan,
@@ -52,6 +54,9 @@ except ImportError:
 
 NATIVE_H3_MODULE = "comfy_extras.nodes_minimax_h3"
 NATIVE_H3_CONTRACT = "2026-08-04 autogrow H3 API"
+FOLEY_MASKING_REQUIREMENT = (
+    "MiniMax H3 per-token video/audio masking (ComfyUI PR #15375 or an equivalent patch)"
+)
 ENDPOINT_NODE_ID = "MiniMaxH3ImageToVideo"
 REFERENCE_NODE_ID = "MiniMaxH3ReferenceToVideo"
 
@@ -277,6 +282,15 @@ def prepare_native_h3_call(
             ),
             "Applied routes:",
             *route_lines,
+            *(
+                [
+                    "Foley latent: source video VAE latent with mask 0 (preserved); "
+                    "empty audio latent with mask 1 (generated).",
+                    f"Foley core requirement: {FOLEY_MASKING_REQUIREMENT}.",
+                ]
+                if metadata.get("target_task") == TARGET_FOLEY
+                else []
+            ),
         ]
     )
     return {
@@ -287,6 +301,8 @@ def prepare_native_h3_call(
         "prompt": supplied_prompt,
         "kwargs": kwargs,
         "needs_audio_vae": needs_audio_vae,
+        "target_task": metadata.get("target_task"),
+        "target": compiled.get("target"),
         "report": report,
     }
 
@@ -336,6 +352,129 @@ def _native_outputs(result: Any, node_id: str) -> tuple[Any, Any]:
     return values[0], values[1]
 
 
+def _require_foley_masking_support() -> None:
+    """Fail before a long sample when core cannot preserve one AV stream."""
+
+    try:
+        model_base = importlib.import_module("comfy.model_base")
+        minimax_model = importlib.import_module("comfy.ldm.minimax.model")
+        h3_class = getattr(model_base, "MiniMaxH3")
+        forward = getattr(minimax_model, "MiniMaxH3Model").forward
+    except Exception as error:
+        raise RuntimeError(
+            "Cannot verify MiniMax H3 Foley masking support in this ComfyUI install. "
+            f"Required: {FOLEY_MASKING_REQUIREMENT}."
+        ) from error
+
+    h3_methods = getattr(h3_class, "__dict__", {})
+    forward_parameters = set(inspect.signature(forward).parameters)
+    if not (
+        callable(h3_methods.get("process_denoise_mask"))
+        and callable(h3_methods.get("scale_latent_inpaint"))
+        and {"denoise_mask", "audio_denoise_mask"}.issubset(forward_parameters)
+    ):
+        raise RuntimeError(
+            "Installed ComfyUI does not yet support MiniMax H3 per-stream latent masks. "
+            "Foley would otherwise regenerate or corrupt the locked picture track. Install "
+            "a ComfyUI build containing PR #15375, or enable an equivalent temporary "
+            "per-row-masking compatibility patch, then restart ComfyUI."
+        )
+
+
+def _resize_foley_video(video_frames: Any, width: int, height: int):
+    frames = video_frames[..., :3]
+    if int(frames.shape[1]) == height and int(frames.shape[2]) == width:
+        return frames
+    try:
+        comfy_utils = importlib.import_module("comfy.utils")
+        return comfy_utils.common_upscale(
+            frames.movedim(-1, 1),
+            width,
+            height,
+            "lanczos",
+            "disabled",
+        ).movedim(1, -1)
+    except Exception as error:
+        raise RuntimeError(
+            "Could not resize the Foley source video to the Apply Reference Plan canvas."
+        ) from error
+
+
+def _nested_pair(template: Any, first: Any, second: Any):
+    try:
+        return type(template)((first, second))
+    except Exception:
+        try:
+            nested = importlib.import_module("comfy.nested_tensor")
+            return nested.NestedTensor((first, second))
+        except Exception as error:
+            raise RuntimeError(
+                "Could not construct MiniMax H3's joint video/audio latent."
+            ) from error
+
+
+def _masked_foley_latent(native_latent: Any, encoded_video: Any) -> dict:
+    if not isinstance(native_latent, dict) or "samples" not in native_latent:
+        raise RuntimeError("Native MiniMax H3 returned a malformed AV latent.")
+    samples = native_latent["samples"]
+    try:
+        streams = tuple(samples.unbind())
+    except Exception as error:
+        raise RuntimeError(
+            "Native MiniMax H3 did not return the expected joint video/audio latent."
+        ) from error
+    if len(streams) != 2:
+        raise RuntimeError(
+            "Native MiniMax H3 AV latent must contain exactly one video and one audio stream."
+        )
+    empty_video, empty_audio = streams
+    if tuple(encoded_video.shape) != tuple(empty_video.shape):
+        raise RuntimeError(
+            "The Foley source encoded to an unexpected latent shape. Expected "
+            f"{tuple(empty_video.shape)}, received {tuple(encoded_video.shape)}. Confirm that "
+            "the MiniMax H3 video VAE is connected and that width/height match the source aspect."
+        )
+
+    try:
+        import torch
+
+        video_mask = torch.zeros_like(encoded_video)
+        audio_mask = torch.ones_like(empty_audio)
+    except Exception as error:
+        raise RuntimeError("Could not build the Foley video/audio latent masks.") from error
+
+    output = dict(native_latent)
+    output["samples"] = _nested_pair(samples, encoded_video, empty_audio)
+    output["noise_mask"] = _nested_pair(samples, video_mask, audio_mask)
+    return output
+
+
+def _foley_target_latent(
+    target: Any,
+    native_latent: Any,
+    vae: Any,
+    width: int,
+    height: int,
+) -> dict:
+    if not isinstance(target, dict) or target.get("task") != TARGET_FOLEY:
+        raise RuntimeError("Compiled Foley target metadata is missing or stale.")
+    video_frames = target.get("media")
+    if video_frames is None:
+        raise RuntimeError(
+            "Foley target media is unavailable. Queue from the connected Foley Target node."
+        )
+    _require_foley_masking_support()
+    resized = _resize_foley_video(video_frames, width, height)
+    try:
+        encoded_video = vae.encode(resized)
+    except Exception as error:
+        raise RuntimeError(
+            "The connected VAE could not encode the Foley source video. Use the official "
+            "MiniMax H3 video VAE, not the audio VAE or a different model's VAE."
+        ) from error
+    return _masked_foley_latent(native_latent, encoded_video)
+
+
 class MiniMaxH3PlanV2ApplyReferencePlan:
     """Apply one compiled Plan v2 package through ComfyUI's native H3 node."""
 
@@ -351,7 +490,10 @@ class MiniMaxH3PlanV2ApplyReferencePlan:
     )
     OUTPUT_TOOLTIPS = (
         "Native MiniMax H3 positive conditioning for Basic Guider or another sampler path.",
-        "Native empty joint audio/video latent, ready for sampling.",
+        (
+            "Native joint audio/video latent. For a Foley plan, the source video is VAE-encoded "
+            "and masked 0 while the empty audio stream is masked 1."
+        ),
         "The exact prompt verified against and sent with plan_context.",
         "Native 17k+5 target frame count at 24 FPS.",
         "Mode, checkpoint family, native implementation, target size, and applied routes.",
@@ -359,7 +501,8 @@ class MiniMaxH3PlanV2ApplyReferencePlan:
     DESCRIPTION = (
         "End-to-end Plan v2 handoff. Verifies that prompt and plan_context match, routes every "
         "stored reference in native order, and delegates conditioning to ComfyUI's official "
-        "MiniMax H3 implementation. It does not duplicate the native encoder."
+        "MiniMax H3 implementation. For Foley targets it also builds the locked-video / "
+        "generated-audio latent required by per-token masking."
     )
 
     @classmethod
@@ -475,6 +618,14 @@ class MiniMaxH3PlanV2ApplyReferencePlan:
             kwargs["audio_vae"] = audio_vae
         result = native_class.execute(**kwargs)
         conditioning, latent = _native_outputs(result, package["node_id"])
+        if package["target_task"] == TARGET_FOLEY:
+            latent = _foley_target_latent(
+                package["target"],
+                latent,
+                vae,
+                int(package["kwargs"]["width"]),
+                int(package["kwargs"]["height"]),
+            )
         return (
             conditioning,
             latent,

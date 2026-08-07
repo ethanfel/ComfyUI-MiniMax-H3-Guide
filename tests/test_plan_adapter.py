@@ -24,6 +24,7 @@ from plan_v2 import (
     VIDEO_EDIT,
     MiniMaxH3PlanV2AudioReference,
     MiniMaxH3PlanV2DialogueEvent,
+    MiniMaxH3PlanV2FoleyTarget,
     MiniMaxH3PlanV2ImageReference,
     MiniMaxH3PlanV2ProjectSetup,
     MiniMaxH3PlanV2Shot,
@@ -84,6 +85,33 @@ def audio_value(seconds=3.0):
 def compile_plan(plan):
     prompt, _rewrite, _report, compiled, length = compile_h3_plan(plan)
     return prompt, compiled, length
+
+
+def compiled_foley():
+    plan = project("Generate realistic Foley synchronized to the locked picture track.")
+    plan = MiniMaxH3PlanV2FoleyTarget().set_foley_target(
+        plan,
+        torch.zeros(144, 32, 32, 3),
+        24.0,
+    )[0]
+    plan = MiniMaxH3PlanV2Shot().add_shot(
+        plan,
+        0.0,
+        "A person walks across the room; every footfall is synchronized to contact.",
+        "",
+        "Direct cut",
+    )[0]
+    return compile_plan(plan)
+
+
+class FakeNested:
+    is_nested = True
+
+    def __init__(self, streams):
+        self.streams = tuple(streams)
+
+    def unbind(self):
+        return self.streams
 
 
 def mixed_reference_package():
@@ -152,6 +180,41 @@ def test_text_only_plan_prepares_native_endpoint_call():
     assert package["kwargs"]["last_frame"] is None
     assert package["needs_audio_vae"] is False
     assert "Applied routes:\n- none" in package["report"]
+
+
+def test_foley_package_keeps_source_out_of_reference_routes():
+    prompt, compiled, length = compiled_foley()
+
+    package = prepare_native_h3_call(compiled, prompt, 32, 32)
+
+    assert package["node_id"] == ENDPOINT_NODE_ID
+    assert package["mode"] == "T2VA"
+    assert package["h3_length"] == length == 158
+    assert package["target_task"] == plan_adapter.TARGET_FOLEY
+    assert package["target"]["media"].shape[0] == length
+    assert package["kwargs"]["first_frame"] is None
+    assert package["kwargs"]["last_frame"] is None
+    assert "source video VAE latent with mask 0" in package["report"]
+    assert "Applied routes:\n- none" in package["report"]
+
+
+def test_foley_latent_preserves_video_and_generates_audio_masks():
+    encoded_video = torch.randn(1, 24, 47, 2, 2)
+    empty_audio = torch.zeros(1, 32, 2, 264)
+    native = {
+        "samples": FakeNested((torch.zeros_like(encoded_video), empty_audio)),
+        "batch_index": [0],
+    }
+
+    result = plan_adapter._masked_foley_latent(native, encoded_video)
+    video, audio = result["samples"].unbind()
+    video_mask, audio_mask = result["noise_mask"].unbind()
+
+    assert video is encoded_video
+    assert audio is empty_audio
+    assert torch.count_nonzero(video_mask) == 0
+    assert torch.all(audio_mask == 1)
+    assert result["batch_index"] == [0]
 
 
 def test_first_and_last_frames_are_routed_without_reference_dicts():
@@ -237,6 +300,47 @@ def test_adapter_delegates_to_native_class_and_returns_its_two_outputs(monkeypat
     assert captured["clip"] == "clip"
     assert captured["vae"] == "video-vae"
     assert captured["length"] == length
+
+
+def test_adapter_replaces_native_empty_latent_for_foley(monkeypatch):
+    prompt, compiled, length = compiled_foley()
+    native_latent = {"samples": "empty-av"}
+    captured = {}
+
+    class FakeNative:
+        @classmethod
+        def execute(cls, **kwargs):
+            return types.SimpleNamespace(result=("conditioning", native_latent))
+
+    def fake_foley(target, latent, vae, width, height):
+        captured.update(
+            target=target,
+            latent=latent,
+            vae=vae,
+            width=width,
+            height=height,
+        )
+        return {"samples": "masked-foley"}
+
+    monkeypatch.setattr(plan_adapter, "_native_h3_class", lambda _node_id: FakeNative)
+    monkeypatch.setattr(plan_adapter, "_foley_target_latent", fake_foley)
+
+    result = MiniMaxH3PlanV2ApplyReferencePlan().apply_reference_plan(
+        "clip",
+        "video-vae",
+        prompt,
+        compiled,
+        32,
+        32,
+        "match",
+    )
+
+    assert result[0] == "conditioning"
+    assert result[1] == {"samples": "masked-foley"}
+    assert result[3] == length
+    assert captured["latent"] is native_latent
+    assert captured["vae"] == "video-vae"
+    assert (captured["width"], captured["height"]) == (32, 32)
 
 
 def test_reference_audio_requires_audio_vae_before_native_execution(monkeypatch):

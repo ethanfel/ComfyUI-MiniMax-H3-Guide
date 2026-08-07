@@ -158,6 +158,9 @@ MODE_FL2VA = "FL2VA"
 MODE_L2VA = "L2VA"
 MODE_REF2VA = "Ref2VA"
 
+TARGET_AV = "audiovisual_generation"
+TARGET_FOLEY = "foley_from_preserved_video"
+
 _REFERENCE_TOKEN_RE = re.compile(
     r"<\s*(Subject|Picture|Video|Audio)\s+(\d+)\s*>",
     re.IGNORECASE,
@@ -212,6 +215,9 @@ def _copy_plan(plan: dict) -> dict:
 
     copied = dict(plan)
     copied["project"] = dict(plan["project"])
+    copied["target"] = dict(
+        plan.get("target", {"task": TARGET_AV})
+    )
     for key in (
         "assets",
         "bindings",
@@ -255,6 +261,7 @@ def validated_plan(plan: Any, *, allowed_phases: set[str] | None = None) -> dict
         raise ValueError("h3_plan contains stale native duration data.")
 
     normalized = dict(plan)
+    normalized.setdefault("target", {"task": TARGET_AV})
     normalized.setdefault("character_replacements", [])
     for key in (
         "assets",
@@ -275,6 +282,26 @@ def validated_plan(plan: Any, *, allowed_phases: set[str] | None = None) -> dict
         raise ValueError("Every plan asset needs a stable internal asset_id.")
     if len(asset_ids) != len(set(asset_ids)):
         raise ValueError("h3_plan contains duplicate internal asset IDs.")
+
+    target = normalized["target"]
+    if not isinstance(target, dict) or target.get("task") not in {
+        TARGET_AV,
+        TARGET_FOLEY,
+    }:
+        raise ValueError("h3_plan contains an invalid target task.")
+    if target["task"] == TARGET_FOLEY:
+        media = target.get("media")
+        shape = getattr(media, "shape", None)
+        if (
+            shape is None
+            or len(shape) != 4
+            or int(shape[0]) != h3_length
+            or int(shape[-1]) < 3
+        ):
+            raise ValueError(
+                "h3_plan contains an invalid Foley target video. Re-run MiniMax H3 "
+                "Foley Target (Plan v2) from the source frame batch."
+            )
     return _copy_plan(normalized)
 
 
@@ -298,6 +325,7 @@ def _new_plan(
             "overall_soundscape": _clean_block(overall_soundscape),
             "non_diegetic_music": _clean_block(non_diegetic_music, "N/A"),
         },
+        "target": {"task": TARGET_AV},
         "assets": [],
         "bindings": [],
         "character_replacements": [],
@@ -438,6 +466,84 @@ def _prepare_video_frames(video_frames: Any, source_fps: float, h3_length: int):
         resampled_count,
         native_count,
     )
+
+
+def _prepare_foley_video_frames(
+    video_frames: Any,
+    source_fps: float,
+    requested_duration: float,
+    h3_length: int,
+):
+    """Resample a locked picture track to H3's exact target frame grid."""
+
+    shape = getattr(video_frames, "shape", None)
+    if shape is None or len(shape) != 4 or int(shape[0]) < 1 or int(shape[-1]) < 3:
+        raise ValueError(
+            "H3 Foley Target needs an IMAGE frame batch in "
+            "[frames, height, width, channels] form."
+        )
+    fps = float(source_fps)
+    if not math.isfinite(fps) or fps <= 0.0 or fps > 240.0:
+        raise ValueError(
+            "Foley source_fps must be a finite value above 0 and at most 240."
+        )
+
+    source_count = int(shape[0])
+    source_duration = source_count / fps
+    max_native_duration = native_frame_count(15.0) / H3_FPS
+    if (
+        source_duration < 4.0 - 0.0005
+        or source_duration > max_native_duration + 0.0005
+    ):
+        raise ValueError(
+            "The Foley source video must last from 4 through 15 seconds; the native "
+            "362-frame/15.083-second padding boundary is also accepted. "
+            f"Received {source_count} frames at {fps:g} FPS "
+            f"({source_duration:.3f} seconds)."
+        )
+
+    resampled_count = max(1, math.ceil(source_duration * H3_FPS - 1e-9))
+    requested_count = max(1, math.ceil(float(requested_duration) * H3_FPS - 1e-9))
+    if not (
+        requested_count - 1 <= resampled_count <= requested_count + 1
+        or resampled_count == int(h3_length)
+    ):
+        raise ValueError(
+            "Project duration must match the Foley source video. Set duration_seconds "
+            f"to about {source_duration:.3f}, or load the already aligned "
+            f"{h3_length}-frame source batch."
+        )
+
+    indices = [
+        min(source_count - 1, int(math.floor(index * fps / H3_FPS)))
+        for index in range(resampled_count)
+    ]
+    try:
+        import torch
+
+        index_tensor = torch.tensor(
+            indices, dtype=torch.long, device=video_frames.device
+        )
+        prepared = video_frames.index_select(0, index_tensor)
+    except (ImportError, AttributeError):
+        prepared = video_frames[indices]
+
+    if int(prepared.shape[0]) > int(h3_length):
+        prepared = prepared[:h3_length]
+    padded_count = int(h3_length) - int(prepared.shape[0])
+    if padded_count > 0:
+        try:
+            prepared = torch.cat(
+                [prepared, prepared[-1:].repeat(padded_count, 1, 1, 1)], dim=0
+            )
+        except (NameError, AttributeError):
+            prepared = type(prepared)([*prepared, *([prepared[-1]] * padded_count)])
+
+    return prepared, source_duration, resampled_count, padded_count
+
+
+def _is_foley_plan(plan: dict) -> bool:
+    return plan.get("target", {}).get("task") == TARGET_FOLEY
 
 
 def _audio_duration(audio: Any) -> float:
@@ -1336,10 +1442,43 @@ def _validate_final_plan(plan: dict, catalog: dict, mode: str) -> None:
         raise ValueError(
             "Every audio asset needs exactly one matching audio relationship."
         )
-    if mode == MODE_REF2VA and not (catalog["pictures"] or catalog["videos"]):
+    if (
+        mode == MODE_REF2VA
+        and not _is_foley_plan(plan)
+        and not (catalog["pictures"] or catalog["videos"])
+    ):
         raise ValueError(
             "Reference audio cannot be the only Ref2VA input; add at least one image or video."
         )
+    if _is_foley_plan(plan):
+        endpoint_pictures = [
+            asset
+            for asset in catalog["pictures"]
+            if asset["relationship"] in {IMAGE_FIRST_FRAME, IMAGE_LAST_FRAME}
+        ]
+        if endpoint_pictures:
+            raise ValueError(
+                "Foley already preserves the complete source picture track. Do not add Exact "
+                "first/last frame references; use only optional Ref2VA guidance assets."
+            )
+        target = plan["target"]
+        if int(target.get("native_frame_count", 0)) != int(
+            plan["project"]["h3_length"]
+        ):
+            raise ValueError(
+                "The Foley picture track no longer matches Project duration. Re-run Foley Target."
+            )
+        copy_uses = {
+            relationship["use"]
+            for relationship in plan["audio_relationships"]
+            if relationship["use"] in {AUDIO_COPY_COMPLETE, AUDIO_COPY_PARTIAL}
+        }
+        if copy_uses:
+            raise ValueError(
+                "Foley uses audio mask 1 and therefore replaces the complete audio stream. "
+                "Copy complete/partial audio roles are incompatible; use a timbre, sound-texture, "
+                "beat, continuity, or broad reference instead."
+            )
     if not plan["shots"] and not _clean_block(plan["project"]["initial_prompt"]):
         raise ValueError("Add an initial prompt or at least one H3 Shot description.")
     if plan["shots"]:
@@ -1800,6 +1939,8 @@ def _task_types(plan: dict, catalog: dict) -> list[str]:
         tasks.append("audio reuse")
     if audio_uses - {AUDIO_COPY_COMPLETE, AUDIO_COPY_PARTIAL}:
         tasks.append("audio reference")
+    if _is_foley_plan(plan) and catalog["audios"] and "reference generation" not in tasks:
+        tasks.insert(0, "reference generation")
     return tasks or ["reference generation"]
 
 
@@ -1830,6 +1971,11 @@ def _summary_premise(plan: dict) -> str:
 def _summary(plan: dict, catalog: dict) -> str:
     tasks = _task_types(plan, catalog)
     sentences: list[str] = [f"[{' + '.join(tasks)}]"]
+    if _is_foley_plan(plan):
+        sentences.append(
+            "The source picture track is preserved exactly; only a new synchronized target "
+            "audio track is generated."
+        )
     for video in catalog["videos"]:
         label = catalog["video_labels"][video["asset_id"]]
         if video["relationship"] == VIDEO_EDIT:
@@ -2281,12 +2427,21 @@ def _implicit_or_planned_shots(plan: dict) -> list[dict]:
 
 def _detailed_description(plan: dict, catalog: dict) -> str:
     project = plan["project"]
-    style = _clean_inline(
-        project["visual_style"], "a coherent cinematic audiovisual style"
-    )
-    lines = [
-        f"The target video uses {style} and lasts {project['effective_duration']:.3f} seconds."
-    ]
+    foley = _is_foley_plan(plan)
+    if foley:
+        lines = [
+            "The source video's picture track is the target picture track and remains exactly "
+            "unchanged, including every frame, cut, camera movement, composition, visible "
+            "subject, action, lighting change, and timing. Generate only a new synchronized "
+            f"audio track across its {project['effective_duration']:.3f}-second native timeline."
+        ]
+    else:
+        style = _clean_inline(
+            project["visual_style"], "a coherent cinematic audiovisual style"
+        )
+        lines = [
+            f"The target video uses {style} and lasts {project['effective_duration']:.3f} seconds."
+        ]
     if plan["shots"] and _clean_block(project["initial_prompt"]):
         lines.append(_sentence(project["initial_prompt"]))
 
@@ -2353,6 +2508,18 @@ def _detailed_description(plan: dict, catalog: dict) -> str:
 def _base_description(plan: dict, catalog: dict) -> str:
     project = plan["project"]
     style = _sentence(project["visual_style"])
+    foley = _is_foley_plan(plan)
+    foley_lead = (
+        "The source video's picture track remains exactly unchanged. Generate only a new "
+        "synchronized audio track for the visible timeline."
+        if foley
+        else ""
+    )
+    global_intent = (
+        _sentence(project["initial_prompt"])
+        if foley and plan["shots"]
+        else ""
+    )
     events_by_shot: dict[int, list[dict]] = {}
     for event in plan["dialogue_events"]:
         events_by_shot.setdefault(event["shot_number"], []).append(event)
@@ -2363,8 +2530,15 @@ def _base_description(plan: dict, catalog: dict) -> str:
             shot["description"], "Describe the target action and setting."
         )
         if number == 1:
-            prefix = f"{style} " if style else ""
-            line = f"[Shot 1] {prefix}{description}"
+            if foley:
+                line = " ".join(
+                    value
+                    for value in ("[Shot 1]", foley_lead, global_intent, description)
+                    if value
+                )
+            else:
+                prefix = f"{style} " if style else ""
+                line = f"[Shot 1] {prefix}{description}"
         else:
             transition = _transition_prefix(shot["transition"])
             line = (
@@ -2529,6 +2703,12 @@ def _problems_report(
 ) -> str:
     lines = [
         "Plan ready: 0 errors.",
+        (
+            "Target task: video-to-audio Foley; preserve the source picture track and "
+            "generate the complete audio stream."
+            if _is_foley_plan(plan)
+            else "Target task: audiovisual generation."
+        ),
         f"Mode: {mode}",
         f"Checkpoint: {checkpoint}",
         (
@@ -2548,6 +2728,25 @@ def _problems_report(
         lines.extend(f"- {entry['label']} -> {entry['route']}" for entry in routes)
     else:
         lines.append("- none")
+    if _is_foley_plan(plan):
+        target = plan["target"]
+        lines.extend(
+            [
+                "Foley target latent:",
+                (
+                    f"- source picture track: {target['source_duration']:.3f}s -> "
+                    f"{target['native_frame_count']} frames / "
+                    f"{target['native_duration']:.3f}s at 24 FPS; this is not a Ref2VA route."
+                ),
+                "- video mask = 0: preserve every video latent token.",
+                "- audio mask = 1: generate the complete audio latent stream.",
+                (
+                    "- Prompt each Shot with visible timing anchors followed by concrete "
+                    "diegetic sounds; keep broad ambience in overall_soundscape and use "
+                    "non_diegetic_music only for an audience-only score."
+                ),
+            ]
+        )
     if catalog["videos"]:
         lines.append("Source video intervals:")
         for video in catalog["videos"]:
@@ -2636,7 +2835,13 @@ def _problems_report(
     return "\n".join(lines)
 
 
-def _rewrite_request(prompt: str, report: str, mode: str) -> str:
+def _rewrite_request(
+    prompt: str,
+    report: str,
+    mode: str,
+    *,
+    foley: bool = False,
+) -> str:
     section_rule = (
         "Preserve exactly these six section names and their order: subject_definitions, "
         "summary, retention_analysis, detailed_description, overall_soundscape, "
@@ -2645,6 +2850,12 @@ def _rewrite_request(prompt: str, report: str, mode: str) -> str:
         else "Preserve the endpoint preamble when present and exactly these three fields: "
         "integrated_multimodal_description, overall_soundscape, non_diegetic_music."
     )
+    foley_rule = (
+        "\nThe source picture track is latent-locked. Do not propose, imply, or add visual "
+        "changes; improve only grounded sound timing, ambience, dialogue, and music prose."
+        if foley
+        else ""
+    )
     return f"""Improve only the descriptive prose in this valid MiniMax H3 {mode} prompt.
 
 {section_rule}
@@ -2652,7 +2863,7 @@ Do not add, remove, rename, or renumber any <Subject N>, <Picture N>, <Video N>,
 Do not change task types, retention markers, native roles, speaker IDs, exact <d> dialogue,
 languages, Shot order, or cut timestamps. Do not infer audio meaning from imagery. Return only
 the complete enhanced H3 prompt. If an instruction conflicts with a locked fact, preserve the
-locked fact.
+locked fact.{foley_rule}
 
 COMPILER REPORT
 {report}
@@ -2702,12 +2913,23 @@ def compile_h3_plan(plan: Any) -> tuple[str, str, str, dict, int]:
         prompt = f"{preamble}\n\n{body}" if preamble else body
 
     report = _problems_report(validated, catalog, mode, checkpoint, routes)
-    rewrite = _rewrite_request(prompt, report, mode)
+    rewrite = _rewrite_request(
+        prompt,
+        report,
+        mode,
+        foley=_is_foley_plan(validated),
+    )
     compiled_plan = _copy_plan(validated)
     compiled_plan["phase"] = PHASE_COMPILED
     compiled_plan["compiled"] = {
         "mode": mode,
         "checkpoint": checkpoint,
+        "target_task": validated["target"]["task"],
+        "latent_strategy": (
+            "preserve_video_generate_audio"
+            if _is_foley_plan(validated)
+            else "generate_audiovisual"
+        ),
         "routes": [dict(entry) for entry in routes],
         "subject_labels": {
             group["subject_name"]: group["label"]
@@ -2836,6 +3058,110 @@ class MiniMaxH3PlanV2ProjectSetup:
             f"Non-diegetic music: {project['non_diegetic_music']}"
         )
         return plan, project["h3_length"], preview
+
+
+class MiniMaxH3PlanV2FoleyTarget:
+    """Lock a source picture track and generate only its synchronized audio."""
+
+    CATEGORY = "MiniMax H3/Plan v2"
+    FUNCTION = "set_foley_target"
+    RETURN_TYPES = (PLAN_TYPE, "IMAGE", "STRING")
+    RETURN_NAMES = ("h3_plan", "h3_video", "foley_preview")
+    OUTPUT_TOOLTIPS = (
+        "Continue to optional reference nodes, Shots, then Prompt Merge.",
+        "The source picture track resampled to 24 FPS and padded to the exact H3 target grid.",
+        "Source timing, native frame preparation, mask semantics, and prompting guidance.",
+    )
+    DESCRIPTION = (
+        "Configures video-to-audio Foley without registering the source as an H3 Video "
+        "Reference. Apply Reference Plan later VAE-encodes this picture track, preserves it "
+        "with video mask 0, and generates the audio stream with audio mask 1."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "h3_plan": (
+                    PLAN_TYPE,
+                    {
+                        "tooltip": (
+                            "Connect Project Setup before adding references or Shots. The Project "
+                            "duration must match the source video's real duration."
+                        )
+                    },
+                ),
+                "video_frames": (
+                    "IMAGE",
+                    {
+                        "tooltip": (
+                            "Decoded source-video frames. Connect this batch only here, not to "
+                            "Video Reference: the picture track becomes the preserved sampler "
+                            "latent rather than expensive Ref2VA conditioning."
+                        )
+                    },
+                ),
+                "source_fps": (
+                    "FLOAT",
+                    {
+                        "default": 24.0,
+                        "min": 0.01,
+                        "max": 240.0,
+                        "step": 0.01,
+                        "tooltip": (
+                            "Frame rate represented by video_frames. A loader forced to 24 FPS "
+                            "should use 24 here."
+                        ),
+                    },
+                ),
+            }
+        }
+
+    def set_foley_target(self, h3_plan, video_frames, source_fps: float):
+        plan = validated_plan(h3_plan, allowed_phases={PHASE_SETUP})
+        if plan["assets"] or plan["bindings"] or plan["audio_relationships"]:
+            raise ValueError(
+                "Foley Target must immediately follow Project Setup. Add any optional "
+                "identity or audio references after the Foley Target node."
+            )
+        if _is_foley_plan(plan):
+            raise ValueError("This plan already has a Foley target video.")
+
+        project = plan["project"]
+        prepared, source_duration, resampled_count, padded_count = (
+            _prepare_foley_video_frames(
+                video_frames,
+                source_fps,
+                project["duration_seconds"],
+                project["h3_length"],
+            )
+        )
+        updated = _copy_plan(plan)
+        updated["target"] = {
+            "task": TARGET_FOLEY,
+            "media": prepared,
+            "source_duration": source_duration,
+            "source_fps": float(source_fps),
+            "resampled_frame_count": resampled_count,
+            "native_frame_count": int(project["h3_length"]),
+            "native_duration": float(project["effective_duration"]),
+            "padded_frame_count": padded_count,
+        }
+        padding = (
+            f"; held the final source frame for {padded_count} frame(s) to reach the grid"
+            if padded_count
+            else ""
+        )
+        preview = (
+            f"Foley target ready: {source_duration:.3f}s source -> "
+            f"{resampled_count} frame(s) at 24 FPS -> {project['h3_length']} native "
+            f"frame(s)/{project['effective_duration']:.3f}s{padding}.\n"
+            "Latent masks: video=0 (preserve every picture token), audio=1 "
+            "(generate the complete audio stream). Do not also connect this source to "
+            "Video Reference. In each Shot, describe visible sync anchors and the sound "
+            "that must occur at those exact actions."
+        )
+        return updated, prepared, preview
 
 
 class MiniMaxH3PlanV2ImageReference:
@@ -4506,6 +4832,7 @@ class MiniMaxH3PlanV2PromptMerge:
 
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3PlanV2ProjectSetup": MiniMaxH3PlanV2ProjectSetup,
+    "MiniMaxH3PlanV2FoleyTarget": MiniMaxH3PlanV2FoleyTarget,
     "MiniMaxH3PlanV2ImageReference": MiniMaxH3PlanV2ImageReference,
     "MiniMaxH3PlanV2SubjectBinding": MiniMaxH3PlanV2SubjectBinding,
     "MiniMaxH3PlanV2VideoReference": MiniMaxH3PlanV2VideoReference,
@@ -4520,6 +4847,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3PlanV2ProjectSetup": "MiniMax H3 Project Setup (Plan v2)",
+    "MiniMaxH3PlanV2FoleyTarget": "MiniMax H3 Foley Target (Plan v2)",
     "MiniMaxH3PlanV2ImageReference": "MiniMax H3 Image Reference (Plan v2)",
     "MiniMaxH3PlanV2SubjectBinding": "MiniMax H3 Subject Binding (Plan v2)",
     "MiniMaxH3PlanV2VideoReference": "MiniMax H3 Video Reference (Plan v2)",

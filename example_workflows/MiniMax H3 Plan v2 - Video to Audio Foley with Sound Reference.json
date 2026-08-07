@@ -1,0 +1,229 @@
+{
+  "id": "72b60adc-0048-4874-b331-b6a42e74d663",
+  "revision": 0,
+  "last_node_id": 15,
+  "last_link_id": 15,
+  "nodes": [
+    {
+      "id": 1, "type": "MiniMaxH3PlanV2ProjectSetup", "pos": [0, 0], "size": [460, 500], "flags": {}, "order": 0, "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [1], "slot_index": 0},
+        {"name": "h3_length", "type": "INT", "links": null, "slot_index": 1},
+        {"name": "project_preview", "type": "STRING", "links": null, "slot_index": 2}
+      ],
+      "title": "1. Match duration to the source video",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2ProjectSetup"},
+      "widgets_values": [
+        "Generate a realistic production-Foley track synchronized to the locked source video. Use the supplied audio only as sound-texture guidance. No dialogue and no music.",
+        6.0,
+        "preserve the source picture track exactly",
+        "Low continuous indoor room tone beneath synchronized footsteps, cloth movement, and object contacts.",
+        "N/A"
+      ]
+    },
+    {
+      "id": 2, "type": "VHS_LoadVideo", "pos": [0, 570], "size": [500, 620], "flags": {}, "order": 1, "mode": 0,
+      "inputs": [
+        {"name": "meta_batch", "type": "VHS_BatchManager", "link": null, "shape": 7},
+        {"name": "vae", "type": "VAE", "link": null, "shape": 7}
+      ],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [2], "slot_index": 0, "shape": 3},
+        {"name": "frame_count", "type": "INT", "links": null, "slot_index": 1, "shape": 3},
+        {"name": "audio", "type": "AUDIO", "links": null, "slot_index": 2, "shape": 3},
+        {"name": "video_info", "type": "VHS_VIDEOINFO", "links": null, "slot_index": 3, "shape": 3}
+      ],
+      "title": "2. Load source at 24 FPS; original audio is intentionally unused",
+      "properties": {"Node name for S&R": "VHS_LoadVideo"},
+      "widgets_values": {
+        "video": "", "force_rate": 24, "force_size": "Disabled", "custom_width": 512, "custom_height": 512,
+        "frame_load_cap": 362, "skip_first_frames": 0, "select_every_nth": 1, "choose video to upload": "image",
+        "videopreview": {"hidden": false, "paused": false, "params": {}}
+      }
+    },
+    {
+      "id": 3, "type": "MiniMaxH3PlanV2FoleyTarget", "pos": [560, 0], "size": [460, 300], "flags": {}, "order": 2, "mode": 0,
+      "inputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "link": 1},
+        {"name": "video_frames", "type": "IMAGE", "link": 2}
+      ],
+      "outputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [3], "slot_index": 0},
+        {"name": "h3_video", "type": "IMAGE", "links": null, "slot_index": 1},
+        {"name": "foley_preview", "type": "STRING", "links": [9], "slot_index": 2}
+      ],
+      "title": "3. Locked target media, never Video Reference",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2FoleyTarget"},
+      "widgets_values": [24.0]
+    },
+    {
+      "id": 4, "type": "LoadAudio", "pos": [560, 760], "size": [460, 180], "flags": {}, "order": 3, "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "AUDIO", "type": "AUDIO", "links": [4], "slot_index": 0}],
+      "title": "4. Load a clean 2-15 second footstep texture reference",
+      "properties": {"Node name for S&R": "LoadAudio"},
+      "widgets_values": [""]
+    },
+    {
+      "id": 5, "type": "MiniMaxH3PlanV2AudioReference", "pos": [1080, 0], "size": [500, 680], "flags": {}, "order": 4, "mode": 0,
+      "inputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "link": 3},
+        {"name": "audio", "type": "AUDIO", "link": 4},
+        {"name": "paired_video", "type": "MINIMAX_H3_REFERENCE_HANDLE_V2", "link": null}
+      ],
+      "outputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [5], "slot_index": 0},
+        {"name": "h3_audio", "type": "AUDIO", "links": null, "slot_index": 1},
+        {"name": "reference_preview", "type": "STRING", "links": [10], "slot_index": 2}
+      ],
+      "title": "5. Declare one exact role: footstep sound texture",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2AudioReference"},
+      "widgets_values": [
+        "Sound-effect texture",
+        "dry indoor footstep reference",
+        "",
+        "",
+        "",
+        "visible heel-and-sole footfalls in Shot 1",
+        "Use only the transient shape, floor-material character, and room dryness as texture guidance. Retiming must follow visible foot contacts; do not copy the source cadence.",
+        "1"
+      ]
+    },
+    {
+      "id": 6, "type": "MiniMaxH3PlanV2Shot", "pos": [1630, 0], "size": [500, 470], "flags": {}, "order": 5, "mode": 0,
+      "inputs": [{"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "link": 5}],
+      "outputs": [
+        {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [6], "slot_index": 0},
+        {"name": "shot_preview", "type": "STRING", "links": null, "slot_index": 1},
+        {"name": "shot_handle", "type": "MINIMAX_H3_SHOT_HANDLE_V2", "links": null, "slot_index": 2}
+      ],
+      "title": "6. Place <Audio 1> in the exact sound sentence",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2Shot"},
+      "widgets_values": [
+        0.0,
+        "A person crosses the tiled room. Each visible heel and sole contact produces a short, dry indoor footstep at the exact contact frame, using <Audio 1> only for its transient and material texture while timing follows the visible gait. Clothing produces light movement rustle during each stride. The hand then sets a glass on a wooden table, producing a brief glass-on-wood contact exactly when the base touches the surface.",
+        "",
+        "Direct cut"
+      ]
+    },
+    {
+      "id": 7, "type": "MiniMaxH3PlanV2PromptMerge", "pos": [2190, 0], "size": [420, 250], "flags": {}, "order": 6, "mode": 0,
+      "inputs": [{"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "link": 6}],
+      "outputs": [
+        {"name": "h3_prompt", "type": "STRING", "links": [7], "slot_index": 0},
+        {"name": "rewrite_request", "type": "STRING", "links": null, "slot_index": 1},
+        {"name": "plan_context", "type": "MINIMAX_H3_PLAN_V2", "links": [8], "slot_index": 2},
+        {"name": "problems_report", "type": "STRING", "links": [11], "slot_index": 3},
+        {"name": "h3_length", "type": "INT", "links": null, "slot_index": 4}
+      ],
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2PromptMerge"},
+      "widgets_values": []
+    },
+    {
+      "id": 8, "type": "CLIPLoader", "pos": [2190, 460], "size": [420, 170], "flags": {}, "order": 7, "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "CLIP", "type": "CLIP", "links": [12], "slot_index": 0}],
+      "properties": {
+        "Node name for S&R": "CLIPLoader",
+        "models": [{"name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "directory": "text_encoders"}]
+      },
+      "widgets_values": ["qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "minimax", "default"]
+    },
+    {
+      "id": 9, "type": "VAELoader", "pos": [2190, 680], "size": [420, 130], "flags": {}, "order": 8, "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "VAE", "type": "VAE", "links": [13], "slot_index": 0}],
+      "title": "MiniMax H3 video VAE: encode locked picture track",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "models": [{"name": "minimax_h3_video_vae_fp16.safetensors", "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors", "directory": "vae"}]
+      },
+      "widgets_values": ["minimax_h3_video_vae_fp16.safetensors"]
+    },
+    {
+      "id": 10, "type": "VAELoader", "pos": [2190, 850], "size": [420, 130], "flags": {}, "order": 9, "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "VAE", "type": "VAE", "links": [14], "slot_index": 0}],
+      "title": "MiniMax H3 audio VAE: encode <Audio 1> reference",
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "models": [{"name": "minimax_h3_audio_vae_fp32.safetensors", "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors", "directory": "vae"}]
+      },
+      "widgets_values": ["minimax_h3_audio_vae_fp32.safetensors"]
+    },
+    {
+      "id": 11, "type": "PreviewAny", "pos": [1080, 760], "size": [500, 260], "flags": {}, "order": 10, "mode": 0,
+      "inputs": [{"name": "source", "type": "*", "link": 9}],
+      "outputs": [{"name": "STRING", "type": "STRING", "links": null, "slot_index": 0}],
+      "title": "Foley timing and video-mask-0 preparation",
+      "properties": {"Node name for S&R": "PreviewAny"}, "widgets_values": []
+    },
+    {
+      "id": 12, "type": "PreviewAny", "pos": [1630, 760], "size": [500, 260], "flags": {}, "order": 11, "mode": 0,
+      "inputs": [{"name": "source", "type": "*", "link": 10}],
+      "outputs": [{"name": "STRING", "type": "STRING", "links": null, "slot_index": 0}],
+      "title": "Audio role preview: standalone ref_audio_0",
+      "properties": {"Node name for S&R": "PreviewAny"}, "widgets_values": []
+    },
+    {
+      "id": 13, "type": "PreviewAny", "pos": [2670, 0], "size": [520, 330], "flags": {}, "order": 12, "mode": 0,
+      "inputs": [{"name": "source", "type": "*", "link": 11}],
+      "outputs": [{"name": "STRING", "type": "STRING", "links": null, "slot_index": 0}],
+      "title": "Compiler report: Ref2VA audio guidance, no video-reference route",
+      "properties": {"Node name for S&R": "PreviewAny"}, "widgets_values": []
+    },
+    {
+      "id": 14, "type": "MiniMaxH3PlanV2ApplyReferencePlan", "pos": [2670, 430], "size": [550, 470], "flags": {}, "order": 13, "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": 12},
+        {"name": "vae", "type": "VAE", "link": 13},
+        {"name": "h3_prompt", "type": "STRING", "link": 7},
+        {"name": "plan_context", "type": "MINIMAX_H3_PLAN_V2", "link": 8},
+        {"name": "audio_vae", "type": "VAE", "link": 14}
+      ],
+      "outputs": [
+        {"name": "positive", "type": "CONDITIONING", "links": null, "slot_index": 0},
+        {"name": "latent", "type": "LATENT", "links": null, "slot_index": 1},
+        {"name": "applied_prompt", "type": "STRING", "links": null, "slot_index": 2},
+        {"name": "h3_length", "type": "INT", "links": null, "slot_index": 3},
+        {"name": "adapter_report", "type": "STRING", "links": [15], "slot_index": 4}
+      ],
+      "title": "Ref2VA conditioning + video-mask-0 / audio-mask-1 latent",
+      "properties": {"Node name for S&R": "MiniMaxH3PlanV2ApplyReferencePlan"},
+      "widgets_values": [1344, 768, "match"]
+    },
+    {
+      "id": 15, "type": "PreviewAny", "pos": [3280, 430], "size": [560, 350], "flags": {}, "order": 14, "mode": 0,
+      "inputs": [{"name": "source", "type": "*", "link": 15}],
+      "outputs": [{"name": "STRING", "type": "STRING", "links": null, "slot_index": 0}],
+      "title": "Use Ref2VA checkpoint; requires PR #15375 or equivalent masking patch",
+      "properties": {"Node name for S&R": "PreviewAny"}, "widgets_values": []
+    }
+  ],
+  "links": [
+    [1, 1, 0, 3, 0, "MINIMAX_H3_PLAN_V2"],
+    [2, 2, 0, 3, 1, "IMAGE"],
+    [3, 3, 0, 5, 0, "MINIMAX_H3_PLAN_V2"],
+    [4, 4, 0, 5, 1, "AUDIO"],
+    [5, 5, 0, 6, 0, "MINIMAX_H3_PLAN_V2"],
+    [6, 6, 0, 7, 0, "MINIMAX_H3_PLAN_V2"],
+    [7, 7, 0, 14, 2, "STRING"],
+    [8, 7, 2, 14, 3, "MINIMAX_H3_PLAN_V2"],
+    [9, 3, 2, 11, 0, "STRING"],
+    [10, 5, 2, 12, 0, "STRING"],
+    [11, 7, 3, 13, 0, "STRING"],
+    [12, 8, 0, 14, 0, "CLIP"],
+    [13, 9, 0, 14, 1, "VAE"],
+    [14, 10, 0, 14, 4, "VAE"],
+    [15, 14, 4, 15, 0, "STRING"]
+  ],
+  "groups": [
+    {"id": 1, "title": "SOURCE VIDEO -> LOCKED TARGET MEDIA (never Video Reference)", "bounding": [-30, -70, 1080, 1290], "color": "#3f789e", "flags": {}},
+    {"id": 2, "title": "OPTIONAL AUDIO REFERENCE -> ONE PRECISE SOUND ROLE", "bounding": [1050, -70, 1110, 1120], "color": "#3f789e", "flags": {}},
+    {"id": 3, "title": "REF2VA POSITIVE + LOCKED-VIDEO / GENERATED-AUDIO LATENT", "bounding": [2160, -70, 1710, 1050], "color": "#7a4f9e", "flags": {}}
+  ],
+  "config": {},
+  "extra": {"ds": {"scale": 0.66, "offset": [80, 100]}, "frontendVersion": "1.48.6"},
+  "version": 0.4
+}

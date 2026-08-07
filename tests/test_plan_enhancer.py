@@ -15,8 +15,10 @@ from plan_enhancer import (
     MiniMaxH3PlanV2PromptEnhancer,
     NODE_CLASS_MAPPINGS,
     _analysis_entries,
+    _effective_system_prompt,
     _plan_inventory,
     apply_editable_prose,
+    editable_prose_payload,
     editable_prose_json,
     intent_addenda_payload,
     parse_editable_prose,
@@ -33,6 +35,7 @@ from plan_v2 import (
     MiniMaxH3PlanV2AudioReference,
     MiniMaxH3PlanV2CharacterReplacement,
     MiniMaxH3PlanV2DialogueEvent,
+    MiniMaxH3PlanV2FoleyTarget,
     MiniMaxH3PlanV2ImageReference,
     MiniMaxH3PlanV2ProjectSetup,
     MiniMaxH3PlanV2PromptMerge,
@@ -142,6 +145,65 @@ def compiled_scene(*, include_video=False):
         "On-screen speech",
     )[0]
     return MiniMaxH3PlanV2PromptMerge().merge(plan)[2]
+
+
+def compiled_foley_scene():
+    plan = MiniMaxH3PlanV2ProjectSetup().start(
+        "Generate realistic Foley synchronized to visible physical actions.",
+        6.0,
+        "preserve source picture track",
+        "Room tone, footsteps, cloth movement, and object contacts.",
+        "N/A",
+    )[0]
+    plan = MiniMaxH3PlanV2FoleyTarget().set_foley_target(
+        plan,
+        torch.zeros(144, 48, 64, 3),
+        24.0,
+    )[0]
+    plan = MiniMaxH3PlanV2Shot().add_shot(
+        plan,
+        0.0,
+        "A person crosses the room and sets a glass on a table; synchronize the audible "
+        "footfalls and glass contact to the visible actions.",
+        "",
+        "Direct cut",
+    )[0]
+    return MiniMaxH3PlanV2PromptMerge().merge(plan)[2]
+
+
+def test_foley_enhancer_analyzes_locked_source_and_uses_sound_only_contract():
+    context = compiled_foley_scene()
+
+    entries = _analysis_entries(context, 256, 1.0, 4)
+    inventory = _plan_inventory(context)
+    system = _effective_system_prompt(
+        PLAN_ENHANCER_SYSTEM_PROMPT,
+        context,
+        ENHANCEMENT_MODE_INTENT_LOCKED,
+    )
+
+    assert len(entries) == 1
+    assert entries[0]["kind"] == "video"
+    assert "latent-locked" in entries[0]["label"]
+    assert entries[0]["analysis_media"].shape[0] <= 4
+    assert "FOLEY TARGET" in inventory
+    assert "video mask=0" in inventory and "audio mask=1" in inventory
+    assert "FOLEY PICTURE-LOCK CONTRACT" in system
+    assert "infer ordinary physical Foley only" in system
+    assert "camera_direction addendum empty" in system
+
+
+def test_foley_enhancer_rejects_visual_style_and_camera_changes():
+    context = compiled_foley_scene()
+    payload = editable_prose_payload(context)
+    payload["visual_style"] = "a different visual style"
+    with pytest.raises(ValueError, match="cannot change visual_style"):
+        apply_editable_prose(context, json.dumps(payload))
+
+    payload = editable_prose_payload(context)
+    payload["shots"][0]["camera_direction"] = "A new camera move."
+    with pytest.raises(ValueError, match="cannot change camera_direction"):
+        apply_editable_prose(context, json.dumps(payload))
 
 
 def compiled_replacement_scene():

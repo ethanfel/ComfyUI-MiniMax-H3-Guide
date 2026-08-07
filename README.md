@@ -12,6 +12,7 @@ For new reference-heavy workflows, the Plan v2 nodes provide a typed semantic
 chain instead of asking one large form or an LLM to infer what each file means:
 
     MiniMax H3 Project Setup (Plan v2)
+        -> optional Foley Target for video-to-audio generation
         -> Image / Video / Audio Reference nodes
         -> optional Subject Binding nodes
         -> optional Character Replacement nodes
@@ -87,6 +88,79 @@ scopes such as 3,4 or 3-4, canonicalizes native media order, and returns:
 Reference Sheet remains the reusable media library: connect its selected image
 or selected audio output to the matching Plan v2 reference node, where the
 workflow-specific role is declared.
+
+### Video-to-audio Foley with a locked picture track
+
+Use **MiniMax H3 Foley Target (Plan v2)** immediately after Project Setup when
+the source video's pictures must stay unchanged and H3 should generate only a
+new synchronized audio track:
+
+```text
+Project Setup
+  -> Foley Target (decoded source frames, real source FPS)
+  -> optional reference assets
+  -> Shot 1 -> Shot 2 ...
+  -> Prompt Merge -> optional Structured Enhancer / Review Gate
+  -> Apply Reference Plan -> sampler
+```
+
+Foley Target carries the source frames inside `h3_plan` as **target media**, not
+as an H3 Video Reference. Apply Reference Plan obtains positive conditioning
+from the normal H3 prompt node, discards that node's empty video stream,
+VAE-encodes the source picture track, and constructs the joint latent as:
+
+```text
+video latent: source video, noise mask 0  -> preserve
+audio latent: empty target audio, mask 1  -> generate
+```
+
+Do not connect the same source to Video Reference. That would add an expensive
+Ref2VA video presentation without helping the audio-only latent operation. The
+compiler deliberately creates no `<Video N>` label or native reference route
+for the Foley source.
+
+Prompt Foley as a sound timeline, not as a request to remake the visuals:
+
+- In Project `initial_prompt`, state the overall audio goal, such as realistic
+  production Foley with no dialogue or music.
+- Make one Shot per real source cut. In each Shot, describe a visible timing
+  anchor followed by its concrete audible result: foot contact -> heel/sole
+  impact, hand closes on fabric -> cloth rustle, glass meets table -> short
+  glass-on-wood contact. Keep the order chronological.
+- Put continuous, source-grounded ambience in `overall_soundscape` in one short
+  paragraph. Keep dialogue and diegetic sound events in their exact Shots.
+- Set `non_diegetic_music` to `N/A` unless an audience-only score is genuinely
+  wanted. Avoid generic “cinematic audio” wording, invented off-screen sources,
+  and visual/camera instructions—the source picture track is latent-locked.
+
+For example:
+
+```text
+initial_prompt: Generate a realistic production-Foley track synchronized to the locked source video. No dialogue and no music.
+
+Shot 1: A person crosses the tiled room. Each visible heel and sole contact produces a short, dry indoor footstep at the exact contact frame; clothing produces light movement rustle during each stride.
+
+Shot 2: At the visible cut, the hand sets a drinking glass on a wooden table. A brief glass-on-wood contact occurs exactly when the base touches the surface, followed by a faint settling tick.
+
+overall_soundscape: Low continuous indoor room tone remains stable beneath the synchronized footsteps, cloth movement, and object contacts.
+non_diegetic_music: N/A
+```
+
+When Structured Prompt Enhancer uses visual analysis, the Foley source is
+sampled as timestamped visual evidence even though it is not a reference asset.
+Its appended Foley contract permits Qwen to infer ordinary physical sounds only
+from visible actions while forbidding new visual facts, speech, music, or unseen
+events.
+
+This currently requires MiniMax H3 per-token mask support from
+[ComfyUI PR #15375](https://github.com/Comfy-Org/ComfyUI/pull/15375) or an
+equivalent temporary compatibility patch. Apply Reference Plan checks for that
+support and stops before sampling if it is absent. The wiring follows
+[Ablejones's video-to-audio recipe](https://discord.com/channels/1076117621407223829/1532625331960152124/1535135078651400223): do not present the video as a reference; preserve video
+with mask `0`, generate audio with mask `1`, and use only positive conditioning
+from the prompt node. Ablejones also notes that fully masking audio retains none
+of the original soundtrack; optional audio references guide new sound but do
+not copy it.
 
 The Plan v2 browser extension hides irrelevant role fields, supplies upstream
 Subject pickers, validates numeric scope syntax, shows live label/route/timing
@@ -224,7 +298,9 @@ automatically routes stored media as endpoint frames or canonical Ref2VA
 dictionaries, and delegates conditioning to ComfyUI's installed
 `MiniMaxH3ImageToVideo` or `MiniMaxH3ReferenceToVideo` implementation. It
 returns native positive conditioning and the joint AV latent. Reference audio
-requires the audio VAE; text-only and endpoint plans do not.
+requires the audio VAE; text-only, endpoint, and reference-free Foley plans do
+not. For Foley, it replaces the native empty video latent with the encoded
+source and applies the per-stream masks automatically.
 
 The adapter does not duplicate ComfyUI's encoder. It checks the installed
 native call signature and fails with an actionable compatibility message when
@@ -242,6 +318,24 @@ audio decode, and Save Video path, with Apply Reference Plan replacing manual
 reference-socket wiring. It places Prompt Review Gate directly before Apply
 Reference Plan to demonstrate the prompt-only pause while all media stays in
 `plan_context`.
+
+`MiniMax H3 Plan v2 - Video to Audio Foley.json` is the audio-generation
+starter. It loads one video, carries its decoded frames through Foley Target,
+compiles a sound-oriented Shot timeline, and feeds the automatically masked AV
+latent into Apply Reference Plan. Match Apply Reference Plan's width and height
+to the source aspect ratio to avoid stretching; the node handles the exact
+pixel resize and H3 frame-grid padding. The starter intentionally stops at the
+conditioning/latent handoff so it can be connected to the sampler and decode
+tail appropriate to the installed H3 build.
+
+`MiniMax H3 Plan v2 - Video to Audio Foley with Sound Reference.json` adds a
+clean footstep clip as a standalone `Sound-effect texture` reference. It shows
+the important distinction between the locked target video and `<Audio 1>`:
+the audio clip supplies transient/material character, while the Shot sentence
+places `<Audio 1>` at the exact visible foot-contact event and explicitly keeps
+timing tied to the source video. Because this is Ref2VA conditioning, the
+example also connects the MiniMax H3 audio VAE and should be sampled with the
+Ref2VA checkpoint family.
 
 `MiniMax H3 Plan v2 - Character Replacement.json` is the complete replacement-
 only generation preset. Set Project duration to the source video's duration,
@@ -758,7 +852,10 @@ MiniMax tokenizer are absent.
   active clip's duration; use the Reference Sheet numeric trim fields to fit several
   selected segments below the shared limit.
 - H3 policy does not allow reference audio as the sole media input. Prompt Merge
-  rejects that plan before Apply Reference Plan can run.
+  rejects that plan before Apply Reference Plan can run. Foley is the explicit
+  exception supported by the native conditioning path: its locked target video
+  supplies the visual stream while optional audio-only Ref2VA guidance supplies
+  sound characteristics.
 - Native Ref2VA ordering is pictures first; then each enabled video soundtrack
   `<Audio N>` immediately before its `<Video N>`; then standalone audio. Audio
   and video labels are independently numbered, so equal numbers do not imply a
@@ -770,6 +867,14 @@ MiniMax tokenizer are absent.
 - Apply Reference Plan wires Plan v2 media automatically. Expert users may keep
   the official native conditioning node and connect sockets manually according
   to Prompt Merge's route report.
+- A Foley target intentionally replaces the complete audio stream. It rejects
+  `Copy complete signal` and `Copy selected part or layers`; choose a timbre,
+  sound-texture, beat, continuity, or broad reference when sonic guidance is
+  needed. Preserving or partially regenerating an original soundtrack requires
+  an explicit audio-time mask workflow outside this full-Foley helper.
+- Community testing reports that stochastic/SDE sampling can damage H3 audio.
+  If Foley is noisy or muted, first test a deterministic/ODE path (or `eta=0`)
+  before changing the prompt.
 - For an external/general LLM node, use the structured editable-prose contract
   and Apply Structured Prose. A raw full-prompt rewrite can no longer be paired
   safely with the native adapter unless it is represented by matching compiled

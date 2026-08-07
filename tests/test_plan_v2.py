@@ -30,6 +30,7 @@ from plan_v2 import (
     KEYFRAME_SHOT_OPENING,
     PLAN_TYPE,
     SHOT_HANDLE_TYPE,
+    TARGET_FOLEY,
     RETENTION_AUTO,
     RETENTION_TRANSFER,
     UNASSIGNED_CONTENT_TYPE,
@@ -41,6 +42,7 @@ from plan_v2 import (
     MiniMaxH3PlanV2AudioReference,
     MiniMaxH3PlanV2CharacterReplacement,
     MiniMaxH3PlanV2DialogueEvent,
+    MiniMaxH3PlanV2FoleyTarget,
     MiniMaxH3PlanV2ImageReference,
     MiniMaxH3PlanV2ProjectSetup,
     MiniMaxH3PlanV2PromptMerge,
@@ -121,6 +123,82 @@ def video_reference(
         RETENTION_AUTO,
         "",
     )
+
+
+def foley_target(plan, *, frames=None, source_fps=24.0):
+    video = torch.zeros(144, 32, 48, 3) if frames is None else frames
+    return MiniMaxH3PlanV2FoleyTarget().set_foley_target(
+        plan,
+        video,
+        source_fps,
+    )
+
+
+def test_foley_target_compiles_audio_only_prompt_without_video_reference_route():
+    plan = project(
+        "Generate realistic production Foley synchronized to every visible action.",
+        duration=6.0,
+        soundscape=(
+            "Continuous room tone with footsteps, cloth movement, and object contacts "
+            "synchronized to the picture."
+        ),
+    )
+    plan, prepared, preview = foley_target(plan)
+    plan = shot(
+        plan,
+        0.0,
+        "A person crosses the room and places a glass on a table; each footfall and the "
+        "glass contact are heard at the exact visible moment.",
+    )
+
+    prompt, _rewrite, report, compiled, length = compile_h3_plan(plan)
+
+    assert prepared.shape[0] == length == 158
+    assert plan["target"]["task"] == TARGET_FOLEY
+    assert "video=0" in preview and "audio=1" in preview
+    assert "picture track remains exactly unchanged" in prompt
+    assert "Generate only a new synchronized audio track" in prompt
+    assert "<Video 1>" not in prompt
+    assert compiled["compiled"]["mode"] == "T2VA"
+    assert compiled["compiled"]["target_task"] == TARGET_FOLEY
+    assert compiled["compiled"]["latent_strategy"] == "preserve_video_generate_audio"
+    assert compiled["compiled"]["routes"] == []
+    assert "video mask = 0" in report and "audio mask = 1" in report
+
+
+def test_foley_target_allows_audio_only_reference_but_rejects_copy_roles():
+    plan = project(duration=6.0)
+    plan = foley_target(plan)[0]
+    plan = audio_reference(
+        plan,
+        use=AUDIO_SFX,
+        name="footstep texture",
+        layer="footsteps synchronized to visible ground contact",
+        scope="1",
+    )[0]
+    plan = shot(
+        plan,
+        0.0,
+        "Each visible foot contact produces the texture referenced by <Audio 1>.",
+    )
+    prompt, _rewrite, _report, compiled, _length = compile_h3_plan(plan)
+    assert "[reference generation + audio reference]" in prompt
+    assert compiled["compiled"]["mode"] == "Ref2VA"
+    assert [route["route"] for route in compiled["compiled"]["routes"]] == [
+        "ref_audio_0"
+    ]
+
+    copy_plan = project(duration=6.0, soundscape="")
+    copy_plan = foley_target(copy_plan)[0]
+    copy_plan = audio_reference(
+        copy_plan,
+        use=AUDIO_COPY_COMPLETE,
+        name="source soundtrack",
+        seconds=6.0,
+    )[0]
+    copy_plan = shot(copy_plan, 0.0, "The visible picture track remains unchanged.")
+    with pytest.raises(ValueError, match="Foley uses audio mask 1"):
+        compile_h3_plan(copy_plan)
 
 
 def test_video_reference_accepts_only_the_native_15_second_padding_boundary():
@@ -1441,6 +1519,7 @@ def test_complete_audio_copy_rejects_new_soundscape():
 def test_node_contract_exposes_the_complete_phase_one_chain():
     assert set(NODE_CLASS_MAPPINGS) == {
         "MiniMaxH3PlanV2ProjectSetup",
+        "MiniMaxH3PlanV2FoleyTarget",
         "MiniMaxH3PlanV2ImageReference",
         "MiniMaxH3PlanV2SubjectBinding",
         "MiniMaxH3PlanV2VideoReference",
