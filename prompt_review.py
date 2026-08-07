@@ -355,7 +355,10 @@ def validate_reviewed_prompt(
 
 
 def approve_reviewed_prompt(
-    plan_context: Any, source_prompt: str, reviewed_prompt: str
+    plan_context: Any,
+    source_prompt: str,
+    reviewed_prompt: str,
+    approval_source: str = "Prompt review",
 ) -> tuple[str, dict, str]:
     """Create a plan-bound approval for one structurally valid full-prompt edit."""
 
@@ -378,7 +381,7 @@ def approve_reviewed_prompt(
     }
     state = "edited prompt" if reviewed != canonical else "unchanged prompt"
     report = (
-        f"Prompt review approved the {state}. Compiler-owned sections, reference labels, "
+        f"{approval_source} approved the {state}. Compiler-owned sections, reference labels, "
         "retention, shot structure, cut times, dialogue, character replacements, and native "
         "media routes remain locked. The media-bearing plan_context kept every image, video, "
         "and audio value in place."
@@ -695,6 +698,100 @@ async def _await_review(session: _ReviewSession):
             raise PromptReviewCancelled("ComfyUI interrupted the paused prompt review.")
 
 
+class MiniMaxH3PlanV2PromptOverride:
+    """Apply a safe full-prompt experiment without opening the interactive gate."""
+
+    CATEGORY = "MiniMax H3/Plan v2"
+    FUNCTION = "apply_override"
+    RETURN_TYPES = ("STRING", PLAN_TYPE, "STRING")
+    RETURN_NAMES = ("h3_prompt", "plan_context", "override_report")
+    OUTPUT_TOOLTIPS = (
+        "The inline override, or the original prompt when bypassed.",
+        "The matching media-bearing plan with a plan-bound approval for this exact prompt.",
+        "Whether the override was used and which compiler-managed structures were verified.",
+    )
+    DESCRIPTION = (
+        "Small inline experiment node between a prompt source and Apply Reference Plan. Paste a "
+        "full H3 prompt override, or disable/clear it to bypass. Descriptive prose may change; "
+        "compiler-owned structure, references, dialogue, timing, and media routes stay locked."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "h3_prompt": (
+                    "STRING",
+                    {
+                        "forceInput": True,
+                        "multiline": True,
+                        "dynamicPrompts": False,
+                        "tooltip": (
+                            "Connect the compiled or enhanced H3 prompt to use when the override "
+                            "is disabled or empty."
+                        ),
+                    },
+                ),
+                "plan_context": (
+                    PLAN_TYPE,
+                    {
+                        "tooltip": (
+                            "Connect the matching plan_context from the same prompt source. The "
+                            "node keeps all reference media attached."
+                        )
+                    },
+                ),
+                "override_prompt": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "dynamicPrompts": False,
+                        "tooltip": (
+                            "Optional complete H3 prompt to try. Structural/reference/dialogue "
+                            "changes are rejected; blank text bypasses the override."
+                        ),
+                    },
+                ),
+                "use_override": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": (
+                            "Disable to keep the experiment text in the workflow while forwarding "
+                            "the original prompt."
+                        ),
+                    },
+                ),
+            }
+        }
+
+    def apply_override(
+        self,
+        h3_prompt: str,
+        plan_context,
+        override_prompt: str,
+        use_override: bool,
+    ):
+        source = _normalized_prompt(h3_prompt)
+        override = _normalized_prompt(override_prompt)
+        active = bool(use_override and override)
+        candidate = override if active else source
+        reviewed, approved, report = approve_reviewed_prompt(
+            plan_context,
+            source,
+            candidate,
+            approval_source="Inline prompt override",
+        )
+        if active:
+            prefix = "Inline override applied and bound to this plan_context. "
+        elif use_override:
+            prefix = "Inline override is empty; forwarded the original prompt. "
+        else:
+            prefix = "Inline override is disabled; forwarded the original prompt. "
+        return reviewed, approved, prefix + report
+
+
 class MiniMaxH3PlanV2PromptReview:
     """Pause generation for a safe, full-prompt manual review."""
 
@@ -838,9 +935,11 @@ class MiniMaxH3PlanV2PromptReview:
 
 
 NODE_CLASS_MAPPINGS = {
+    "MiniMaxH3PlanV2PromptOverride": MiniMaxH3PlanV2PromptOverride,
     "MiniMaxH3PlanV2PromptReview": MiniMaxH3PlanV2PromptReview,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "MiniMaxH3PlanV2PromptOverride": "MiniMax H3 Inline Prompt Override (Plan v2)",
     "MiniMaxH3PlanV2PromptReview": "MiniMax H3 Prompt Review Gate (Plan v2)",
 }

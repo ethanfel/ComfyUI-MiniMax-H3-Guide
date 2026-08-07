@@ -22,6 +22,7 @@ from prompt_review import (
     NODE_CLASS_MAPPINGS,
     REVIEW_MODE_PAUSE,
     REVIEW_MODE_PASSTHROUGH,
+    MiniMaxH3PlanV2PromptOverride,
     MiniMaxH3PlanV2PromptReview,
     PromptReviewBus,
     PromptReviewCancelled,
@@ -154,6 +155,64 @@ def test_descriptive_full_prompt_edit_gets_plan_bound_adapter_approval():
     assert "structurally approved" in package["report"]
     assert "media-bearing plan" in report
     verify_review_approval(approved_plan, prompt, edited)
+
+
+def test_inline_prompt_override_outputs_a_matching_adapter_pair():
+    prompt, compiled = compiled_endpoint()
+    edited = prompt.replace(
+        "A fox crosses fresh snow.",
+        "A fox cautiously crosses fresh snow while powder drifts through the frame.",
+    )
+
+    output, output_plan, report = MiniMaxH3PlanV2PromptOverride().apply_override(
+        prompt,
+        compiled,
+        edited,
+        True,
+    )
+    package = prepare_native_h3_call(output_plan, output, 1344, 768)
+
+    assert output == edited
+    assert package["prompt"] == edited
+    assert "Inline override applied" in report
+    verify_review_approval(output_plan, prompt, edited)
+
+
+@pytest.mark.parametrize(
+    ("override", "enabled", "message"),
+    [
+        ("", True, "override is empty"),
+        ("unused experiment", False, "override is disabled"),
+    ],
+)
+def test_inline_prompt_override_can_bypass_without_deleting_experiment(
+    override, enabled, message
+):
+    prompt, compiled = compiled_endpoint()
+
+    output, output_plan, report = MiniMaxH3PlanV2PromptOverride().apply_override(
+        prompt,
+        compiled,
+        override,
+        enabled,
+    )
+
+    assert output == prompt
+    assert message in report
+    verify_review_approval(output_plan, prompt, prompt)
+
+
+def test_inline_prompt_override_rejects_compiler_owned_changes():
+    prompt, compiled = compiled_reference_scene()
+    edited = prompt.replace("<Subject 1>", "<Subject 2>", 1)
+
+    with pytest.raises(ValueError, match="subject_definitions is compiler-owned"):
+        MiniMaxH3PlanV2PromptOverride().apply_override(
+            prompt,
+            compiled,
+            edited,
+            True,
+        )
 
 
 def test_prompt_changed_after_approval_is_rejected_by_adapter():
@@ -536,7 +595,18 @@ def test_malformed_reserved_h3_tokens_are_rejected(malformed):
 
 
 def test_review_node_and_frontend_contract_are_registered():
-    assert set(NODE_CLASS_MAPPINGS) == {"MiniMaxH3PlanV2PromptReview"}
+    assert set(NODE_CLASS_MAPPINGS) == {
+        "MiniMaxH3PlanV2PromptOverride",
+        "MiniMaxH3PlanV2PromptReview",
+    }
+    override_schema = MiniMaxH3PlanV2PromptOverride.INPUT_TYPES()
+    assert override_schema["required"]["h3_prompt"][1]["forceInput"] is True
+    assert override_schema["required"]["override_prompt"][1]["default"] == ""
+    assert override_schema["required"]["use_override"][1]["default"] is True
+    assert MiniMaxH3PlanV2PromptOverride.RETURN_NAMES[:2] == (
+        "h3_prompt",
+        "plan_context",
+    )
     schema = MiniMaxH3PlanV2PromptReview.INPUT_TYPES()
     assert schema["required"]["h3_prompt"][1]["forceInput"] is True
     assert schema["required"]["review_mode"][1]["default"] == REVIEW_MODE_PAUSE
@@ -568,6 +638,8 @@ def test_review_node_and_frontend_contract_are_registered():
     assert "serialized.widgets_values_named = {" in source
     assert "const settings = configuredSettings(this, arguments[0])" in source
     plan_source = (ROOT / "web" / "plan_v2.js").read_text(encoding="utf-8")
+    assert 'const PROMPT_OVERRIDE = "MiniMaxH3PlanV2PromptOverride"' in plan_source
+    assert "Inline prompt experiment · plan-bound structural validation" in plan_source
     assert "if (className(node) === PROMPT_REVIEW) return;" in plan_source
     assert "place [d] where the next Dialogue Event must appear" in plan_source
     server_source = (ROOT / "prompt_review_server.py").read_text(encoding="utf-8")

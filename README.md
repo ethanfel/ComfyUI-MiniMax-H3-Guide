@@ -291,18 +291,29 @@ data and contains prompt text and hashes only—never reference media or tensors
 `Pass through without pausing` leaves the gate in a workflow while disabling
 the interactive stop.
 
+Use **Inline Prompt Override (Plan v2)** for quick A/B experiments without the
+interactive pause. Insert it between Prompt Merge (or the Structured Enhancer /
+Apply Structured Prose) and Apply Reference Plan, connect both the prompt and
+matching `plan_context`, then paste a complete experimental H3 prompt into
+`override_prompt`. Clear the field or disable `use_override` to bypass while
+keeping the experiment in the workflow. The node applies the same descriptive-
+prose validation and plan-bound approval as the Review Gate; compiler-owned
+sections, reference labels, Shot structure/timing, dialogue, and media routes
+cannot be overridden. It does not add the experiment to Review Gate history.
+
 ```text
 Without Qwen: Prompt Merge -> Prompt Review Gate -> Apply Reference Plan
 With Qwen:    Prompt Merge -> Structured Enhancer -> Prompt Review Gate
                                                         -> Apply Reference Plan
+Experiment:   Prompt Merge -> Inline Prompt Override -> Apply Reference Plan
 ```
 
 **Apply Reference Plan (Plan v2)** is the native handoff. Connect `h3_prompt`
 and `plan_context` from the same Prompt Merge, Structured Prompt Enhancer, Apply
-Structured Prose, or Prompt Review Gate result, plus the official H3 CLIP/video
-VAE and optional audio VAE. The node verifies that the pair still matches,
-automatically routes stored media as endpoint frames or canonical Ref2VA
-dictionaries, and delegates conditioning to ComfyUI's installed
+Structured Prose, Inline Prompt Override, or Prompt Review Gate result, plus the
+official H3 CLIP/video VAE and optional audio VAE. The node verifies that the
+pair still matches, automatically routes stored media as endpoint frames or
+canonical Ref2VA dictionaries, and delegates conditioning to ComfyUI's installed
 `MiniMaxH3ImageToVideo` or `MiniMaxH3ReferenceToVideo` implementation. It
 returns native positive conditioning and the joint AV latent. Reference audio
 requires the audio VAE; text-only, endpoint, and reference-free Foley plans do

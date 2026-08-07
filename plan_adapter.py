@@ -235,7 +235,8 @@ def prepare_native_h3_call(
             raise ValueError(
                 "h3_prompt does not match the connected plan_context. Connect both outputs from "
                 "the same Prompt Merge, Structured Prompt Enhancer, Apply Structured Prose, or "
-                "Prompt Review Gate node. Manual full-prompt edits require review approval. "
+                "Inline Prompt Override / Prompt Review Gate node. Manual full-prompt edits "
+                "require a plan-bound approval. "
                 f"Approval check: {error}"
             ) from error
 
@@ -500,7 +501,7 @@ class MiniMaxH3PlanV2ApplyReferencePlan:
                         "tooltip": (
                             "Connect h3_prompt/enhanced_prompt from the same node that supplies "
                             "plan_context. Full-prompt manual edits are accepted only as the "
-                            "approved output of Prompt Review Gate."
+                            "approved output of Inline Prompt Override or Prompt Review Gate."
                         ),
                     },
                 ),
@@ -509,7 +510,8 @@ class MiniMaxH3PlanV2ApplyReferencePlan:
                     {
                         "tooltip": (
                             "Connect compiled plan_context from Prompt Merge, Structured Prompt "
-                            "Enhancer, Apply Structured Prose, or Prompt Review Gate."
+                            "Enhancer, Apply Structured Prose, Inline Prompt Override, or Prompt "
+                            "Review Gate."
                         )
                     },
                 ),

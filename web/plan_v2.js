@@ -15,6 +15,7 @@ const MERGE = "MiniMaxH3PlanV2PromptMerge";
 const APPLY_PROSE = "MiniMaxH3PlanV2ApplyProse";
 const ENHANCER = "MiniMaxH3PlanV2PromptEnhancer";
 const APPLY_REFERENCE = "MiniMaxH3PlanV2ApplyReferencePlan";
+const PROMPT_OVERRIDE = "MiniMaxH3PlanV2PromptOverride";
 const PROMPT_REVIEW = "MiniMaxH3PlanV2PromptReview";
 
 const PLAN_CLASSES = new Set([
@@ -35,6 +36,7 @@ const UI_CLASSES = new Set([
     ...PLAN_CLASSES,
     APPLY_PROSE,
     ENHANCER,
+    PROMPT_OVERRIDE,
     PROMPT_REVIEW,
     APPLY_REFERENCE,
 ]);
@@ -1247,6 +1249,9 @@ function refreshBadgeAndOutputs(node, catalog) {
         color = COLORS.ready;
     } else if (type === APPLY_PROSE) {
         text = "Recompile · validate all locks";
+        color = COLORS.ready;
+    } else if (type === PROMPT_OVERRIDE) {
+        text = "Inline prompt experiment · plan-bound structural validation";
         color = COLORS.ready;
     } else if (type === PROMPT_REVIEW) {
         text = "Prompt-only approval · media stays in plan_context";
