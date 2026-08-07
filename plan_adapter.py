@@ -352,35 +352,6 @@ def _native_outputs(result: Any, node_id: str) -> tuple[Any, Any]:
     return values[0], values[1]
 
 
-def _require_foley_masking_support() -> None:
-    """Fail before a long sample when core cannot preserve one AV stream."""
-
-    try:
-        model_base = importlib.import_module("comfy.model_base")
-        minimax_model = importlib.import_module("comfy.ldm.minimax.model")
-        h3_class = getattr(model_base, "MiniMaxH3")
-        forward = getattr(minimax_model, "MiniMaxH3Model").forward
-    except Exception as error:
-        raise RuntimeError(
-            "Cannot verify MiniMax H3 Foley masking support in this ComfyUI install. "
-            f"Required: {FOLEY_MASKING_REQUIREMENT}."
-        ) from error
-
-    h3_methods = getattr(h3_class, "__dict__", {})
-    forward_parameters = set(inspect.signature(forward).parameters)
-    if not (
-        callable(h3_methods.get("process_denoise_mask"))
-        and callable(h3_methods.get("scale_latent_inpaint"))
-        and {"denoise_mask", "audio_denoise_mask"}.issubset(forward_parameters)
-    ):
-        raise RuntimeError(
-            "Installed ComfyUI does not yet support MiniMax H3 per-stream latent masks. "
-            "Foley would otherwise regenerate or corrupt the locked picture track. Install "
-            "a ComfyUI build containing PR #15375, or enable an equivalent temporary "
-            "per-row-masking compatibility patch, then restart ComfyUI."
-        )
-
-
 def _resize_foley_video(video_frames: Any, width: int, height: int):
     frames = video_frames[..., :3]
     if int(frames.shape[1]) == height and int(frames.shape[2]) == width:
@@ -463,7 +434,6 @@ def _foley_target_latent(
         raise RuntimeError(
             "Foley target media is unavailable. Queue from the connected Foley Target node."
         )
-    _require_foley_masking_support()
     resized = _resize_foley_video(video_frames, width, height)
     try:
         encoded_video = vae.encode(resized)

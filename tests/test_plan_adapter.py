@@ -217,6 +217,35 @@ def test_foley_latent_preserves_video_and_generates_audio_masks():
     assert result["batch_index"] == [0]
 
 
+def test_foley_target_latent_accepts_a_separate_model_side_mask_patch():
+    encoded_video = torch.randn(1, 24, 47, 2, 2)
+    empty_audio = torch.zeros(1, 32, 2, 264)
+    native = {
+        "samples": FakeNested((torch.zeros_like(encoded_video), empty_audio)),
+    }
+
+    class FakeVAE:
+        def encode(self, frames):
+            assert frames.shape == (158, 32, 32, 3)
+            return encoded_video
+
+    target = {
+        "task": plan_adapter.TARGET_FOLEY,
+        "media": torch.zeros(158, 32, 32, 3),
+    }
+    result = plan_adapter._foley_target_latent(
+        target,
+        native,
+        FakeVAE(),
+        32,
+        32,
+    )
+
+    video_mask, audio_mask = result["noise_mask"].unbind()
+    assert torch.count_nonzero(video_mask) == 0
+    assert torch.all(audio_mask == 1)
+
+
 def test_first_and_last_frames_are_routed_without_reference_dicts():
     plan = project("Move between the supplied endpoint compositions.")
     plan, _handle, first, _preview = image_reference(

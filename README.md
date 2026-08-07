@@ -154,8 +154,11 @@ events.
 
 This currently requires MiniMax H3 per-token mask support from
 [ComfyUI PR #15375](https://github.com/Comfy-Org/ComfyUI/pull/15375) or an
-equivalent temporary compatibility patch. Apply Reference Plan checks for that
-support and stops before sampling if it is absent. The wiring follows
+equivalent temporary compatibility patch. A temporary model-side patch can be
+connected between the H3 model loader and the sampler, as with **MiniMax H3
+Per-Row Mask Patch**. Apply Reference Plan cannot inspect that separate MODEL
+branch, so it constructs the correct masks without trying to reject or approve
+the installed patch. The wiring follows
 [Ablejones's video-to-audio recipe](https://discord.com/channels/1076117621407223829/1532625331960152124/1535135078651400223): do not present the video as a reference; preserve video
 with mask `0`, generate audio with mask `1`, and use only positive conditioning
 from the prompt node. Ablejones also notes that fully masking audio retains none
