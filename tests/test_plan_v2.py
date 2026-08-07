@@ -659,6 +659,82 @@ def test_dialogue_start_offset_compiles_to_absolute_timeline_timestamp():
     assert "dialogue start times" in report
 
 
+def test_foley_dialogue_placeholders_consume_events_in_order_with_legacy_fallback():
+    plan = project(
+        "Generate synchronized Foley and the specified dialogue without changing the picture.",
+        duration=6.0,
+    )
+    plan = foley_target(plan)[0]
+    plan, _handle, _image, _preview = image_reference(plan, scope="1")
+    plan = shot(
+        plan,
+        0.0,
+        (
+            "<Subject 1> pauses before speaking. [d] She resumes the visible action. "
+            "[d] The action settles."
+        ),
+    )
+    plan, first_preview = MiniMaxH3PlanV2DialogueEvent().add_dialogue(
+        plan,
+        "woman",
+        "English",
+        "The first line.",
+        "quietly",
+        "On-screen speech",
+    )
+    plan, second_preview = MiniMaxH3PlanV2DialogueEvent().add_dialogue(
+        plan,
+        "woman",
+        "English",
+        "The second line.",
+        "with more energy",
+        "On-screen speech",
+    )
+    plan, third_preview = MiniMaxH3PlanV2DialogueEvent().add_dialogue(
+        plan,
+        "woman",
+        "English",
+        "The fallback line.",
+        "softly",
+        "On-screen speech",
+    )
+
+    prompt, _rewrite, _report, _compiled, _length = compile_h3_plan(plan)
+
+    shot_region = prompt[prompt.index("[Shot 1]") : prompt.index("overall_soundscape:")]
+    assert "[d]" not in shot_region
+    assert shot_region.index("pauses before speaking") < shot_region.index(
+        "<d>[English] The first line.</d>"
+    )
+    assert shot_region.index("<d>[English] The first line.</d>") < shot_region.index(
+        "She resumes the visible action"
+    )
+    assert shot_region.index("She resumes the visible action") < shot_region.index(
+        "<d>[English] The second line.</d>"
+    )
+    assert shot_region.index("<d>[English] The second line.</d>") < shot_region.index(
+        "The action settles"
+    )
+    assert shot_region.index("The action settles") < shot_region.index(
+        "<d>[English] The fallback line.</d>"
+    )
+    assert "fills [d] marker 1/2" in first_preview
+    assert "fills [d] marker 2/2" in second_preview
+    assert "uses legacy placement after the Shot prose" in third_preview
+
+
+def test_dialogue_placeholder_requires_a_matching_event():
+    plan = shot(project(), 0.0, "A narrator prepares to speak. [d]")
+
+    with pytest.raises(ValueError, match=r"contains 1 \[d\].*only 0 Dialogue Event"):
+        compile_h3_plan(plan)
+
+
+def test_shot_rejects_raw_h3_dialogue_tags_in_favor_of_placeholder():
+    with pytest.raises(ValueError, match=r"raw H3 <d> tags.*\[d\]"):
+        shot(project(), 0.0, "A narrator says <d>[English] Hello.</d>")
+
+
 def test_dialogue_start_offset_must_fall_inside_its_shot():
     plan = project()
     plan, _handle, _image, _preview = image_reference(plan, scope="1-2")

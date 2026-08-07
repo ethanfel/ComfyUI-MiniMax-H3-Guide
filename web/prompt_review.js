@@ -5,6 +5,11 @@ const NODE = "MiniMaxH3PlanV2PromptReview";
 const ROUTE = "/minimax_h3/prompt_review/decision";
 const RECOVER_ROUTE = "/minimax_h3/prompt_review/recover";
 const PAUSE_MODE = "Pause for approval";
+const PASS_THROUGH_MODE = "Pass through without pausing";
+const SETTINGS_PROPERTY = "minimax_h3_prompt_review_settings";
+const DEFAULT_HISTORY_LIMIT = 20;
+const MIN_HISTORY_LIMIT = 1;
+const MAX_HISTORY_LIMIT = 50;
 const MIN_WIDTH = 540;
 const MIN_EDITOR_HEIGHT = 300;
 let recoveryRequest = null;
@@ -13,6 +18,94 @@ let recoveryAgain = false;
 
 function widget(node, name) {
     return (node.widgets || []).find((entry) => entry.name === name);
+}
+
+function validReviewMode(value) {
+    return value === PAUSE_MODE || value === PASS_THROUGH_MODE;
+}
+
+function validHistoryLimit(value) {
+    return Number.isInteger(value) && value >= MIN_HISTORY_LIMIT && value <= MAX_HISTORY_LIMIT;
+}
+
+function currentSettings(node) {
+    const mode = widget(node, "review_mode")?.value;
+    const limit = Number(widget(node, "history_limit")?.value);
+    return {
+        review_mode: validReviewMode(mode) ? mode : PAUSE_MODE,
+        history_limit: validHistoryLimit(limit) ? limit : DEFAULT_HISTORY_LIMIT,
+    };
+}
+
+function configuredSettings(node, info) {
+    const propertySettings = info?.properties?.[SETTINGS_PROPERTY];
+    const namedSettings = info?.widgets_values_named;
+    const values = Array.isArray(info?.widgets_values) ? info.widgets_values : [];
+    const legacyMode = values.find((value) => validReviewMode(value));
+    const legacyLimit = values.map(Number).find((value) => validHistoryLimit(value));
+    const live = currentSettings(node);
+    const modeCandidates = [
+        namedSettings?.review_mode,
+        propertySettings?.review_mode,
+        legacyMode,
+        live.review_mode,
+    ];
+    const limitCandidates = [
+        Number(namedSettings?.history_limit),
+        Number(propertySettings?.history_limit),
+        legacyLimit,
+        live.history_limit,
+    ];
+    return {
+        review_mode: modeCandidates.find((value) => validReviewMode(value)) || PAUSE_MODE,
+        history_limit:
+            limitCandidates.find((value) => validHistoryLimit(value)) || DEFAULT_HISTORY_LIMIT,
+    };
+}
+
+function persistSettings(node, settings = currentSettings(node)) {
+    node.properties ||= {};
+    node.properties[SETTINGS_PROPERTY] = { ...settings };
+    return settings;
+}
+
+function applySettings(node, settings) {
+    const mode = widget(node, "review_mode");
+    const limit = widget(node, "history_limit");
+    if (mode) mode.value = settings.review_mode;
+    if (limit) limit.value = settings.history_limit;
+    persistSettings(node, settings);
+}
+
+function trackSettings(node) {
+    for (const name of ["review_mode", "history_limit"]) {
+        const target = widget(node, name);
+        if (!target || target.__h3PromptReviewTracked) continue;
+        target.__h3PromptReviewTracked = true;
+        const callback = target.callback;
+        target.callback = function () {
+            const result = callback?.apply(this, arguments);
+            persistSettings(node);
+            return result;
+        };
+    }
+    persistSettings(node);
+}
+
+function serializeSettings(node, serialized) {
+    const settings = persistSettings(node);
+    serialized.properties ||= {};
+    serialized.properties[SETTINGS_PROPERTY] = { ...settings };
+
+    // ComfyUI 1.48 writes `serialize === false` widgets at their full array
+    // position but restores the remaining widgets from a compacted array. A DOM
+    // editor before/between real widgets therefore shifts values on workflow-tab
+    // recreation. Emit both compact legacy values and named values explicitly.
+    serialized.widgets_values = [settings.review_mode, settings.history_limit];
+    serialized.widgets_values_named = {
+        review_mode: settings.review_mode,
+        history_limit: settings.history_limit,
+    };
 }
 
 function hideWidget(target) {
@@ -225,6 +318,11 @@ function setupNode(node) {
         serialize: false,
         getMinHeight: () => MIN_EDITOR_HEIGHT + 104,
     });
+    // `options.serialize` and the widget-level serialization flag are distinct
+    // in LiteGraph. Set the latter explicitly so this display-only editor can
+    // never be mistaken for a backend input.
+    node.__h3ReviewWidget.serialize = false;
+    trackSettings(node);
 
     area.addEventListener("input", () => updateDirtyState(node));
     history.addEventListener("change", () => {
@@ -342,15 +440,24 @@ app.registerExtension({
         };
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function () {
+            const settings = configuredSettings(this, arguments[0]);
             const result = onConfigure?.apply(this, arguments);
             queueMicrotask(() => {
-                ensureHistoryKey(this);
+                setupNode(this);
+                applySettings(this, settings);
+                trackSettings(this);
                 const mode = widget(this, "review_mode")?.value;
                 if (mode !== PAUSE_MODE) {
                     setStatus(this, "Pass-through mode: queued prompts will not pause", "idle");
                 }
                 scheduleRecovery();
             });
+            return result;
+        };
+        const onSerialize = nodeType.prototype.onSerialize;
+        nodeType.prototype.onSerialize = function (serialized) {
+            const result = onSerialize?.apply(this, arguments);
+            serializeSettings(this, serialized);
             return result;
         };
     },

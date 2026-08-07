@@ -636,7 +636,7 @@ function createShotEditor(node) {
         "font-size:11px",
     ].join(";");
     const hint = document.createElement("div");
-    hint.textContent = "Shot description · type < to insert a Subject or media tag; place <Audio N> in the exact sound sentence";
+    hint.textContent = "Shot description · type < for Subject/media tags; place <Audio N> in its sound sentence; place [d] where the next Dialogue Event must appear";
     const editor = document.createElement("textarea");
     editor.value = String(hidden.value || "");
     editor.rows = 6;

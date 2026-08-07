@@ -95,6 +95,45 @@ def compiled_reference_scene():
     return prompt, compiled
 
 
+def compiled_inline_dialogue_scene():
+    plan = MiniMaxH3PlanV2ProjectSetup().start(
+        "A traveler addresses the camera in a quiet station.",
+        6.0,
+        "cinematic, live-action",
+        "Quiet station ambience.",
+        "N/A",
+    )[0]
+    plan, _handle, _image, _preview = MiniMaxH3PlanV2ImageReference().add_image(
+        plan,
+        torch.zeros(1, 32, 48, 3),
+        IMAGE_DEFINE_VISIBLE,
+        "traveler portrait",
+        "The traveler's identity and visible appearance.",
+        CONTENT_IDENTITY,
+        "traveler",
+        RETENTION_AUTO,
+        "1",
+        "",
+    )
+    plan = MiniMaxH3PlanV2Shot().add_shot(
+        plan,
+        0.0,
+        "<Subject 1> looks up. [d] The traveler then walks away.",
+        "A stable medium shot.",
+        "Direct cut",
+    )[0]
+    plan = MiniMaxH3PlanV2DialogueEvent().add_dialogue(
+        plan,
+        "traveler",
+        "English",
+        "Good morning.",
+        "calm and friendly",
+        "On-screen speech",
+    )[0]
+    prompt, _rewrite, _report, compiled, _length = compile_h3_plan(plan)
+    return prompt, compiled
+
+
 def test_descriptive_full_prompt_edit_gets_plan_bound_adapter_approval():
     prompt, compiled = compiled_endpoint()
     edited = prompt.replace(
@@ -181,6 +220,23 @@ def test_labels_cannot_move_between_shots_but_shot_prose_can_change():
     )
     with pytest.raises(ValueError, match="Shot 2.*reference label"):
         validate_reviewed_prompt(compiled, prompt, moved)
+
+
+def test_inline_dialogue_keeps_its_compiled_clause_while_surrounding_prose_is_editable():
+    prompt, compiled = compiled_inline_dialogue_scene()
+    safe = prompt.replace(
+        "looks up.",
+        "looks up and briefly meets the camera's gaze.",
+    ).replace(
+        "The traveler then walks away.",
+        "The traveler then turns and walks slowly away.",
+    )
+
+    assert validate_reviewed_prompt(compiled, prompt, safe) == safe
+
+    changed_delivery = prompt.replace("calm and friendly.", "tense and hurried.")
+    with pytest.raises(ValueError, match="dialogue clause"):
+        validate_reviewed_prompt(compiled, prompt, changed_delivery)
 
 
 def test_reference_labels_may_repeat_and_descriptive_action_timing_may_be_added():
@@ -480,8 +536,15 @@ def test_review_node_and_frontend_contract_are_registered():
     assert "resolvedToken" in source
     assert "prompt_review/recover" in source
     assert "recoveryAgain" in source
+    assert f'const PASS_THROUGH_MODE = "{REVIEW_MODE_PASSTHROUGH}"' in source
+    assert 'const SETTINGS_PROPERTY = "minimax_h3_prompt_review_settings"' in source
+    assert "node.__h3ReviewWidget.serialize = false" in source
+    assert "serialized.widgets_values = [settings.review_mode, settings.history_limit]" in source
+    assert "serialized.widgets_values_named = {" in source
+    assert "const settings = configuredSettings(this, arguments[0])" in source
     plan_source = (ROOT / "web" / "plan_v2.js").read_text(encoding="utf-8")
     assert "if (className(node) === PROMPT_REVIEW) return;" in plan_source
+    assert "place [d] where the next Dialogue Event must appear" in plan_source
     server_source = (ROOT / "prompt_review_server.py").read_text(encoding="utf-8")
     assert '"prompt": prompt' in server_source
     assert "plan_context" not in server_source

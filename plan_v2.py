@@ -138,6 +138,7 @@ AUDIO_REFERENCE = "reference"
 AUDIO_WEAK_REFERENCE = "weak_reference"
 
 SHOT_TRANSITIONS = ["Direct cut", "Cross-dissolve", "Fade", "Wipe"]
+DIALOGUE_PLACEHOLDER = "[d]"
 DIALOGUE_MODES = ["On-screen speech", "Off-screen speech", "Voiceover"]
 DIALOGUE_CONTINUITY_COMPLETE = "Complete in this Shot"
 DIALOGUE_CONTINUITY_TO_NEXT = "Continues into next Shot"
@@ -166,6 +167,7 @@ _REFERENCE_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 _SCOPE_PREFIX_RE = re.compile(r"\bshots?\b", re.IGNORECASE)
+_DIALOGUE_PLACEHOLDER_RE = re.compile(r"\[d\](?:[.!?](?=\s|$))?")
 
 
 def _clean_inline(value: Any, fallback: str = "") -> str:
@@ -2472,6 +2474,37 @@ def _dialogue_text(event: dict, plan: dict, catalog: dict) -> str:
     )
 
 
+def _place_dialogue_events(
+    description: str,
+    shot_number: int,
+    plan: dict,
+    catalog: dict,
+) -> tuple[str, list[dict]]:
+    """Fill [d] placeholders from this Shot's Dialogue Events in chain order."""
+
+    events = [
+        event
+        for event in plan["dialogue_events"]
+        if int(event["shot_number"]) == int(shot_number)
+    ]
+    placeholder_count = len(_DIALOGUE_PLACEHOLDER_RE.findall(description))
+    if placeholder_count > len(events):
+        raise ValueError(
+            f"[Shot {shot_number}] contains {placeholder_count} {DIALOGUE_PLACEHOLDER} "
+            f"dialogue placeholder(s), but only {len(events)} Dialogue Event(s) are attached. "
+            "Add the missing Dialogue Event or remove the extra placeholder."
+        )
+    placed = description
+    for event in events[:placeholder_count]:
+        dialogue = _dialogue_text(event, plan, catalog)
+        placed = _DIALOGUE_PLACEHOLDER_RE.sub(
+            lambda _match, value=dialogue: value,
+            placed,
+            count=1,
+        )
+    return placed, events[placeholder_count:]
+
+
 def _implicit_or_planned_shots(plan: dict) -> list[dict]:
     if plan["shots"]:
         return plan["shots"]
@@ -2524,10 +2557,6 @@ def _detailed_description(plan: dict, catalog: dict) -> str:
                     f"The target begins immediately after {label} and continues its established state."
                 )
 
-    events_by_shot: dict[int, list[dict]] = {}
-    for event in plan["dialogue_events"]:
-        events_by_shot.setdefault(event["shot_number"], []).append(event)
-
     for shot in _implicit_or_planned_shots(plan):
         number = shot["shot_number"]
         description = _sentence(
@@ -2547,6 +2576,12 @@ def _detailed_description(plan: dict, catalog: dict) -> str:
             description = " ".join(
                 (description, *replacement_instructions, *reference_instructions)
             )
+        description, remaining_dialogue = _place_dialogue_events(
+            description,
+            number,
+            plan,
+            catalog,
+        )
         camera = _sentence(shot["camera_direction"])
         if number == 1:
             line = f"[Shot 1] {description}"
@@ -2561,7 +2596,7 @@ def _detailed_description(plan: dict, catalog: dict) -> str:
         lines.append(line)
         lines.extend(
             _dialogue_text(event, plan, catalog)
-            for event in events_by_shot.get(number, [])
+            for event in remaining_dialogue
         )
     return "\n".join(lines)
 
@@ -2581,14 +2616,17 @@ def _base_description(plan: dict, catalog: dict) -> str:
         if foley and plan["shots"]
         else ""
     )
-    events_by_shot: dict[int, list[dict]] = {}
-    for event in plan["dialogue_events"]:
-        events_by_shot.setdefault(event["shot_number"], []).append(event)
     lines: list[str] = []
     for shot in _implicit_or_planned_shots(plan):
         number = shot["shot_number"]
         description = _sentence(
             shot["description"], "Describe the target action and setting."
+        )
+        description, remaining_dialogue = _place_dialogue_events(
+            description,
+            number,
+            plan,
+            catalog,
         )
         if number == 1:
             if foley:
@@ -2612,7 +2650,7 @@ def _base_description(plan: dict, catalog: dict) -> str:
         lines.append(line)
         lines.extend(
             _dialogue_text(event, plan, catalog)
-            for event in events_by_shot.get(number, [])
+            for event in remaining_dialogue
         )
     return "\n".join(lines)
 
@@ -4353,7 +4391,9 @@ class MiniMaxH3PlanV2Shot:
                         "tooltip": (
                             "Describe visible and audible events in chronological order. Insert an "
                             "upstream <Audio N> label directly in the sentence where its sound is "
-                            "heard. The browser UI adds the < autocomplete menu."
+                            "heard. Insert [d] where the next Dialogue Event attached to this Shot "
+                            "must appear; multiple [d] placeholders consume events in chain order. "
+                            "Events without a [d] retain the legacy after-Shot placement."
                         ),
                     },
                 ),
@@ -4390,6 +4430,11 @@ class MiniMaxH3PlanV2Shot:
         description_text = _clean_block(description)
         if not description_text:
             raise ValueError("Every explicit H3 Shot needs a description.")
+        if "<d>" in description_text.casefold() or "</d>" in description_text.casefold():
+            raise ValueError(
+                "Do not write raw H3 <d> tags in a Shot description. Insert [d] as the "
+                "placement marker and attach a Dialogue Event containing the exact words."
+            )
         cut = float(cut_at)
         if not math.isfinite(cut) or cut < 0.0:
             raise ValueError("Shot cut_at must be a finite non-negative number.")
@@ -4694,7 +4739,7 @@ class MiniMaxH3PlanV2ShotMotionReference:
 
 
 class MiniMaxH3PlanV2DialogueEvent:
-    """Append exact speech to the most recently opened Shot."""
+    """Attach exact speech to the most recently opened Shot."""
 
     CATEGORY = "MiniMax H3/Plan v2"
     FUNCTION = "add_dialogue"
@@ -4706,8 +4751,9 @@ class MiniMaxH3PlanV2DialogueEvent:
     )
     DESCRIPTION = (
         "Attaches one exact vocal event to the current Shot. Prompt Merge assigns S1, S2, "
-        "and later IDs from this actual playback order, supports an exact offset from the "
-        "Shot start, then compiles cross-cut and end-of-video continuity markers."
+        "and later IDs from this actual playback order. Each [d] marker in the Shot consumes "
+        "the next attached event in chain order; events without a marker retain the legacy "
+        "after-Shot placement. Exact offsets and cross-cut/end continuity remain supported."
     )
 
     @classmethod
@@ -4877,9 +4923,24 @@ class MiniMaxH3PlanV2DialogueEvent:
             if start_offset >= 0.0
             else " at automatic timing"
         )
+        shot_events = [
+            item
+            for item in updated["dialogue_events"]
+            if item["shot_number"] == event["shot_number"]
+        ]
+        placeholder_count = len(
+            _DIALOGUE_PLACEHOLDER_RE.findall(updated["shots"][-1]["description"])
+        )
+        event_position = len(shot_events)
+        placement = (
+            f"fills {DIALOGUE_PLACEHOLDER} marker {event_position}/{placeholder_count}"
+            if event_position <= placeholder_count
+            else "uses legacy placement after the Shot prose"
+        )
         preview = (
             f"[Shot {event['shot_number']}{timing}] {speaker_name} ({speaker_id}), "
-            f"{voice_mode}, {continuity_mode}: <d>[{source_language}] {words}</d>"
+            f"{voice_mode}, {continuity_mode}, {placement}: "
+            f"<d>[{source_language}] {words}</d>"
         )
         return updated, preview
 

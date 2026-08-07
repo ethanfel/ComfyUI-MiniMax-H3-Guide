@@ -31,6 +31,7 @@ try:
         PLAN_TYPE,
         _catalog,
         _copy_plan,
+        _dialogue_text,
         _format_timestamp,
         _replacement_scope,
         _replacement_shot_instruction,
@@ -47,6 +48,7 @@ except ImportError:
         PLAN_TYPE,
         _catalog,
         _copy_plan,
+        _dialogue_text,
         _format_timestamp,
         _replacement_scope,
         _replacement_shot_instruction,
@@ -229,8 +231,26 @@ def _expected_shot_prefixes(plan: dict) -> list[str]:
     return prefixes
 
 
-def _dialogue_lines(region: str) -> list[str]:
-    return [line.strip() for line in region.splitlines() if "<d>" in line.casefold()]
+def _validate_dialogue_clauses(
+    candidate: str,
+    number: int,
+    plan: dict,
+    catalog: dict,
+) -> None:
+    """Keep compiled dialogue clauses intact and ordered without freezing Shot prose."""
+
+    cursor = 0
+    for event in plan["dialogue_events"]:
+        if int(event["shot_number"]) != int(number):
+            continue
+        locked = _dialogue_text(event, plan, catalog)
+        position = candidate.find(locked, cursor)
+        if position < 0:
+            raise ValueError(
+                f"[Shot {number}] must keep every compiler-managed dialogue clause "
+                "unchanged and in order."
+            )
+        cursor = position + len(locked)
 
 
 def _validate_detailed_section(canonical: str, edited: str, plan: dict) -> None:
@@ -266,10 +286,7 @@ def _validate_detailed_section(canonical: str, edited: str, plan: dict) -> None:
             raise ValueError(
                 f"[Shot {number}] added, removed, renamed, or moved an H3 reference label."
             )
-        if _dialogue_lines(candidate) != _dialogue_lines(expected):
-            raise ValueError(
-                f"[Shot {number}] must keep its complete compiler-managed dialogue line unchanged."
-            )
+        _validate_dialogue_clauses(candidate, number, plan, catalog)
         for replacement in plan["character_replacements"]:
             if number not in _replacement_scope(replacement, plan):
                 continue
