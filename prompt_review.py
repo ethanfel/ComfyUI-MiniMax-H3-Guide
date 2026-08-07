@@ -231,26 +231,49 @@ def _expected_shot_prefixes(plan: dict) -> list[str]:
     return prefixes
 
 
-def _validate_dialogue_clauses(
+def _validate_dialogue_events(
+    expected: str,
     candidate: str,
     number: int,
     plan: dict,
     catalog: dict,
 ) -> None:
-    """Keep compiled dialogue clauses intact and ordered without freezing Shot prose."""
+    """Lock dialogue payload, Shot ownership, order, and explicit timing anchors."""
+
+    expected_tags = _DIALOGUE_RE.findall(expected)
+    candidate_tags = _DIALOGUE_RE.findall(candidate)
+    if candidate_tags != expected_tags:
+        raise ValueError(
+            f"[Shot {number}] must keep its exact <d> dialogue events in their "
+            "compiler-managed order."
+        )
 
     cursor = 0
     for event in plan["dialogue_events"]:
         if int(event["shot_number"]) != int(number):
             continue
-        locked = _dialogue_text(event, plan, catalog)
-        position = candidate.find(locked, cursor)
+        compiled_clause = _dialogue_text(event, plan, catalog)
+        tag_match = _DIALOGUE_RE.search(compiled_clause)
+        if tag_match is None:
+            raise ValueError(
+                f"[Shot {number}] has an invalid compiler-managed dialogue event."
+            )
+        tag = tag_match.group(0)
+        position = candidate.find(tag, cursor)
         if position < 0:
             raise ValueError(
-                f"[Shot {number}] must keep every compiler-managed dialogue clause "
-                "unchanged and in order."
+                f"[Shot {number}] must keep its exact <d> dialogue events in their "
+                "compiler-managed order."
             )
-        cursor = position + len(locked)
+        timing_match = re.match(r"At \d{2}:\d{2}\.\d{3},", compiled_clause)
+        if timing_match is not None:
+            timing_anchor = timing_match.group(0)
+            if timing_anchor not in candidate[cursor:position]:
+                raise ValueError(
+                    f"[Shot {number}] must keep the dialogue timing anchor "
+                    f"{timing_anchor!r} before its <d> event."
+                )
+        cursor = position + len(tag)
 
 
 def _validate_detailed_section(canonical: str, edited: str, plan: dict) -> None:
@@ -286,7 +309,7 @@ def _validate_detailed_section(canonical: str, edited: str, plan: dict) -> None:
             raise ValueError(
                 f"[Shot {number}] added, removed, renamed, or moved an H3 reference label."
             )
-        _validate_dialogue_clauses(candidate, number, plan, catalog)
+        _validate_dialogue_events(expected, candidate, number, plan, catalog)
         for replacement in plan["character_replacements"]:
             if number not in _replacement_scope(replacement, plan):
                 continue

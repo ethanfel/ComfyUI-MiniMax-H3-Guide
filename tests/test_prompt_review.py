@@ -129,6 +129,8 @@ def compiled_inline_dialogue_scene():
         "Good morning.",
         "calm and friendly",
         "On-screen speech",
+        "Complete in this Shot",
+        1.25,
     )[0]
     prompt, _rewrite, _report, compiled, _length = compile_h3_plan(plan)
     return prompt, compiled
@@ -222,7 +224,7 @@ def test_labels_cannot_move_between_shots_but_shot_prose_can_change():
         validate_reviewed_prompt(compiled, prompt, moved)
 
 
-def test_inline_dialogue_keeps_its_compiled_clause_while_surrounding_prose_is_editable():
+def test_inline_dialogue_locks_payload_and_timing_without_freezing_generated_prose():
     prompt, compiled = compiled_inline_dialogue_scene()
     safe = prompt.replace(
         "looks up.",
@@ -230,13 +232,32 @@ def test_inline_dialogue_keeps_its_compiled_clause_while_surrounding_prose_is_ed
     ).replace(
         "The traveler then walks away.",
         "The traveler then turns and walks slowly away.",
+    ).replace(
+        "<Subject 1> (S1) speaks:",
+        "<Subject 1> (S1) delivers the line:",
+    ).replace(
+        "Delivery: calm and friendly.",
+        "Delivery: warm, relaxed, and friendly.",
     )
 
     assert validate_reviewed_prompt(compiled, prompt, safe) == safe
 
-    changed_delivery = prompt.replace("calm and friendly.", "tense and hurried.")
-    with pytest.raises(ValueError, match="dialogue clause"):
-        validate_reviewed_prompt(compiled, prompt, changed_delivery)
+    changed_timing = prompt.replace("At 00:01.250,", "At 00:02.000,")
+    with pytest.raises(ValueError, match="dialogue timing anchor"):
+        validate_reviewed_prompt(compiled, prompt, changed_timing)
+
+
+def test_dialogue_event_cannot_move_to_another_shot_during_review():
+    prompt, compiled = compiled_reference_scene()
+    tag = "<d>[English] Good morning.</d>"
+    moved = prompt.replace(tag, "", 1).replace(
+        "<Subject 1> stops beside the platform clock.",
+        f"<Subject 1> stops beside the platform clock. {tag}",
+        1,
+    )
+
+    with pytest.raises(ValueError, match=r"\[Shot 1\].*<d> dialogue events"):
+        validate_reviewed_prompt(compiled, prompt, moved)
 
 
 def test_reference_labels_may_repeat_and_descriptive_action_timing_may_be_added():
