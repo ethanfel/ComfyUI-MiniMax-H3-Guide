@@ -224,9 +224,12 @@ def test_labels_cannot_move_between_shots_but_shot_prose_can_change():
         validate_reviewed_prompt(compiled, prompt, moved)
 
 
-def test_inline_dialogue_locks_payload_and_timing_without_freezing_generated_prose():
+def test_inline_dialogue_locks_payload_without_freezing_generated_prose_or_timing():
     prompt, compiled = compiled_inline_dialogue_scene()
     safe = prompt.replace(
+        "At 00:01.250, ",
+        "",
+    ).replace(
         "looks up.",
         "looks up and briefly meets the camera's gaze.",
     ).replace(
@@ -241,10 +244,6 @@ def test_inline_dialogue_locks_payload_and_timing_without_freezing_generated_pro
     )
 
     assert validate_reviewed_prompt(compiled, prompt, safe) == safe
-
-    changed_timing = prompt.replace("At 00:01.250,", "At 00:02.000,")
-    with pytest.raises(ValueError, match="dialogue timing anchor"):
-        validate_reviewed_prompt(compiled, prompt, changed_timing)
 
 
 def test_dialogue_event_cannot_move_to_another_shot_during_review():
