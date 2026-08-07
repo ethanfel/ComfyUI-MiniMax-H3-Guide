@@ -71,7 +71,10 @@ The three media nodes require an exact relationship:
   that audio as the soundtrack belonging to the selected Video Reference.
   Complete-copy and continuity soundtracks must cover the same source interval
   as their paired video within one 24 FPS frame; partial/layer references may
-  deliberately cover a shorter selected interval.
+  deliberately cover a shorter selected interval. A single complete-copy or
+  continuity soundtrack paired to a matching native 362-frame video may share
+  its 15.083-second padded boundary; this does not raise the standalone or
+  multi-audio 15-second limit.
 
 Subject names are human aliases such as woman, truck, or wristwatch. Prompt
 Merge assigns the final Subject/Picture/Video/Audio numbers, validates compact
@@ -864,11 +867,13 @@ MiniMax tokenizer are absent.
   files in total. Plan v2 validates the complete mixed inventory before
   conditioning.
 - H3 policy requires each reference video/audio clip to be 2–15 seconds and
-  limits each media type to 15 seconds total. Video Reference and Audio
-  Reference validate each asset when registered, and Prompt Merge validates
-  their totals. Audio Reference errors include the cumulative duration and each
-  active clip's duration; use the Reference Sheet numeric trim fields to fit several
-  selected segments below the shared limit.
+  limits each media type to 15 seconds total. The only native-grid exception is
+  one complete-copy or continuity soundtrack paired to a matching 362-frame
+  video; both may cover the padded 15.083-second source interval. Video
+  Reference and Audio Reference validate each asset when registered, and Prompt
+  Merge validates their totals. Audio Reference errors include the cumulative
+  duration and each active clip's duration; use the Reference Sheet numeric trim
+  fields to fit several selected segments below the shared limit.
 - H3 policy does not allow reference audio as the sole media input. Prompt Merge
   rejects that plan before Apply Reference Plan can run. Foley is the explicit
   exception supported by the native conditioning path: its locked target video

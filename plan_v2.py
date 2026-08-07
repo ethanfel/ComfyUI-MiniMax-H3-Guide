@@ -548,7 +548,7 @@ def _is_foley_plan(plan: dict) -> bool:
     return plan.get("target", {}).get("task") == TARGET_FOLEY
 
 
-def _audio_duration(audio: Any) -> float:
+def _audio_duration(audio: Any, *, allow_native_padding: bool = False) -> float:
     if (
         not isinstance(audio, Mapping)
         or "waveform" not in audio
@@ -566,12 +566,30 @@ def _audio_duration(audio: Any) -> float:
     if sample_rate <= 0:
         raise ValueError("Audio sample_rate must be a positive integer.")
     duration = int(shape[-1]) / sample_rate
-    if duration < 2.0 - 0.0005 or duration > 15.0 + 0.0005:
-        boundary = "shorter than 2 seconds" if duration < 2.0 else "longer than 15 seconds"
+    max_duration = (
+        native_frame_count(15.0) / H3_FPS if allow_native_padding else 15.0
+    )
+    if duration < 2.0 - 0.0005 or duration > max_duration + 0.0005:
+        boundary = (
+            "shorter than 2 seconds"
+            if duration < 2.0
+            else (
+                "longer than H3's native 362-frame paired boundary"
+                if allow_native_padding
+                else "longer than 15 seconds"
+            )
+        )
+        native_exception = (
+            " A complete or continuity soundtrack paired to a matching 362-frame "
+            "video may extend through 15.083 seconds."
+            if allow_native_padding
+            else ""
+        )
         raise ValueError(
             "Every H3 reference-audio clip must last from 2 through 15 seconds. "
             f"Received {duration:.3f} seconds ({int(shape[-1])} samples at "
-            f"{sample_rate} Hz), which is {boundary}. Trim the upstream AUDIO value "
+            f"{sample_rate} Hz), which is {boundary}.{native_exception} Trim the "
+            "upstream AUDIO value "
             "to the intended source interval before connecting Audio Reference."
         )
     return duration
@@ -784,7 +802,36 @@ def _validate_reference_counts(plan: dict) -> None:
             "15-second limit plus its native 362-frame padding tolerance."
         )
     audio_total = sum(float(asset["duration"]) for asset in audios)
-    if audio_total > 15.0 + 0.0005:
+    allow_native_paired_total = False
+    if (
+        len(audios) == 1
+        and 15.0 + 0.0005
+        < audio_total
+        <= max_native_reference_duration + 0.0005
+    ):
+        audio = audios[0]
+        paired_video_id = audio.get("paired_video_asset_id")
+        relationships = {
+            entry["asset_id"]: entry for entry in plan["audio_relationships"]
+        }
+        assets = _asset_by_id(plan)
+        video = assets.get(paired_video_id) if paired_video_id else None
+        tolerance = (1.0 / H3_FPS) + 0.005
+        allow_native_paired_total = bool(
+            relationships.get(audio["asset_id"], {}).get("use")
+            in {AUDIO_CONTINUITY, AUDIO_COPY_COMPLETE}
+            and video is not None
+            and video.get("media_kind") == "video"
+            and 15.0 + 0.0005 < float(video["source_duration"])
+            <= max_native_reference_duration + 0.0005
+            and math.isclose(
+                float(audio["duration"]),
+                float(video["source_duration"]),
+                rel_tol=0.0,
+                abs_tol=tolerance,
+            )
+        )
+    if audio_total > 15.0 + 0.0005 and not allow_native_paired_total:
         audio_details = ", ".join(
             f"{asset['reference_name']}={float(asset['duration']):.3f}s"
             for asset in audios
@@ -1591,11 +1638,15 @@ def _replacement_mapping_sentence(
             f"In {scope}, {subject} replaces only the source performer described as "
             f"{source_character} throughout the target portion derived from {video} and "
             f"remains the same character when the target continues beyond {video}'s endpoint. "
+            f"Every visible instance of that selected performer is rendered as {subject}, "
+            f"never with the source performer's original identity. "
             f"{_identity_only_picture_instruction(replacement, catalog)}"
         )
     return (
         f"In {scope}, {subject} replaces only the source performer described as "
-        f"{source_character} from {video}."
+        f"{source_character} from {video}. Every visible instance of that selected "
+        f"performer is rendered as {subject}, never with the source performer's original "
+        "identity."
     )
 
 
@@ -1620,20 +1671,27 @@ def _replacement_shot_instruction(
             f"Using {video} as the source timeline, replace only the source performer "
             f"described as {source_character} with {subject}."
         ]
+    lines.append(
+        f"At every source-derived frame where the selected performer is visible, render "
+        f"that performer as {subject}. For that performer, {video} supplies performance, "
+        "position, interactions, and occlusion timing, not the original visual identity."
+    )
     policy = replacement["appearance_policy"]
     if policy == REPLACEMENT_IDENTITY_KEEP_BODY_WARDROBE:
         lines.append(
-            f"Apply only {subject}'s identity and facial appearance; retain the source "
-            f"performer's body proportions and wardrobe from {video}."
+            f"Replace the source performer's original identity and facial appearance with "
+            f"{subject}; retain only the source body proportions and wardrobe from {video}."
         )
     elif policy == REPLACEMENT_IDENTITY_BODY_KEEP_WARDROBE:
         lines.append(
-            f"Apply {subject}'s identity, facial appearance, hair, and body proportions; "
-            f"retain the source performer's wardrobe from {video}."
+            f"Replace the source performer's original identity, facial appearance, hair, "
+            f"and body proportions with {subject}; retain only the source wardrobe from "
+            f"{video}."
         )
     else:
         lines.append(
-            f"Apply {subject}'s complete referenced identity and appearance, including wardrobe."
+            f"Replace the source performer's original face, hair, body proportions, and "
+            f"wardrobe with {subject}'s complete referenced identity and appearance."
         )
     if replacement["preserve_performance"]:
         if continuation:
@@ -1644,8 +1702,10 @@ def _replacement_shot_instruction(
             )
         else:
             lines.append(
-                "Preserve that source performer's pose, motion, timing, gaze, expression, "
-                f"and physical interactions from {video}."
+                "Use the source performer only as a performance track: preserve pose, motion, "
+                f"timing, gaze direction, expression timing, and physical interactions from "
+                f"{video}. These performance constraints must not restore the source "
+                "performer's original identity or appearance."
             )
     if replacement["preserve_scene"]:
         if continuation:
@@ -4103,7 +4163,9 @@ class MiniMaxH3PlanV2AudioReference:
                         "tooltip": (
                             "One 2-15 second ComfyUI AUDIO segment. All Audio References in the "
                             "same Plan v2 chain share a 15-second cumulative limit; Reference Sheet "
-                            "can trim its selected_audio output non-destructively."
+                            "can trim its selected_audio output non-destructively. A single complete "
+                            "or continuity soundtrack paired to a matching native 362-frame video "
+                            "may cover that video's 15.083-second padded boundary."
                         )
                     },
                 ),
@@ -4215,7 +4277,13 @@ class MiniMaxH3PlanV2AudioReference:
         plan = validated_plan(h3_plan, allowed_phases={PHASE_SETUP})
         if audio_use not in AUDIO_USES[1:]:
             raise ValueError("Choose an explicit audio relationship before queuing.")
-        duration = _audio_duration(audio)
+        duration = _audio_duration(
+            audio,
+            allow_native_padding=(
+                paired_video is not None
+                and audio_use in {AUDIO_CONTINUITY, AUDIO_COPY_COMPLETE}
+            ),
+        )
         # Video Helper Suite deliberately returns a lazy Mapping rather than a dict.
         # Resolve it once here so every downstream H3/native node receives the stable
         # canonical ComfyUI AUDIO container without cloning the waveform tensor.

@@ -29,6 +29,7 @@ from plan_v2 import (
     KEYFRAME_SHOT_INTERNAL,
     KEYFRAME_SHOT_OPENING,
     PLAN_TYPE,
+    REPLACEMENT_COMPLETE_APPEARANCE,
     SHOT_HANDLE_TYPE,
     TARGET_FOLEY,
     RETENTION_AUTO,
@@ -220,6 +221,81 @@ def test_video_reference_accepts_only_the_native_15_second_padding_boundary():
         )
 
 
+def test_matching_paired_soundtrack_accepts_native_362_frame_boundary():
+    plan = project(duration=15.0, soundscape="", music="N/A")
+    plan, video_handle, _video, _preview = video_reference(
+        plan,
+        frames=torch.zeros(362, 8, 8, 3),
+    )
+
+    plan, _audio, preview = audio_reference(
+        plan,
+        use=AUDIO_COPY_COMPLETE,
+        name="native-boundary soundtrack",
+        paired_video=video_handle,
+        seconds=362 / 24,
+        sample_rate=44_100,
+    )
+
+    audio_asset = next(
+        asset for asset in plan["assets"] if asset["media_kind"] == "audio"
+    )
+    assert audio_asset["media"]["waveform"].shape[-1] == 665_175
+    assert audio_asset["duration"] == pytest.approx(362 / 24, abs=1 / 44_100)
+    assert "15.083s" in preview
+
+
+def test_native_362_frame_audio_boundary_requires_matching_complete_pair():
+    native_duration = 362 / 24
+    with pytest.raises(ValueError, match="longer than 15 seconds"):
+        audio_reference(
+            project(duration=15.0),
+            use=AUDIO_VOICE,
+            name="standalone native-boundary audio",
+            speaker="woman",
+            seconds=native_duration,
+        )
+
+    plan = project(duration=15.0)
+    plan, video_handle, _video, _preview = video_reference(
+        plan,
+        frames=torch.zeros(362, 8, 8, 3),
+    )
+    with pytest.raises(ValueError, match="longer than 15 seconds"):
+        audio_reference(
+            plan,
+            use=AUDIO_COPY_PARTIAL,
+            name="partial native-boundary audio",
+            paired_video=video_handle,
+            instructions="Copy only the named room-tone layer.",
+            seconds=native_duration,
+        )
+
+
+def test_native_boundary_paired_soundtrack_cannot_expand_audio_chain_limit():
+    plan = project(duration=15.0, soundscape="", music="N/A")
+    plan, video_handle, _video, _preview = video_reference(
+        plan,
+        frames=torch.zeros(362, 8, 8, 3),
+    )
+    plan = audio_reference(
+        plan,
+        use=AUDIO_COPY_COMPLETE,
+        name="native-boundary soundtrack",
+        paired_video=video_handle,
+        seconds=362 / 24,
+    )[0]
+
+    with pytest.raises(ValueError, match="15-second cumulative limit"):
+        audio_reference(
+            plan,
+            use=AUDIO_VOICE,
+            name="extra voice",
+            speaker="woman",
+            seconds=2.0,
+        )
+
+
 def test_five_shots_compose_keyframes_and_one_motion_reference_without_manual_scopes():
     plan = project(
         "A five-shot sequence follows the referenced woman across one continuous scene.",
@@ -387,10 +463,11 @@ def audio_reference(
     scope="",
     paired_video=None,
     seconds=3.0,
+    sample_rate=32_000,
 ):
     return MiniMaxH3PlanV2AudioReference().add_audio(
         plan,
-        audio_value(seconds),
+        audio_value(seconds, sample_rate),
         use,
         name,
         speaker,
@@ -1324,7 +1401,9 @@ def test_character_replacement_maps_source_performer_and_injects_locked_shot_ins
     assert "<Video 1> performer (the woman in the red jacket) -> <Subject 1>" in preview
     assert (
         "In [Shot 1] and [Shot 2], <Subject 1> replaces only the source "
-        "performer described as the woman in the red jacket from <Video 1>."
+        "performer described as the woman in the red jacket from <Video 1>. Every "
+        "visible instance of that selected performer is rendered as <Subject 1>, never "
+        "with the source performer's original identity."
         in prompt
     )
     detailed = prompt.split("detailed_description:\n", 1)[1]
@@ -1333,9 +1412,10 @@ def test_character_replacement_maps_source_performer_and_injects_locked_shot_ins
         "described as the woman in the red jacket with <Subject 1>."
     ) == 2
     assert detailed.count(
-        "retain the source performer's body proportions and wardrobe from <Video 1>"
+        "retain only the source body proportions and wardrobe from <Video 1>"
     ) == 2
-    assert "Preserve that source performer's pose, motion, timing" in detailed
+    assert "Use the source performer only as a performance track" in detailed
+    assert "performance constraints must not restore" in detailed
     assert "Keep every other person, the environment, props, lighting" in detailed
     assert "<Subject 1> (appears in [Shot 1] and [Shot 2])" in prompt
     assert "only the declared character replacement is applied" in prompt
@@ -1344,6 +1424,37 @@ def test_character_replacement_maps_source_performer_and_injects_locked_shot_ins
     assert "Character replacement controls:" in report
     assert "preserve performance: True" in report
     assert "preserve scene/camera/cuts: True" in report
+
+
+def test_complete_appearance_replacement_excludes_all_source_appearance_traits():
+    plan = project("Replace one precisely selected performer.")
+    plan, _image_handle, _image, _preview = image_reference(
+        plan,
+        name="replacement character",
+        subject="replacement character",
+    )
+    plan, video_handle, _video, _preview = video_reference(plan)
+    plan, _preview = character_replacement(
+        plan,
+        video_handle,
+        subject="replacement character",
+        source_character="the woman lying on her back in the center of frame",
+        policy=REPLACEMENT_COMPLETE_APPEARANCE,
+    )
+    plan = shot(plan, 0.0, "The source performance continues unchanged.")
+
+    prompt = compile_h3_plan(plan)[0]
+
+    assert (
+        "At every source-derived frame where the selected performer is visible, render "
+        "that performer as <Subject 1>."
+    ) in prompt
+    assert (
+        "Replace the source performer's original face, hair, body proportions, and "
+        "wardrobe with <Subject 1>'s complete referenced identity and appearance."
+    ) in prompt
+    assert "not the original visual identity" in prompt
+    assert "must not restore the source performer's original identity or appearance" in prompt
 
 
 def test_character_replacement_edits_source_then_continues_same_character():
@@ -1382,7 +1493,9 @@ def test_character_replacement_edits_source_then_continues_same_character():
     assert (
         "<Subject 1> replaces only the source performer described as the woman in the "
         "red jacket throughout the target portion derived from <Video 1> and remains "
-        "the same character when the target continues beyond <Video 1>'s endpoint"
+        "the same character when the target continues beyond <Video 1>'s endpoint. Every "
+        "visible instance of that selected performer is rendered as <Subject 1>, never "
+        "with the source performer's original identity"
     ) in prompt
     assert (
         "Using <Video 1> as both the source timeline and continuation anchor, replace "
