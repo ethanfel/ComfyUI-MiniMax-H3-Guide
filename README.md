@@ -34,6 +34,11 @@ assign their media to exactly that Shot without a numeric `shot_scope` field.
 Their forwarded Plan and Shot handle allow multiple attachments before the next
 Shot. Dialogue Events attach to the most recently opened Shot, allowing Prompt
 Merge to assign S1, S2, and later speaker IDs from actual vocal-event order.
+The continuity dropdown marks an utterance as complete, split across the next
+cut, carried from the previous cut, or interrupted by the video ending. Matching
+cross-cut events receive `<scenetrans>` in both dialogue parts; a final
+interrupted event receives `<cutoff>`. Complete dialogue keeps the user's
+punctuation exactly as entered and never moves it outside its `<d>` tag.
 
 The three media nodes require an exact relationship:
 
@@ -59,6 +64,9 @@ The three media nodes require an exact relationship:
   copy, and broad inspiration. Voice requires a target speaker; exact content
   requires language and transcript. Its optional paired-video handle routes
   that audio as the soundtrack belonging to the selected Video Reference.
+  Complete-copy and continuity soundtracks must cover the same source interval
+  as their paired video within one 24 FPS frame; partial/layer references may
+  deliberately cover a shorter selected interval.
 
 Subject names are human aliases such as woman, truck, or wristwatch. Prompt
 Merge assigns the final Subject/Picture/Video/Audio numbers, validates compact
@@ -71,8 +79,9 @@ scopes such as 3,4 or 3-4, canonicalizes native media order, and returns:
 3. **plan_context** — the compiled typed plan for the structured enhancer and
    native Apply Reference Plan adapter;
 4. **problems_report** — readiness, mode, timing, inventory, exact native
-   routes, and a nonblocking 350-500-word detail check for reference-generation
-   prompts, following the official guide;
+   routes, source-video intervals, replacement preservation controls, source-cut
+   and native-grid truncation warnings, and a nonblocking 350-500-word detail
+   check for reference-generation prompts, following the official guide;
 5. **h3_length** — the Project Setup native frame length.
 
 Reference Sheet remains the reusable media library: connect its selected image
@@ -240,6 +249,11 @@ load the replacement identity image and a 2–15 second source video with audio,
 then identify exactly one source performer in Character Replacement. The image
 is routed as identity-only evidence, the video supplies the complete timeline,
 and its paired soundtrack is reused as the complete synchronized output track.
+The included Shot is a no-cut placeholder. If the source video contains cuts,
+duplicate and chain one Shot node per real source shot at the exact source cut
+timestamps. H3's guide requires chronological shot boundaries; the compiler
+reports a warning for a one-Shot source edit because Prompt Enhancer deliberately
+cannot invent missing cuts after compilation.
 The review gate feeds Apply Reference Plan, the official H3 video and audio
 VAEs, sampling, joint decode, and Save Video without manual reference wiring.
 
@@ -269,6 +283,9 @@ endpoint. Project duration is the total edited-plus-continued output duration,
 so it must be longer than the loaded source video. This is one H3 generation,
 not a second replacement pass; the saved result already contains both the
 character-transferred source-derived portion and its continuation.
+As with replacement-only editing, represent every real cut in the source-derived
+portion with its own chained Shot node and exact cut timestamp; the single Shot
+in the template is only a no-cut placeholder.
 
 For existing graphs, see [Migrating existing workflows to Plan v2](MIGRATION_TO_PLAN_V2.md).
 Old node IDs remain registered so saved workflows load, but the monolithic

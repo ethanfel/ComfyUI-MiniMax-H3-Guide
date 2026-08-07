@@ -139,12 +139,12 @@
         {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [7], "slot_index": 0},
         {"name": "shot_preview", "type": "STRING", "links": null, "slot_index": 1}
       ],
-      "title": "7. Describe the edited source portion and its continuation",
+      "title": "7. ONE SHOT NODE PER REAL SOURCE SHOT, then describe continuation",
       "properties": {"Node name for S&R": "MiniMaxH3PlanV2Shot"},
       "widgets_values": [
         0.0,
-        "From the first source-derived frame, <Subject 1> replaces only the selected performer while the target follows <Video 1>'s actions, timing, setting, and camera. At <Video 1>'s exact endpoint, keep <Subject 1> in the same pose, position, interaction, and motion trajectory and continue the edited scene causally forward. <Audio 1> stays synchronized across the source-derived portion and then develops forward without replaying or looping earlier material.",
-        "Follow the source camera and cuts during the source-derived portion; at the endpoint, continue its final movement, framing, lens behavior, and pace smoothly without resetting the viewpoint.",
+        "Throughout this source-derived shot, <Subject 1> replaces only the selected performer while the target follows <Video 1>'s actions, timing, setting, and camera. At <Video 1>'s exact endpoint, keep <Subject 1> in the same pose, position, interaction, and motion trajectory and continue the edited scene causally forward. <Audio 1> stays synchronized across the source-derived portion and then develops forward without replaying or looping earlier material.",
+        "Follow the source camera during this source-derived shot; at the endpoint, continue its final movement, framing, lens behavior, and pace smoothly without resetting the viewpoint.",
         "Direct cut"
       ]
     },

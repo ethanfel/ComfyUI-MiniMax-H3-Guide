@@ -139,6 +139,18 @@ AUDIO_WEAK_REFERENCE = "weak_reference"
 
 SHOT_TRANSITIONS = ["Direct cut", "Cross-dissolve", "Fade", "Wipe"]
 DIALOGUE_MODES = ["On-screen speech", "Off-screen speech", "Voiceover"]
+DIALOGUE_CONTINUITY_COMPLETE = "Complete in this Shot"
+DIALOGUE_CONTINUITY_TO_NEXT = "Continues into next Shot"
+DIALOGUE_CONTINUITY_FROM_PREVIOUS = "Continues from previous Shot"
+DIALOGUE_CONTINUITY_ACROSS = "Continues from previous and into next Shot"
+DIALOGUE_CONTINUITY_CUTOFF = "Cut off by video ending"
+DIALOGUE_CONTINUITIES = [
+    DIALOGUE_CONTINUITY_COMPLETE,
+    DIALOGUE_CONTINUITY_TO_NEXT,
+    DIALOGUE_CONTINUITY_FROM_PREVIOUS,
+    DIALOGUE_CONTINUITY_ACROSS,
+    DIALOGUE_CONTINUITY_CUTOFF,
+]
 
 MODE_T2VA = "T2VA"
 MODE_I2VA = "I2VA"
@@ -672,6 +684,49 @@ def _validate_reference_counts(plan: dict) -> None:
         )
 
 
+def _validate_paired_audio_durations(plan: dict) -> None:
+    """Require a paired soundtrack to cover the same source interval as its video."""
+
+    assets = _asset_by_id(plan)
+    relationships = {
+        entry["asset_id"]: entry for entry in plan["audio_relationships"]
+    }
+    for audio in (
+        asset for asset in plan["assets"] if asset["media_kind"] == "audio"
+    ):
+        paired_video_id = audio.get("paired_video_asset_id")
+        if not paired_video_id:
+            continue
+        # Partial/layer references deliberately may cover only a selected interval.
+        # Exact duration equality is meaningful only when the declared role follows
+        # the synchronized source soundtrack as a whole.
+        if relationships.get(audio["asset_id"], {}).get("use") not in {
+            AUDIO_CONTINUITY,
+            AUDIO_COPY_COMPLETE,
+        }:
+            continue
+        video = assets.get(paired_video_id)
+        if video is None or video.get("media_kind") != "video":
+            raise ValueError("A paired Audio Reference points to a missing source video.")
+        audio_duration = float(audio["duration"])
+        video_duration = float(video["source_duration"])
+        tolerance = (1.0 / H3_FPS) + 0.005
+        if not math.isclose(
+            audio_duration,
+            video_duration,
+            rel_tol=0.0,
+            abs_tol=tolerance,
+        ):
+            raise ValueError(
+                f"Paired soundtrack {audio['reference_name']!r} lasts "
+                f"{audio_duration:.3f}s, but video {video['reference_name']!r} lasts "
+                f"{video_duration:.3f}s. A paired H3 soundtrack must cover the same "
+                "source interval (within one 24 FPS frame). Trim the video and audio "
+                "from the same source range, or disconnect paired_video and use a "
+                "standalone Audio Reference."
+            )
+
+
 def _catalog(plan: dict) -> dict:
     pictures = [asset for asset in plan["assets"] if asset["media_kind"] == "image"]
     videos = [asset for asset in plan["assets"] if asset["media_kind"] == "video"]
@@ -1168,6 +1223,63 @@ def _validate_speakers(plan: dict, catalog: dict) -> None:
                     )
 
 
+def _dialogue_continuity(event: dict) -> str:
+    return event.get("continuity_mode", DIALOGUE_CONTINUITY_COMPLETE)
+
+
+def _validate_dialogue_continuity(plan: dict) -> None:
+    events = plan["dialogue_events"]
+    if not events:
+        return
+    shot_count = len(plan["shots"])
+    incoming_modes = {
+        DIALOGUE_CONTINUITY_FROM_PREVIOUS,
+        DIALOGUE_CONTINUITY_ACROSS,
+    }
+    outgoing_modes = {
+        DIALOGUE_CONTINUITY_TO_NEXT,
+        DIALOGUE_CONTINUITY_ACROSS,
+    }
+
+    def matching_event(event: dict, shot_number: int, modes: set[str]) -> bool:
+        return any(
+            candidate["shot_number"] == shot_number
+            and _alias_key(candidate["speaker"]) == _alias_key(event["speaker"])
+            and _alias_key(candidate["language"]) == _alias_key(event["language"])
+            and _dialogue_continuity(candidate) in modes
+            for candidate in events
+        )
+
+    for event in events:
+        continuity = _dialogue_continuity(event)
+        if continuity not in DIALOGUE_CONTINUITIES:
+            raise ValueError("Dialogue Event contains an unsupported continuity_mode.")
+        shot_number = int(event["shot_number"])
+        if continuity in outgoing_modes:
+            if shot_number >= shot_count or not matching_event(
+                event, shot_number + 1, incoming_modes
+            ):
+                raise ValueError(
+                    f"Dialogue by {event['speaker']!r} in Shot {shot_number} continues "
+                    "into the next Shot, but the adjacent Shot has no matching Dialogue "
+                    "Event marked as continuing from the previous Shot. Split the exact "
+                    "utterance across the two events."
+                )
+        if continuity in incoming_modes:
+            if shot_number <= 1 or not matching_event(
+                event, shot_number - 1, outgoing_modes
+            ):
+                raise ValueError(
+                    f"Dialogue by {event['speaker']!r} in Shot {shot_number} continues "
+                    "from the previous Shot, but the adjacent Shot has no matching "
+                    "outgoing Dialogue Event."
+                )
+        if continuity == DIALOGUE_CONTINUITY_CUTOFF and shot_number != shot_count:
+            raise ValueError(
+                "Cut off by video ending is valid only for a Dialogue Event in the final Shot."
+            )
+
+
 def _validate_complete_audio_copy(plan: dict, catalog: dict) -> None:
     relationships = {entry["asset_id"]: entry for entry in plan["audio_relationships"]}
     complete = [
@@ -1206,6 +1318,7 @@ def _validate_complete_audio_copy(plan: dict, catalog: dict) -> None:
 
 def _validate_final_plan(plan: dict, catalog: dict, mode: str) -> None:
     _validate_reference_counts(plan)
+    _validate_paired_audio_durations(plan)
     asset_ids = {asset["asset_id"] for asset in plan["assets"]}
     if any(binding.get("asset_id") not in asset_ids for binding in plan["bindings"]):
         raise ValueError(
@@ -1245,6 +1358,7 @@ def _validate_final_plan(plan: dict, catalog: dict, mode: str) -> None:
     _validate_character_replacements(plan, catalog)
     _validate_scopes(plan, catalog)
     _validate_speakers(plan, catalog)
+    _validate_dialogue_continuity(plan)
     _validate_complete_audio_copy(plan, catalog)
 
 
@@ -1573,7 +1687,7 @@ def _audio_definition(
         return (
             f"{label} provides the referenced spoken or lyric content for "
             f"{_speaker_reference(target, catalog)}: "
-            f"<d>[{relationship['language']}] {relationship['transcript']}</d>.{suffix}"
+            f"<d>[{relationship['language']}] {relationship['transcript']}</d>{suffix}"
         )
     if use == AUDIO_CONTINUITY:
         paired_video_id = audio.get("paired_video_asset_id")
@@ -1603,6 +1717,13 @@ def _audio_definition(
             )
         return f"{label} is the audio-continuity reference for {layer}.{suffix}"
     if use == AUDIO_COPY_COMPLETE:
+        paired_video_id = audio.get("paired_video_asset_id")
+        if paired_video_id:
+            video_label = catalog["video_labels"][paired_video_id]
+            return (
+                f"{label} is the synchronized audio track of {video_label} and is reused "
+                "as the target video's complete final audio track."
+            )
         return f"{label} is reused as the complete final audio track."
     if use == AUDIO_COPY_PARTIAL:
         return (
@@ -2015,9 +2136,57 @@ def _retention_analysis(plan: dict, catalog: dict) -> list[str]:
                     "replayed, repeated, or looped."
                 )
             continue
-        lines.append(
-            f"{label}{context}: {marker} - its exact declared audio relationship is used."
-        )
+        use = relationship["use"]
+        if use == AUDIO_COPY_COMPLETE:
+            if paired_video is not None:
+                video_label = catalog["video_labels"][paired_video_id]
+                explanation = (
+                    f"the synchronized audio track of {video_label} is reused 1:1 as the "
+                    "target video's complete final audio track"
+                )
+            else:
+                explanation = (
+                    "the complete source signal is reused 1:1 as the target video's "
+                    "complete final audio track"
+                )
+        elif use == AUDIO_COPY_PARTIAL:
+            explanation = "only the explicitly selected source range or layers are copied"
+        elif use == AUDIO_VOICE:
+            explanation = (
+                f"its voice timbre and delivery guide "
+                f"{_speaker_reference(relationship['target_speaker'], catalog)} without "
+                "reusing the source words"
+            )
+        elif use == AUDIO_MUSIC:
+            explanation = (
+                f"its background-music style guides "
+                f"{relationship['target_layer_or_event']} without copying the source signal"
+            )
+        elif use == AUDIO_BEAT:
+            explanation = (
+                f"its beat and rhythm guide {relationship['target_layer_or_event']}"
+            )
+        elif use == AUDIO_SFX:
+            explanation = (
+                f"its sound-effect texture guides {relationship['target_layer_or_event']}"
+            )
+        elif use == AUDIO_CONTENT:
+            explanation = (
+                f"its declared words or lyric content guide "
+                f"{_speaker_reference(relationship['target_speaker'], catalog)} without "
+                "copying the source signal"
+            )
+        elif use == AUDIO_CONTINUITY:
+            explanation = (
+                f"its final audible state guides continuous development of "
+                f"{relationship['target_layer_or_event']} without replaying the source signal"
+            )
+        else:
+            explanation = (
+                f"only broad sonic similarity guides "
+                f"{relationship['target_layer_or_event']}"
+            )
+        lines.append(f"{label}{context}: {marker} - {explanation}.")
     return lines
 
 
@@ -2049,17 +2218,51 @@ def _dialogue_text(event: dict, plan: dict, catalog: dict) -> str:
         if audio_label
         else ""
     )
-    exact = f"<d>[{event['language']}] {event['exact_text']}</d>"
+    continuity = _dialogue_continuity(event)
+    opening_marker = (
+        "<scenetrans> "
+        if continuity
+        in {DIALOGUE_CONTINUITY_FROM_PREVIOUS, DIALOGUE_CONTINUITY_ACROSS}
+        else ""
+    )
+    closing_marker = (
+        " <scenetrans>"
+        if continuity in {DIALOGUE_CONTINUITY_TO_NEXT, DIALOGUE_CONTINUITY_ACROSS}
+        else (" <cutoff>" if continuity == DIALOGUE_CONTINUITY_CUTOFF else "")
+    )
+    exact = (
+        f"<d>[{event['language']}] {opening_marker}{event['exact_text']}"
+        f"{closing_marker}</d>"
+    )
     delivery = _sentence(event["delivery"])
     delivery_clause = f" Delivery: {delivery}" if delivery else ""
+    continuity_clause = {
+        DIALOGUE_CONTINUITY_COMPLETE: "",
+        DIALOGUE_CONTINUITY_TO_NEXT: (
+            " The utterance continues seamlessly across the cut into the next Shot."
+        ),
+        DIALOGUE_CONTINUITY_FROM_PREVIOUS: (
+            " The utterance carries over seamlessly from the previous Shot."
+        ),
+        DIALOGUE_CONTINUITY_ACROSS: (
+            " The utterance carries through both adjacent cuts without interruption."
+        ),
+        DIALOGUE_CONTINUITY_CUTOFF: (
+            " The speech is audibly cut off by the end of the video."
+        ),
+    }[continuity]
     if event["voice_mode"] == "Voiceover":
         return (
-            f"{speaker} says in an off-screen voiceover{voice_clause}: {exact}. "
-            f"The on-screen character's lips remain completely closed.{delivery_clause}"
+            f"{speaker} says in an off-screen voiceover{voice_clause}: {exact} "
+            f"The on-screen character's lips remain completely closed."
+            f"{continuity_clause}{delivery_clause}"
         )
     if event["voice_mode"] == "Off-screen speech":
-        return f"{speaker} speaks off-screen{voice_clause}: {exact}.{delivery_clause}"
-    return f"{speaker} speaks{voice_clause}: {exact}.{delivery_clause}"
+        return (
+            f"{speaker} speaks off-screen{voice_clause}: {exact}"
+            f"{continuity_clause}{delivery_clause}"
+        )
+    return f"{speaker} speaks{voice_clause}: {exact}{continuity_clause}{delivery_clause}"
 
 
 def _implicit_or_planned_shots(plan: dict) -> list[dict]:
@@ -2192,10 +2395,14 @@ def _audio_sections(plan: dict, catalog: dict) -> tuple[str, str]:
         return (
             f"Reuse {label} as the complete final audio track; do not add, replace, remix, "
             "or synthesize any dialogue, ambience, effects, or music.",
-            f"Contained entirely in {label}; do not add or replace any audience-only music.",
+            f"Do not generate new audience-only music; any such music already present in "
+            f"{label} remains unchanged inside the copied complete track.",
         )
 
-    soundscape = _clean_block(project["overall_soundscape"], "N/A")
+    soundscape = _clean_block(
+        project["overall_soundscape"],
+        "Use coherent ambience and synchronized physical sounds.",
+    )
     music = _clean_block(project["non_diegetic_music"], "N/A")
     music_references: list[str] = []
     sound_references: list[str] = []
@@ -2283,8 +2490,9 @@ def _endpoint_preamble(mode: str, plan: dict, catalog: dict) -> str:
         )
     if mode == MODE_L2VA:
         return (
-            f"For the target video, at {duration:.2f} seconds into the target video, "
-            f"{last} (from [Shot {final_shot}]) is fully referenced."
+            "How the reference pictures align with the target video — "
+            f"{last} (from [Shot {final_shot}]) aligns with the "
+            f"{duration:.2f}-second mark of the target video."
         )
     return (
         "How the reference pictures align with the target video — "
@@ -2340,6 +2548,62 @@ def _problems_report(
         lines.extend(f"- {entry['label']} -> {entry['route']}" for entry in routes)
     else:
         lines.append("- none")
+    if catalog["videos"]:
+        lines.append("Source video intervals:")
+        for video in catalog["videos"]:
+            label = catalog["video_labels"][video["asset_id"]]
+            source_duration = float(video["source_duration"])
+            native_duration = float(video["native_duration"])
+            lines.append(
+                f"- {label}: {source_duration:.3f}s source -> "
+                f"{int(video['native_frame_count'])} native frames / "
+                f"{native_duration:.3f}s conditioning."
+            )
+            if source_duration > native_duration + 0.0005:
+                lines.append(
+                    f"  Warning: native-grid preparation omits the final "
+                    f"{source_duration - native_duration:.3f}s of this source. The prompt "
+                    "must not claim that omitted interval is conditioned; preprocess or "
+                    "retime the intended source interval to an exact 17k+5 frame count when "
+                    "its final action must be retained."
+                )
+    if plan["character_replacements"]:
+        lines.append("Character replacement controls:")
+        for replacement in plan["character_replacements"]:
+            subject, video = _replacement_labels(replacement, plan, catalog)
+            lines.append(
+                f"- {subject} replaces {replacement['source_character_description']!r} in "
+                f"{video}, scope {replacement['shot_scope']}; appearance policy: "
+                f"{replacement['appearance_policy']}; preserve performance: "
+                f"{replacement['preserve_performance']}; preserve scene/camera/cuts: "
+                f"{replacement['preserve_scene']}."
+            )
+            if not replacement["preserve_performance"]:
+                lines.append(
+                    "  Warning: performance preservation is disabled, so source action timing "
+                    "and expressions may drift."
+                )
+            if not replacement["preserve_scene"]:
+                lines.append(
+                    "  Warning: scene/camera/cut preservation is disabled, so source shot "
+                    "order and composition may drift."
+                )
+    source_edit_videos = [
+        video
+        for video in catalog["videos"]
+        if video["relationship"] == VIDEO_EDIT
+        or (
+            video["relationship"] == VIDEO_CONTINUE
+            and _replacements_for_video(plan, video["asset_id"])
+        )
+    ]
+    if source_edit_videos and len(plan["shots"]) <= 1:
+        lines.append(
+            "Guide warning: this source edit is represented by one Shot. That is correct only "
+            "when the loaded source contains no cuts. If the source contains cuts, chain one "
+            "Shot node per real source shot at each exact source cut time; Prompt Enhancer "
+            "cannot create missing Shot boundaries."
+        )
     video_uses = {asset["relationship"] for asset in catalog["videos"]}
     if mode == MODE_REF2VA and not video_uses.intersection(
         {VIDEO_EDIT, VIDEO_CONTINUE}
@@ -3618,6 +3882,7 @@ class MiniMaxH3PlanV2AudioReference:
         updated["assets"].append(asset)
         updated["audio_relationships"].append(relationship)
         _validate_reference_counts(updated)
+        _validate_paired_audio_durations(updated)
         route = (
             "paired soundtrack; final ref_video_audio_N route assigned by Prompt Merge"
             if paired_video_asset_id
@@ -4054,7 +4319,8 @@ class MiniMaxH3PlanV2DialogueEvent:
     )
     DESCRIPTION = (
         "Attaches one exact vocal event to the current Shot. Prompt Merge assigns S1, S2, "
-        "and later IDs from this actual playback order."
+        "and later IDs from this actual playback order, then compiles cross-cut and "
+        "end-of-video continuity markers from the selected continuity mode."
     )
 
     @classmethod
@@ -4093,7 +4359,10 @@ class MiniMaxH3PlanV2DialogueEvent:
                         "multiline": True,
                         "dynamicPrompts": False,
                         "placeholder": "Exact words, without H3 tags.",
-                        "tooltip": "Only these exact words are placed inside the H3 dialogue tag.",
+                        "tooltip": (
+                            "Only these exact words are placed inside the H3 dialogue tag. "
+                            "Every punctuation mark you enter is preserved inside that tag."
+                        ),
                     },
                 ),
                 "delivery": (
@@ -4111,6 +4380,17 @@ class MiniMaxH3PlanV2DialogueEvent:
                         "tooltip": "On-screen speech, off-screen speech, or explicit voiceover.",
                     },
                 ),
+                "continuity_mode": (
+                    DIALOGUE_CONTINUITIES,
+                    {
+                        "default": DIALOGUE_CONTINUITY_COMPLETE,
+                        "tooltip": (
+                            "Use the two matching cross-cut choices when one utterance spans "
+                            "adjacent Shots; Prompt Merge inserts <scenetrans> in both parts. "
+                            "Use cutoff only in the final Shot when the video interrupts speech."
+                        ),
+                    },
+                ),
             }
         }
 
@@ -4122,6 +4402,7 @@ class MiniMaxH3PlanV2DialogueEvent:
         exact_text: str,
         delivery: str,
         voice_mode: str,
+        continuity_mode: str = DIALOGUE_CONTINUITY_COMPLETE,
     ):
         plan = validated_plan(h3_plan, allowed_phases={PHASE_TIMELINE})
         if not plan["shots"]:
@@ -4139,6 +4420,8 @@ class MiniMaxH3PlanV2DialogueEvent:
             )
         if voice_mode not in DIALOGUE_MODES:
             raise ValueError("Choose a supported Dialogue Event voice_mode.")
+        if continuity_mode not in DIALOGUE_CONTINUITIES:
+            raise ValueError("Choose a supported Dialogue Event continuity_mode.")
         aliases = {_alias_key(entry["subject_name"]) for entry in plan["bindings"]}
         if voice_mode == "On-screen speech" and _alias_key(speaker_name) not in aliases:
             raise ValueError(
@@ -4153,6 +4436,7 @@ class MiniMaxH3PlanV2DialogueEvent:
             "exact_text": words,
             "delivery": _clean_inline(delivery),
             "voice_mode": voice_mode,
+            "continuity_mode": continuity_mode,
         }
         updated = _copy_plan(plan)
         updated["dialogue_events"].append(event)
@@ -4169,7 +4453,7 @@ class MiniMaxH3PlanV2DialogueEvent:
         )
         preview = (
             f"[Shot {event['shot_number']}] {speaker_name} ({speaker_id}), "
-            f"{voice_mode}: <d>[{source_language}] {words}</d>"
+            f"{voice_mode}, {continuity_mode}: <d>[{source_language}] {words}</d>"
         )
         return updated, preview
 

@@ -121,6 +121,14 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
     assert "Source video to edit" in replacement_values
     assert "Copy complete signal" in replacement_values
     assert "Replace identity and body; keep source wardrobe" in replacement_values
+    assert any(
+        "ONE SHOT NODE PER REAL SOURCE SHOT" in str(node.get("title", ""))
+        for node in replacement["nodes"]
+    )
+    assert not any(
+        "without introducing a new viewpoint or an additional shot" in str(value)
+        for value in replacement_values
+    )
 
     continuation_types = [node["type"] for node in continuation["nodes"]]
     continuation_values = [

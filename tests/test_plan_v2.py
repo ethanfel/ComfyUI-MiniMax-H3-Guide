@@ -17,6 +17,9 @@ from plan_v2 import (
     CONTENT_ACTION,
     CONTENT_IDENTITY,
     CONTENT_OBJECT,
+    DIALOGUE_CONTINUITY_CUTOFF,
+    DIALOGUE_CONTINUITY_FROM_PREVIOUS,
+    DIALOGUE_CONTINUITY_TO_NEXT,
     IMAGE_DEFINE_VISIBLE,
     IMAGE_FIRST_FRAME,
     IMAGE_KEYFRAME,
@@ -340,6 +343,7 @@ def dialogue(
     language="English",
     delivery="natural",
     voice_mode="On-screen speech",
+    continuity_mode="Complete in this Shot",
 ):
     return MiniMaxH3PlanV2DialogueEvent().add_dialogue(
         plan,
@@ -348,6 +352,7 @@ def dialogue(
         words,
         delivery,
         voice_mode,
+        continuity_mode,
     )[0]
 
 
@@ -433,6 +438,26 @@ def test_first_and_last_endpoints_compile_to_fl2va_without_subjects():
         "first_frame",
         "last_frame",
     ]
+
+
+def test_last_frame_endpoint_uses_the_guide_l2va_alignment_preamble():
+    plan = project("Resolve into the supplied final composition.")
+    plan, _handle, _image, _preview = image_reference(
+        plan,
+        use=IMAGE_LAST_FRAME,
+        name="ending",
+        content_type=UNASSIGNED_CONTENT_TYPE,
+        subject="",
+    )
+    plan = shot(plan, 0.0, "The action resolves into <Picture 1>.")
+
+    prompt, _rewrite, report, _compiled, _length = compile_h3_plan(plan)
+
+    assert prompt.startswith(
+        "How the reference pictures align with the target video — "
+        "<Picture 1> (from [Shot 1]) aligns with the 6.58-second mark of the target video."
+    )
+    assert "Mode: L2VA" in report
 
 
 def test_endpoint_roles_cannot_be_silently_downgraded_to_ref2va_images():
@@ -663,6 +688,7 @@ def test_paired_continuation_audio_explicitly_forbids_source_looping():
         layer="the established ambience, action sounds, and soundtrack progression",
         instructions="Preserve a seamless tonal and spatial transition at the boundary.",
         paired_video=video_handle,
+        seconds=2.0,
     )
     plan = shot(
         plan,
@@ -813,6 +839,56 @@ def test_dialogue_content_requires_and_matches_structured_vocal_event():
     assert "<d>[French] Merci de vous être arrêté.</d>" in prompt
 
 
+def test_dialogue_across_a_cut_marks_both_adjacent_parts():
+    plan = project()
+    plan, _handle, _image, _preview = image_reference(plan)
+    plan = shot(plan, 0.0, "<Subject 1> begins speaking in the passenger seat.")
+    plan = dialogue(
+        plan,
+        "woman",
+        "I was about to",
+        continuity_mode=DIALOGUE_CONTINUITY_TO_NEXT,
+    )
+    plan = shot(plan, 3.0, "A close view holds on <Subject 1> across the cut.")
+    plan = dialogue(
+        plan,
+        "woman",
+        "tell you something.",
+        continuity_mode=DIALOGUE_CONTINUITY_FROM_PREVIOUS,
+    )
+
+    prompt, _rewrite, _report, _compiled, _length = compile_h3_plan(plan)
+
+    assert "<d>[English] I was about to <scenetrans></d>" in prompt
+    assert "<d>[English] <scenetrans> tell you something.</d>" in prompt
+
+
+def test_dialogue_cutoff_and_user_punctuation_are_preserved_inside_tag():
+    plan = project()
+    plan, _handle, _image, _preview = image_reference(plan)
+    plan = shot(plan, 0.0, "<Subject 1> calls out as the video ends.")
+    plan = dialogue(
+        plan,
+        "woman",
+        "Wait, I need to",
+        continuity_mode=DIALOGUE_CONTINUITY_CUTOFF,
+    )
+
+    prompt, _rewrite, _report, _compiled, _length = compile_h3_plan(plan)
+
+    assert "<d>[English] Wait, I need to <cutoff></d>" in prompt
+    no_punctuation = dialogue(
+        shot(project(), 0.0, "A speaker talks."),
+        "speaker",
+        "These are the exact words",
+        voice_mode="Off-screen speech",
+        delivery="",
+    )
+    no_punctuation_prompt = compile_h3_plan(no_punctuation)[0]
+    assert "<d>[English] These are the exact words</d>" in no_punctuation_prompt
+    assert "<d>[English] These are the exact words</d>." not in no_punctuation_prompt
+
+
 def test_valid_complete_audio_copy_controls_both_audio_sections():
     plan = project(soundscape="", music="N/A")
     plan, _handle, _image, _preview = image_reference(plan)
@@ -827,7 +903,57 @@ def test_valid_complete_audio_copy_controls_both_audio_sections():
 
     assert "<Audio 1> is reused as the complete final audio track" in prompt
     assert "Reuse <Audio 1> as the complete final audio track" in prompt
-    assert "Contained entirely in <Audio 1>" in prompt
+    assert "any such music already present in <Audio 1> remains unchanged" in prompt
+
+
+def test_paired_complete_audio_names_video_and_requires_matching_interval():
+    plan = project(soundscape="", music="N/A")
+    plan, video_handle, _video, _preview = video_reference(plan)
+    with pytest.raises(ValueError, match="must cover the same source interval"):
+        audio_reference(
+            plan,
+            use=AUDIO_COPY_COMPLETE,
+            name="mismatched source soundtrack",
+            paired_video=video_handle,
+            seconds=3.0,
+        )
+
+    plan, _audio, _preview = audio_reference(
+        plan,
+        use=AUDIO_COPY_COMPLETE,
+        name="source soundtrack",
+        paired_video=video_handle,
+        seconds=2.0,
+    )
+    plan = shot(plan, 0.0, "Edit <Video 1> while preserving its source timeline.")
+    prompt, _rewrite, report, _compiled, _length = compile_h3_plan(plan)
+
+    assert (
+        "<Audio 1> is the synchronized audio track of <Video 1> and is reused "
+        "as the target video's complete final audio track."
+    ) in prompt
+    assert (
+        "<Audio 1>: fully_copy - the synchronized audio track of <Video 1> is "
+        "reused 1:1 as the target video's complete final audio track."
+    ) in prompt
+    assert "<Video 1>: 2.000s source" in report
+    assert "native-grid preparation omits the final 0.375s" in report
+    assert "Guide warning: this source edit is represented by one Shot" in report
+
+
+def test_blank_generated_soundscape_gets_a_non_silent_default():
+    plan = shot(
+        project(soundscape="", music="N/A"),
+        0.0,
+        "A person crosses a quiet room.",
+    )
+
+    prompt, _rewrite, _report, _compiled, _length = compile_h3_plan(plan)
+
+    assert (
+        "overall_soundscape: Use coherent ambience and synchronized physical sounds."
+        in prompt
+    )
 
 
 def test_speaker_ids_come_from_vocal_events_not_subject_numbering():
@@ -993,6 +1119,9 @@ def test_character_replacement_maps_source_performer_and_injects_locked_shot_ins
     assert "only the declared character replacement is applied" in prompt
     assert len(compiled["character_replacements"]) == 1
     assert "character replacement mapping(s)" in report
+    assert "Character replacement controls:" in report
+    assert "preserve performance: True" in report
+    assert "preserve scene/camera/cuts: True" in report
 
 
 def test_character_replacement_edits_source_then_continues_same_character():
@@ -1049,6 +1178,28 @@ def test_character_replacement_edits_source_then_continues_same_character():
         "by the declared Subject, then that edited state continues beyond the endpoint"
     ) in prompt
     assert compiled["character_replacements"][0]["source_video_asset_id"] == "video-1"
+
+
+def test_replacement_report_exposes_disabled_preservation_controls():
+    plan = project("Replace one source performer.")
+    plan, _image_handle, _image, _preview = image_reference(plan)
+    plan, video_handle, _video, _preview = video_reference(plan)
+    plan, _preview = character_replacement(
+        plan,
+        video_handle,
+        source_character="the source performer in the foreground",
+        preserve_performance=False,
+        preserve_scene=False,
+        scope="all",
+    )
+    plan = shot(plan, 0.0, "The source timeline is edited with the replacement.")
+
+    _prompt, _rewrite, report, _compiled, _length = compile_h3_plan(plan)
+
+    assert "preserve performance: False" in report
+    assert "preserve scene/camera/cuts: False" in report
+    assert "source action timing and expressions may drift" in report
+    assert "source shot order and composition may drift" in report
 
 
 def test_character_replacement_continuation_requires_total_duration_beyond_source():

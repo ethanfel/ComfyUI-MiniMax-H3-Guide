@@ -139,12 +139,12 @@
         {"name": "h3_plan", "type": "MINIMAX_H3_PLAN_V2", "links": [7], "slot_index": 0},
         {"name": "shot_preview", "type": "STRING", "links": null, "slot_index": 1}
       ],
-      "title": "8. Preserve the complete source timeline",
+      "title": "8. ONE SHOT NODE PER REAL SOURCE SHOT (placeholder assumes no cuts)",
       "properties": {"Node name for S&R": "MiniMaxH3PlanV2Shot"},
       "widgets_values": [
         0.0,
-        "From the first source-derived frame through the final frame, <Subject 1> replaces only the selected performer while the target follows <Video 1>'s complete actions, blocking, expressions, timing, setting, interactions, and continuity. Reuse <Audio 1> as the complete synchronized soundtrack.",
-        "Preserve <Video 1>'s camera movement, framing, lens behavior, focus, shot boundaries, and cuts without introducing a new viewpoint or an additional shot.",
+        "Throughout this source-derived shot, <Subject 1> replaces only the selected performer while the target follows <Video 1>'s actions, blocking, expressions, timing, setting, interactions, and continuity. Reuse <Audio 1> as the complete synchronized soundtrack.",
+        "Preserve <Video 1>'s camera movement, framing, lens behavior, focus, and composition throughout this source shot.",
         "Direct cut"
       ]
     },
