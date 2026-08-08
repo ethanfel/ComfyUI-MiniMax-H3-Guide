@@ -29,6 +29,8 @@ from plan_v2 import (
     KEYFRAME_SHOT_INTERNAL,
     KEYFRAME_SHOT_OPENING,
     PLAN_TYPE,
+    PROMPT_STYLE_COMPACT,
+    PROMPT_STYLE_FULL,
     REPLACEMENT_COMPLETE_APPEARANCE,
     SHOT_HANDLE_TYPE,
     TARGET_FOLEY,
@@ -1426,6 +1428,75 @@ def test_character_replacement_maps_source_performer_and_injects_locked_shot_ins
     assert "preserve scene/camera/cuts: True" in report
 
 
+def test_compact_prompt_merge_removes_repetition_but_keeps_locked_semantics():
+    plan = project(
+        "Use the source video as the exact performance and camera timeline while changing "
+        "only the selected character and location."
+    )
+    plan, _image_handle, _image, _preview = image_reference(
+        plan,
+        name="replacement portrait",
+        subject="woman",
+    )
+    plan, video_handle, _video, _preview = video_reference(
+        plan,
+        description="The authoritative source performance and camera timeline.",
+    )
+    plan = character_replacement(
+        plan,
+        video_handle,
+        source_character="the woman in the foreground",
+        preserve_scene=False,
+        instructions="Dress the replacement character in a fitted white tube dress.",
+    )[0]
+    plan = MiniMaxH3PlanV2Shot().add_shot(
+        plan,
+        0.0,
+        "Follow <Video 1> frame-for-frame in a nightclub. [d]",
+        "Copy <Video 1>'s camera exactly.",
+        "Direct cut",
+    )[0]
+    plan = dialogue(
+        plan,
+        "woman",
+        "Stay with me.",
+        start_offset_seconds=1.25,
+    )
+
+    merger = MiniMaxH3PlanV2PromptMerge()
+    full, _rewrite, full_context, full_report, _length = merger.merge(
+        plan,
+        PROMPT_STYLE_FULL,
+    )
+    compact, _rewrite, context, report, _length = merger.merge(
+        plan,
+        PROMPT_STYLE_COMPACT,
+    )
+
+    headers = (
+        "subject_definitions:",
+        "summary:",
+        "retention_analysis:",
+        "detailed_description:",
+        "overall_soundscape:",
+        "non_diegetic_music:",
+    )
+    assert all(header in compact for header in headers)
+    assert "<Subject 1> replaces only the source performer" in compact
+    assert "<Subject 1> (appears in [Shot 1]): fully_preserved." in compact
+    assert "<Video 1>: partially_preserved." in compact
+    assert "Use <Video 1> frame-for-frame" in compact
+    assert "Dress the replacement character in a fitted white tube dress." in compact
+    assert "At 00:01.250, <Subject 1> (S1) speaks" in compact
+    assert "<d>[English] Stay with me.</d>" in compact
+    assert "only the declared character replacement is applied" not in compact
+    assert len(compact.split()) < len(full.split()) * 0.75
+    assert context["compiled"]["prompt_style"] == PROMPT_STYLE_COMPACT
+    assert context["compiled"]["routes"] == full_context["compiled"]["routes"]
+    assert "Prompt style: Compact low-token prompt" in report
+    assert "Prompt style: Full structured prompt" in full_report
+
+
 def test_complete_appearance_replacement_excludes_all_source_appearance_traits():
     plan = project("Replace one precisely selected performer.")
     plan, _image_handle, _image, _preview = image_reference(
@@ -1802,6 +1873,11 @@ def test_node_contract_exposes_the_complete_phase_one_chain():
     ]
     assert keyframe_position[1]["default"] == KEYFRAME_SHOT_OPENING
     assert MiniMaxH3PlanV2PromptMerge.RETURN_TYPES[2] == PLAN_TYPE
+    prompt_style = MiniMaxH3PlanV2PromptMerge.INPUT_TYPES()["optional"][
+        "prompt_style"
+    ]
+    assert prompt_style[0] == [PROMPT_STYLE_FULL, PROMPT_STYLE_COMPACT]
+    assert prompt_style[1]["default"] == PROMPT_STYLE_FULL
     assert list(MiniMaxH3PlanV2AudioReference.INPUT_TYPES()["optional"]) == [
         "paired_video"
     ]

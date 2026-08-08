@@ -19,6 +19,7 @@ from plan_v2 import (
     IMAGE_DEFINE_VISIBLE,
     IMAGE_FIRST_FRAME,
     IMAGE_LAST_FRAME,
+    PROMPT_STYLE_COMPACT,
     RETENTION_AUTO,
     UNASSIGNED_CONTENT_TYPE,
     VIDEO_EDIT,
@@ -27,6 +28,7 @@ from plan_v2 import (
     MiniMaxH3PlanV2FoleyTarget,
     MiniMaxH3PlanV2ImageReference,
     MiniMaxH3PlanV2ProjectSetup,
+    MiniMaxH3PlanV2PromptMerge,
     MiniMaxH3PlanV2Shot,
     MiniMaxH3PlanV2VideoReference,
     compile_h3_plan,
@@ -281,6 +283,33 @@ def test_ref2va_routes_media_in_the_native_named_collections():
     assert package["kwargs"]["ref_image_size"] == "max"
     assert "<Audio 1> -> ref_video_audio_0" in package["report"]
     assert "<Audio 2> -> ref_audio_0" in package["report"]
+
+
+def test_native_adapter_accepts_compact_prompt_and_its_plan_context():
+    plan = project("Edit the source timeline with one concise visual change.")
+    plan, _handle, _image, _preview = image_reference(
+        plan,
+        IMAGE_DEFINE_VISIBLE,
+        name="character",
+        subject="woman",
+    )
+    plan, _video_handle, _video, _preview = video_reference(plan)
+    plan = MiniMaxH3PlanV2Shot().add_shot(
+        plan,
+        0.0,
+        "<Subject 1> follows <Video 1> frame-for-frame.",
+        "",
+        "Direct cut",
+    )[0]
+    prompt, _rewrite, compiled, _report, _length = (
+        MiniMaxH3PlanV2PromptMerge().merge(plan, PROMPT_STYLE_COMPACT)
+    )
+
+    package = prepare_native_h3_call(compiled, prompt, 1344, 768)
+
+    assert package["kwargs"]["prompt"] == prompt
+    assert package["mode"] == "Ref2VA"
+    assert compiled["compiled"]["prompt_style"] == PROMPT_STYLE_COMPACT
 
 
 def test_prompt_and_context_must_be_from_the_same_compiler_result():

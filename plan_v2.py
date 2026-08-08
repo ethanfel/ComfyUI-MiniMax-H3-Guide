@@ -159,6 +159,10 @@ MODE_FL2VA = "FL2VA"
 MODE_L2VA = "L2VA"
 MODE_REF2VA = "Ref2VA"
 
+PROMPT_STYLE_FULL = "Full structured prompt"
+PROMPT_STYLE_COMPACT = "Compact low-token prompt"
+PROMPT_STYLES = [PROMPT_STYLE_FULL, PROMPT_STYLE_COMPACT]
+
 TARGET_AV = "audiovisual_generation"
 TARGET_FOLEY = "foley_from_preserved_video"
 
@@ -193,6 +197,16 @@ def _clause(value: Any, fallback: str = "") -> str:
 
 def _alias_key(value: Any) -> str:
     return _clean_inline(value).casefold()
+
+
+def _prompt_style(value: Any) -> str:
+    style = _clean_inline(value, PROMPT_STYLE_FULL)
+    if style not in PROMPT_STYLES:
+        raise ValueError(
+            "prompt_style must be 'Full structured prompt' or "
+            "'Compact low-token prompt'."
+        )
+    return style
 
 
 def _format_timestamp(seconds: float) -> str:
@@ -1725,6 +1739,50 @@ def _replacement_shot_instruction(
     return " ".join(lines)
 
 
+def _compact_replacement_shot_instruction(
+    replacement: dict, plan: dict, catalog: dict
+) -> str:
+    """Keep replacement authority and appearance policy without repeating it per frame."""
+
+    subject, video = _replacement_labels(replacement, plan, catalog)
+    source_video = _replacement_video(replacement, plan)
+    source_character = _clause(replacement["source_character_description"])
+    if source_video["relationship"] == VIDEO_CONTINUE:
+        boundary = _format_timestamp(source_video["native_duration"])
+        lines = [
+            f"Through {boundary}, use {video} frame-for-frame and replace only "
+            f"{source_character} with {subject}; continue that same replacement beyond "
+            f"the source endpoint."
+        ]
+    else:
+        lines = [
+            f"Use {video} frame-for-frame and replace only {source_character} with {subject}."
+        ]
+
+    policy = replacement["appearance_policy"]
+    if policy == REPLACEMENT_IDENTITY_KEEP_BODY_WARDROBE:
+        lines.append(f"Transfer {subject}'s identity; keep the source body and wardrobe.")
+    elif policy == REPLACEMENT_IDENTITY_BODY_KEEP_WARDROBE:
+        lines.append(f"Transfer {subject}'s identity and body; keep the source wardrobe.")
+    else:
+        lines.append(f"Transfer {subject}'s complete referenced appearance and wardrobe.")
+
+    if replacement["preserve_performance"]:
+        lines.append(
+            "Preserve the source pose, motion, timing, gaze, expression, position, "
+            "occlusion, contact, and interaction."
+        )
+    if replacement["preserve_scene"]:
+        lines.append(
+            "Preserve every other person, prop, environment detail, light, camera move, "
+            "framing, focus change, and cut."
+        )
+    instructions = _sentence(replacement["instructions"])
+    if instructions:
+        lines.append(instructions)
+    return " ".join(lines)
+
+
 def _shot_scoped_reference_instructions(
     shot_number: int,
     plan: dict,
@@ -2222,6 +2280,20 @@ def _summary(plan: dict, catalog: dict) -> str:
     return " ".join(sentences)
 
 
+def _compact_summary(plan: dict, catalog: dict) -> str:
+    """State the task and author premise once; other sections own the mappings."""
+
+    sentences = [f"[{' + '.join(_task_types(plan, catalog))}]"]
+    if _is_foley_plan(plan):
+        sentences.append(
+            "Preserve the source picture track exactly and generate only its synchronized audio."
+        )
+    premise = _summary_premise(plan)
+    if premise:
+        sentences.append(premise)
+    return " ".join(sentences)
+
+
 def _subject_retention_line(group: dict, plan: dict, catalog: dict) -> str:
     markers = {binding["retention"] for binding in group["bindings"]}
     if len(markers) != 1:
@@ -2454,6 +2526,16 @@ def _retention_analysis(plan: dict, catalog: dict) -> list[str]:
     return lines
 
 
+def _compact_retention_analysis(plan: dict, catalog: dict) -> list[str]:
+    """Keep every scoped retention marker while dropping explanatory restatement."""
+
+    compact: list[str] = []
+    for line in _retention_analysis(plan, catalog):
+        locked_marker = line.split(" - ", 1)[0].rstrip(".")
+        compact.append(f"{locked_marker}.")
+    return compact
+
+
 def _transition_prefix(transition: str) -> str:
     return {
         "Direct cut": "cut directly to",
@@ -2654,6 +2736,82 @@ def _detailed_description(plan: dict, catalog: dict) -> str:
             line = (
                 f"[Shot {number}] At {_format_timestamp(shot['cut_at'])}, "
                 f"{transition} {description[0].lower() + description[1:] if description else description}"
+            )
+        if camera:
+            line += f" Camera: {camera}"
+        lines.append(line)
+        lines.extend(
+            _dialogue_text(event, plan, catalog)
+            for event in remaining_dialogue
+        )
+    return "\n".join(lines)
+
+
+def _compact_detailed_description(plan: dict, catalog: dict) -> str:
+    """Compile the chronological plan once with concise compiler-owned constraints."""
+
+    project = plan["project"]
+    foley = _is_foley_plan(plan)
+    if foley:
+        lines = [
+            "Keep the source picture track unchanged and generate only synchronized audio "
+            f"across its {project['effective_duration']:.3f}-second native timeline."
+        ]
+    else:
+        style = _clean_inline(
+            project["visual_style"], "a coherent cinematic audiovisual style"
+        )
+        lines = [
+            f"Target: {project['effective_duration']:.3f} seconds, {style}."
+        ]
+    if plan["shots"] and _clean_block(project["initial_prompt"]):
+        lines.append(_sentence(project["initial_prompt"]))
+
+    for video in catalog["videos"]:
+        label = catalog["video_labels"][video["asset_id"]]
+        if video["relationship"] == VIDEO_EDIT:
+            lines.append(f"Use {label} as the source timeline; apply only the requested edits.")
+        elif video["relationship"] == VIDEO_CONTINUE:
+            boundary = _format_timestamp(video["native_duration"])
+            if _replacements_for_video(plan, video["asset_id"]):
+                lines.append(
+                    f"Edit {label} through {boundary}, then continue its edited endpoint state."
+                )
+            else:
+                lines.append(f"Continue immediately after {label}'s endpoint.")
+
+    for shot in _implicit_or_planned_shots(plan):
+        number = shot["shot_number"]
+        description = _sentence(
+            shot["description"], "Describe the target action and setting."
+        )
+        managed = [
+            _compact_replacement_shot_instruction(replacement, plan, catalog)
+            for replacement in plan["character_replacements"]
+            if number in _replacement_scope(replacement, plan)
+        ]
+        managed.extend(_shot_scoped_reference_instructions(number, plan, catalog))
+        if managed:
+            description = " ".join((description, *managed))
+        description, remaining_dialogue = _place_dialogue_events(
+            description,
+            number,
+            plan,
+            catalog,
+        )
+        camera = _sentence(shot["camera_direction"])
+        if number == 1:
+            line = f"[Shot 1] {description}"
+        else:
+            transition = _transition_prefix(shot["transition"])
+            lowered = (
+                description[0].lower() + description[1:]
+                if description
+                else description
+            )
+            line = (
+                f"[Shot {number}] At {_format_timestamp(shot['cut_at'])}, "
+                f"{transition} {lowered}"
             )
         if camera:
             line += f" Camera: {camera}"
@@ -2874,6 +3032,7 @@ def _problems_report(
         ),
         f"Mode: {mode}",
         f"Checkpoint: {checkpoint}",
+        f"Prompt style: {_prompt_style(plan.get('prompt_style'))}",
         (
             f"Timing: requested {plan['project']['duration_seconds']:.3f}s; native "
             f"{plan['project']['h3_length']} frames at {H3_FPS} FPS = "
@@ -3042,6 +3201,8 @@ def compile_h3_plan(plan: Any) -> tuple[str, str, str, dict, int]:
         plan,
         allowed_phases={PHASE_SETUP, PHASE_TIMELINE},
     )
+    prompt_style = _prompt_style(validated.get("prompt_style"))
+    validated["prompt_style"] = prompt_style
     catalog = _catalog(validated)
     mode, checkpoint = _determine_mode(validated, catalog)
     _validate_final_plan(validated, catalog, mode)
@@ -3049,15 +3210,28 @@ def compile_h3_plan(plan: Any) -> tuple[str, str, str, dict, int]:
     soundscape, music = _audio_sections(validated, catalog)
 
     if mode == MODE_REF2VA:
+        compact = prompt_style == PROMPT_STYLE_COMPACT
         prompt = (
             "subject_definitions:\n"
             + "\n".join(_subject_definitions(validated, catalog))
             + "\n\nsummary:\n"
-            + _summary(validated, catalog)
+            + (
+                _compact_summary(validated, catalog)
+                if compact
+                else _summary(validated, catalog)
+            )
             + "\n\nretention_analysis:\n"
-            + "\n".join(_retention_analysis(validated, catalog))
+            + "\n".join(
+                _compact_retention_analysis(validated, catalog)
+                if compact
+                else _retention_analysis(validated, catalog)
+            )
             + "\n\ndetailed_description:\n"
-            + _detailed_description(validated, catalog)
+            + (
+                _compact_detailed_description(validated, catalog)
+                if compact
+                else _detailed_description(validated, catalog)
+            )
             + "\n\noverall_soundscape:\n"
             + soundscape
             + "\n\nnon_diegetic_music:\n"
@@ -3087,6 +3261,7 @@ def compile_h3_plan(plan: Any) -> tuple[str, str, str, dict, int]:
     compiled_plan["compiled"] = {
         "mode": mode,
         "checkpoint": checkpoint,
+        "prompt_style": prompt_style,
         "target_task": validated["target"]["task"],
         "latent_strategy": (
             "preserve_video_generate_audio"
@@ -5039,7 +5214,8 @@ class MiniMaxH3PlanV2PromptMerge:
     )
     DESCRIPTION = (
         "Assigns all Subject/Picture/Video/Audio labels, speaker IDs, task types, "
-        "retention rows, timing, and native routes deterministically. No model is called."
+        "retention rows, timing, and native routes deterministically. Compact mode keeps "
+        "the same locked semantics with less repeated prose. No model is called."
     )
 
     @classmethod
@@ -5055,11 +5231,26 @@ class MiniMaxH3PlanV2PromptMerge:
                         )
                     },
                 )
-            }
+            },
+            "optional": {
+                "prompt_style": (
+                    PROMPT_STYLES,
+                    {
+                        "default": PROMPT_STYLE_FULL,
+                        "tooltip": (
+                            "Full preserves the established verbose guide template. Compact "
+                            "keeps all labels, mappings, retention markers, Shots, dialogue, "
+                            "timing, and routes while removing explanatory repetition."
+                        ),
+                    },
+                )
+            },
         }
 
-    def merge(self, h3_plan):
-        prompt, rewrite, report, compiled_plan, h3_length = compile_h3_plan(h3_plan)
+    def merge(self, h3_plan, prompt_style=PROMPT_STYLE_FULL):
+        source = _copy_plan(h3_plan)
+        source["prompt_style"] = _prompt_style(prompt_style)
+        prompt, rewrite, report, compiled_plan, h3_length = compile_h3_plan(source)
         return prompt, rewrite, compiled_plan, report, h3_length
 
 
