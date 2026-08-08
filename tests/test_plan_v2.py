@@ -247,30 +247,58 @@ def test_matching_paired_soundtrack_accepts_native_362_frame_boundary():
     assert "15.083s" in preview
 
 
-def test_native_362_frame_audio_boundary_requires_matching_complete_pair():
+def test_complete_audio_accepts_native_362_frame_boundary_without_paired_handle():
+    plan, _audio, preview = audio_reference(
+        project(duration=15.0, soundscape="", music="N/A"),
+        use=AUDIO_COPY_COMPLETE,
+        name="native-boundary soundtrack",
+        seconds=362 / 24,
+        sample_rate=44_100,
+    )
+
+    audio_asset = next(
+        asset for asset in plan["assets"] if asset["media_kind"] == "audio"
+    )
+    assert audio_asset["duration"] == pytest.approx(362 / 24, abs=1 / 44_100)
+    assert not audio_asset["paired_video_asset_id"]
+    assert "15.083s" in preview
+
+
+def test_native_362_frame_audio_boundary_applies_to_every_audio_relationship():
     native_duration = 362 / 24
-    with pytest.raises(ValueError, match="longer than 15 seconds"):
-        audio_reference(
-            project(duration=15.0),
-            use=AUDIO_VOICE,
-            name="standalone native-boundary audio",
-            speaker="woman",
-            seconds=native_duration,
-        )
+    voice_plan, _audio, voice_preview = audio_reference(
+        project(duration=15.0),
+        use=AUDIO_VOICE,
+        name="standalone native-boundary audio",
+        speaker="woman",
+        seconds=native_duration,
+    )
+    assert voice_plan["assets"][-1]["duration"] == pytest.approx(native_duration)
+    assert "15.083s" in voice_preview
 
     plan = project(duration=15.0)
     plan, video_handle, _video, _preview = video_reference(
         plan,
         frames=torch.zeros(362, 8, 8, 3),
     )
-    with pytest.raises(ValueError, match="longer than 15 seconds"):
+    partial_plan, _audio, partial_preview = audio_reference(
+        plan,
+        use=AUDIO_COPY_PARTIAL,
+        name="partial native-boundary audio",
+        paired_video=video_handle,
+        instructions="Copy only the named room-tone layer.",
+        seconds=native_duration,
+    )
+    assert partial_plan["assets"][-1]["duration"] == pytest.approx(native_duration)
+    assert "15.083s" in partial_preview
+
+    with pytest.raises(ValueError, match="beyond H3's native 362-frame boundary"):
         audio_reference(
-            plan,
-            use=AUDIO_COPY_PARTIAL,
-            name="partial native-boundary audio",
-            paired_video=video_handle,
-            instructions="Copy only the named room-tone layer.",
-            seconds=native_duration,
+            project(duration=15.0),
+            use=AUDIO_VOICE,
+            name="too-long audio",
+            speaker="woman",
+            seconds=363 / 24,
         )
 
 

@@ -562,7 +562,7 @@ def _is_foley_plan(plan: dict) -> bool:
     return plan.get("target", {}).get("task") == TARGET_FOLEY
 
 
-def _audio_duration(audio: Any, *, allow_native_padding: bool = False) -> float:
+def _audio_duration(audio: Any) -> float:
     if (
         not isinstance(audio, Mapping)
         or "waveform" not in audio
@@ -580,29 +580,21 @@ def _audio_duration(audio: Any, *, allow_native_padding: bool = False) -> float:
     if sample_rate <= 0:
         raise ValueError("Audio sample_rate must be a positive integer.")
     duration = int(shape[-1]) / sample_rate
-    max_duration = (
-        native_frame_count(15.0) / H3_FPS if allow_native_padding else 15.0
-    )
+    # The public limit is described as 15 seconds, but H3 media lengths live on
+    # the 17k+5 frame grid. Its final legal point is therefore 362 frames at
+    # 24 FPS (15.0833 seconds), for audio as well as video.
+    max_duration = native_frame_count(15.0) / H3_FPS
     if duration < 2.0 - 0.0005 or duration > max_duration + 0.0005:
         boundary = (
             "shorter than 2 seconds"
             if duration < 2.0
-            else (
-                "longer than H3's native 362-frame paired boundary"
-                if allow_native_padding
-                else "longer than 15 seconds"
-            )
-        )
-        native_exception = (
-            " A complete or continuity soundtrack paired to a matching 362-frame "
-            "video may extend through 15.083 seconds."
-            if allow_native_padding
-            else ""
+            else "longer than 15 seconds and beyond H3's native 362-frame boundary"
         )
         raise ValueError(
-            "Every H3 reference-audio clip must last from 2 through 15 seconds. "
+            "Every H3 reference-audio clip must last from 2 seconds through the "
+            "native 362-frame/15.083-second boundary. "
             f"Received {duration:.3f} seconds ({int(shape[-1])} samples at "
-            f"{sample_rate} Hz), which is {boundary}.{native_exception} Trim the "
+            f"{sample_rate} Hz), which is {boundary}. Trim the "
             "upstream AUDIO value "
             "to the intended source interval before connecting Audio Reference."
         )
@@ -816,43 +808,15 @@ def _validate_reference_counts(plan: dict) -> None:
             "15-second limit plus its native 362-frame padding tolerance."
         )
     audio_total = sum(float(asset["duration"]) for asset in audios)
-    allow_native_paired_total = False
-    if (
-        len(audios) == 1
-        and 15.0 + 0.0005
-        < audio_total
-        <= max_native_reference_duration + 0.0005
-    ):
-        audio = audios[0]
-        paired_video_id = audio.get("paired_video_asset_id")
-        relationships = {
-            entry["asset_id"]: entry for entry in plan["audio_relationships"]
-        }
-        assets = _asset_by_id(plan)
-        video = assets.get(paired_video_id) if paired_video_id else None
-        tolerance = (1.0 / H3_FPS) + 0.005
-        allow_native_paired_total = bool(
-            relationships.get(audio["asset_id"], {}).get("use")
-            in {AUDIO_CONTINUITY, AUDIO_COPY_COMPLETE}
-            and video is not None
-            and video.get("media_kind") == "video"
-            and 15.0 + 0.0005 < float(video["source_duration"])
-            <= max_native_reference_duration + 0.0005
-            and math.isclose(
-                float(audio["duration"]),
-                float(video["source_duration"]),
-                rel_tol=0.0,
-                abs_tol=tolerance,
-            )
-        )
-    if audio_total > 15.0 + 0.0005 and not allow_native_paired_total:
+    if audio_total > max_native_reference_duration + 0.0005:
         audio_details = ", ".join(
             f"{asset['reference_name']}={float(asset['duration']):.3f}s"
             for asset in audios
         )
         raise ValueError(
             f"Reference-audio chain totals {audio_total:.3f}s, more than MiniMax H3's "
-            f"15-second cumulative limit ({audio_details}). Shorten a selected Reference "
+            "15-second cumulative limit (native 362-frame/15.083-second boundary) "
+            f"({audio_details}). Shorten a selected Reference "
             "Sheet audio segment or remove an Audio Reference from this plan."
         )
 
@@ -4452,13 +4416,7 @@ class MiniMaxH3PlanV2AudioReference:
         plan = validated_plan(h3_plan, allowed_phases={PHASE_SETUP})
         if audio_use not in AUDIO_USES[1:]:
             raise ValueError("Choose an explicit audio relationship before queuing.")
-        duration = _audio_duration(
-            audio,
-            allow_native_padding=(
-                paired_video is not None
-                and audio_use in {AUDIO_CONTINUITY, AUDIO_COPY_COMPLETE}
-            ),
-        )
+        duration = _audio_duration(audio)
         # Video Helper Suite deliberately returns a lazy Mapping rather than a dict.
         # Resolve it once here so every downstream H3/native node receives the stable
         # canonical ComfyUI AUDIO container without cloning the waveform tensor.
