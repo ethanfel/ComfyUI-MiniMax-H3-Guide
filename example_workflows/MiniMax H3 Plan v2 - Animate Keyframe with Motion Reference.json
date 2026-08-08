@@ -1,0 +1,1616 @@
+{
+  "id": "62e5322b-a525-4961-a1c7-7cafcd49a4ea",
+  "revision": 0,
+  "last_node_id": 26,
+  "last_link_id": 34,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "MiniMaxH3PlanV2ProjectSetup",
+      "pos": [
+        -20,
+        -40
+      ],
+      "size": [
+        500,
+        390
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "h3_plan",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "h3_length",
+          "type": "INT",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "project_preview",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 2
+        }
+      ],
+      "title": "1. EDIT: set duration and animation goal",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3PlanV2ProjectSetup"
+      },
+      "widgets_values": [
+        "Animate the supplied opening keyframe as one continuous shot. The opening keyframe controls the initial composition, pose, subject placement, wardrobe, environment, lighting, and camera. The character reference defines the character's stable identity and appearance. The motion clip supplies only motion progression, body mechanics, cadence, and action timing. Retarget that motion to the referenced character beginning smoothly from the keyframe pose. Do not copy the motion clip's identity, wardrobe, setting, lighting, camera, framing, or audio. Avoid a pose snap, duplicated action, or cut at the start.",
+        6.0,
+        "cinematic, live-action matching the opening keyframe",
+        "Natural synchronized room tone and physical sounds matching the visible action.",
+        "N/A"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "LoadImage",
+      "pos": [
+        -20,
+        500
+      ],
+      "size": [
+        490,
+        330
+      ],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "title": "2. Load the full character reference",
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "",
+        "image"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "MiniMaxH3PlanV2ImageReference",
+      "pos": [
+        520,
+        -40
+      ],
+      "size": [
+        490,
+        720
+      ],
+      "flags": {},
+      "order": 24,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "h3_plan",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "link": 1
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "h3_plan",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "reference_handle",
+          "type": "MINIMAX_H3_REFERENCE_HANDLE_V2",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "h3_image",
+          "type": "IMAGE",
+          "links": null,
+          "slot_index": 2
+        },
+        {
+          "name": "reference_preview",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 3
+        }
+      ],
+      "title": "3. Define reusable character identity",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3PlanV2ImageReference"
+      },
+      "widgets_values": [
+        "Define reusable visible content",
+        "character identity",
+        "One consistent adult character shown clearly enough to define stable facial identity, hairstyle, skin appearance, body proportions, and distinctive visible features. Use identity and appearance only. Do not reproduce a reference-sheet layout, neutral backdrop, labels, or multiple copies in the target.",
+        "Identity or appearance",
+        "character",
+        "Auto for this relationship",
+        "all",
+        ""
+      ]
+    },
+    {
+      "id": 4,
+      "type": "MiniMaxH3PlanV2Shot",
+      "pos": [
+        1060,
+        -40
+      ],
+      "size": [
+        440,
+        460
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "h3_plan",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "h3_plan",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "links": [
+            4
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "shot_preview",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "shot_handle",
+          "type": "MINIMAX_H3_SHOT_HANDLE_V2",
+          "links": [
+            5
+          ],
+          "slot_index": 2
+        }
+      ],
+      "title": "4. EDIT: describe target action and camera",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3PlanV2Shot"
+      },
+      "widgets_values": [
+        0.0,
+        "Begin in the opening keyframe's pose and composition. <Subject 1> performs the motion transferred from <Video 1>, adapted smoothly from the keyframe pose while preserving the keyframe's character placement, wardrobe, environment, lighting, and spatial relationships. Keep the motion physically coherent and continuous; do not introduce a starting snap, duplicated action, new person, scene change, or cut.",
+        "Preserve the opening keyframe's camera position, framing, lens character, and composition. Do not copy camera movement or framing from <Video 1> unless explicitly requested here.",
+        "Direct cut"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "LoadImage",
+      "pos": [
+        1060,
+        500
+      ],
+      "size": [
+        360,
+        300
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            6
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "title": "5. Load the target opening keyframe",
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "",
+        "image"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "MiniMaxH3PlanV2ShotKeyframe",
+      "pos": [
+        1580,
+        -40
+      ],
+      "size": [
+        470,
+        430
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "h3_plan",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "link": 4
+        },
+        {
+          "name": "shot_handle",
+          "type": "MINIMAX_H3_SHOT_HANDLE_V2",
+          "link": 5
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "h3_plan",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "shot_handle",
+          "type": "MINIMAX_H3_SHOT_HANDLE_V2",
+          "links": [
+            8
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "h3_image",
+          "type": "IMAGE",
+          "links": null,
+          "slot_index": 2
+        },
+        {
+          "name": "attachment_preview",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 3
+        }
+      ],
+      "title": "6. Anchor the Shot opening composition",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3PlanV2ShotKeyframe"
+      },
+      "widgets_values": [
+        "target opening keyframe",
+        "This image defines the target Shot's opening pose, subject placement, wardrobe, environment, lighting, camera, framing, and composition. Use the reusable character reference for identity; do not reproduce a reference-sheet layout or its background.",
+        "Shot opening frame"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "VHS_LoadVideo",
+      "pos": [
+        1580,
+        500
+      ],
+      "size": [
+        420,
+        390
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "meta_batch",
+          "type": "VHS_BatchManager",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            9
+          ],
+          "slot_index": 0,
+          "shape": 3
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null,
+          "slot_index": 1,
+          "shape": 3
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": null,
+          "slot_index": 2,
+          "shape": 3
+        },
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "links": null,
+          "slot_index": 3,
+          "shape": 3
+        }
+      ],
+      "title": "7. Load the motion clip (2-15 seconds, 24 FPS)",
+      "properties": {
+        "Node name for S&R": "VHS_LoadVideo"
+      },
+      "widgets_values": {
+        "video": "",
+        "force_rate": 24,
+        "force_size": "Disabled",
+        "custom_width": 512,
+        "custom_height": 512,
+        "frame_load_cap": 360,
+        "skip_first_frames": 0,
+        "select_every_nth": 1,
+        "choose video to upload": "image",
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {}
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "MiniMaxH3PlanV2ShotMotionReference",
+      "pos": [
+        2100,
+        -40
+      ],
+      "size": [
+        500,
+        520
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "h3_plan",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "link": 7
+        },
+        {
+          "name": "shot_handle",
+          "type": "MINIMAX_H3_SHOT_HANDLE_V2",
+          "link": 8
+        },
+        {
+          "name": "video_frames",
+          "type": "IMAGE",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "name": "h3_plan",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "links": [
+            10
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "shot_handle",
+          "type": "MINIMAX_H3_SHOT_HANDLE_V2",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "h3_video",
+          "type": "IMAGE",
+          "links": null,
+          "slot_index": 2
+        },
+        {
+          "name": "attachment_preview",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 3
+        }
+      ],
+      "title": "8. Transfer motion only to the character",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3PlanV2ShotMotionReference"
+      },
+      "widgets_values": [
+        "character",
+        "character motion",
+        "Transfer the pose progression, action order, movement cadence, body mechanics, balance shifts, and contact timing only. Begin from the opening keyframe pose and adapt the motion smoothly. Do not copy the motion clip's person, facial identity, body appearance, wardrobe, environment, lighting, camera, framing, or audio.",
+        24.0
+      ]
+    },
+    {
+      "id": 9,
+      "type": "MiniMaxH3PlanV2PromptMerge",
+      "pos": [
+        2640,
+        -40
+      ],
+      "size": [
+        510,
+        360
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "h3_plan",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "h3_prompt",
+          "type": "STRING",
+          "links": [
+            11,
+            12
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "rewrite_request",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "plan_context",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "links": [
+            13
+          ],
+          "slot_index": 2
+        },
+        {
+          "name": "problems_report",
+          "type": "STRING",
+          "links": [
+            14
+          ],
+          "slot_index": 3
+        },
+        {
+          "name": "h3_length",
+          "type": "INT",
+          "links": null,
+          "slot_index": 4
+        }
+      ],
+      "title": "9. Compile compact keyframe-animation prompt",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3PlanV2PromptMerge"
+      },
+      "widgets_values": [
+        "Compact low-token prompt"
+      ]
+    },
+    {
+      "id": 10,
+      "type": "PreviewAny",
+      "pos": [
+        3160,
+        -300
+      ],
+      "size": [
+        560,
+        350
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 11
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        }
+      ],
+      "title": "Compiled keyframe-animation prompt",
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 11,
+      "type": "PreviewAny",
+      "pos": [
+        3160,
+        100
+      ],
+      "size": [
+        560,
+        350
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        }
+      ],
+      "title": "Validation and native routes",
+      "properties": {
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 12,
+      "type": "MiniMaxH3PlanV2PromptReview",
+      "pos": [
+        3760,
+        -80
+      ],
+      "size": [
+        640,
+        650
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "h3_prompt",
+          "type": "STRING",
+          "link": 12
+        },
+        {
+          "name": "plan_context",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "link": 13
+        }
+      ],
+      "outputs": [
+        {
+          "name": "approved_prompt",
+          "type": "STRING",
+          "links": [
+            15
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "approved_plan_context",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "links": [
+            16
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "review_report",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 2
+        }
+      ],
+      "title": "10. Review motion, identity, and keyframe roles",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3PlanV2PromptReview"
+      },
+      "widgets_values": [
+        "Pause for approval",
+        20
+      ]
+    },
+    {
+      "id": 13,
+      "type": "CLIPLoader",
+      "pos": [
+        520,
+        900
+      ],
+      "size": [
+        500,
+        130
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            17
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPLoader"
+      },
+      "widgets_values": [
+        "MiniMax-H3/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        "minimax",
+        "default"
+      ],
+      "title": "MiniMax H3 text encoder"
+    },
+    {
+      "id": 14,
+      "type": "VAELoader",
+      "pos": [
+        520,
+        1060
+      ],
+      "size": [
+        500,
+        100
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            18,
+            30
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "MiniMax H3 video VAE",
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "MiniMaw-H3/minimax_h3_video_vae_fp16.safetensors"
+      ]
+    },
+    {
+      "id": 15,
+      "type": "VAELoader",
+      "pos": [
+        520,
+        1200
+      ],
+      "size": [
+        500,
+        100
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            19,
+            31
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "MiniMax H3 audio VAE",
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "MiniMaw-H3/minimax_h3_audio_vae_fp32.safetensors"
+      ]
+    },
+    {
+      "id": 16,
+      "type": "UNETLoader",
+      "pos": [
+        520,
+        1340
+      ],
+      "size": [
+        500,
+        110
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            20,
+            21
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UNETLoader"
+      },
+      "widgets_values": [
+        "MiniMax-H3/minimax_h3_ref2va_int8_convrot.safetensors",
+        "default"
+      ],
+      "title": "MiniMax H3 Ref2VA model"
+    },
+    {
+      "id": 17,
+      "type": "MiniMaxH3PlanV2ApplyReferencePlan",
+      "pos": [
+        1120,
+        920
+      ],
+      "size": [
+        530,
+        420
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 17
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 18
+        },
+        {
+          "name": "h3_prompt",
+          "type": "STRING",
+          "link": 15
+        },
+        {
+          "name": "plan_context",
+          "type": "MINIMAX_H3_PLAN_V2",
+          "link": 16
+        },
+        {
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 19
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            22
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": [
+            23
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "applied_prompt",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 2
+        },
+        {
+          "name": "h3_length",
+          "type": "INT",
+          "links": null,
+          "slot_index": 3
+        },
+        {
+          "name": "adapter_report",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 4
+        }
+      ],
+      "title": "11. Native H3 keyframe animation with motion reference",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3PlanV2ApplyReferencePlan"
+      },
+      "widgets_values": [
+        768,
+        1344,
+        "max"
+      ]
+    },
+    {
+      "id": 18,
+      "type": "RandomNoise",
+      "pos": [
+        1720,
+        900
+      ],
+      "size": [
+        320,
+        100
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "NOISE",
+          "type": "NOISE",
+          "links": [
+            24
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RandomNoise"
+      },
+      "widgets_values": [
+        157368968253448,
+        "randomize"
+      ],
+      "title": "12. EDIT: generation seed"
+    },
+    {
+      "id": 19,
+      "type": "BasicScheduler",
+      "pos": [
+        1720,
+        1040
+      ],
+      "size": [
+        320,
+        140
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 20
+        }
+      ],
+      "outputs": [
+        {
+          "name": "SIGMAS",
+          "type": "SIGMAS",
+          "links": [
+            25
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BasicScheduler"
+      },
+      "widgets_values": [
+        "simple",
+        20,
+        1
+      ],
+      "title": "13. EDIT: steps and denoise"
+    },
+    {
+      "id": 20,
+      "type": "KSamplerSelect",
+      "pos": [
+        1720,
+        1200
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "SAMPLER",
+          "type": "SAMPLER",
+          "links": [
+            26
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSamplerSelect"
+      },
+      "widgets_values": [
+        "res_multistep"
+      ],
+      "title": "Sampler"
+    },
+    {
+      "id": 21,
+      "type": "BasicGuider",
+      "pos": [
+        1720,
+        1320
+      ],
+      "size": [
+        320,
+        120
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 21
+        },
+        {
+          "name": "conditioning",
+          "type": "CONDITIONING",
+          "link": 22
+        }
+      ],
+      "outputs": [
+        {
+          "name": "GUIDER",
+          "type": "GUIDER",
+          "links": [
+            27
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BasicGuider"
+      },
+      "widgets_values": [],
+      "title": "Guider"
+    },
+    {
+      "id": 22,
+      "type": "SamplerCustomAdvanced",
+      "pos": [
+        2110,
+        960
+      ],
+      "size": [
+        420,
+        330
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "noise",
+          "type": "NOISE",
+          "link": 24
+        },
+        {
+          "name": "guider",
+          "type": "GUIDER",
+          "link": 27
+        },
+        {
+          "name": "sampler",
+          "type": "SAMPLER",
+          "link": 26
+        },
+        {
+          "name": "sigmas",
+          "type": "SIGMAS",
+          "link": 25
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 23
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "LATENT",
+          "links": [
+            28,
+            29
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "denoised_output",
+          "type": "LATENT",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SamplerCustomAdvanced"
+      },
+      "widgets_values": [],
+      "title": "Generate animated target"
+    },
+    {
+      "id": 23,
+      "type": "VAEDecode",
+      "pos": [
+        2600,
+        930
+      ],
+      "size": [
+        330,
+        120
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 28
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 30
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            32
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": [],
+      "title": "Decode video"
+    },
+    {
+      "id": 24,
+      "type": "VAEDecodeAudio",
+      "pos": [
+        2600,
+        1100
+      ],
+      "size": [
+        330,
+        120
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 29
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 31
+        }
+      ],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            33
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecodeAudio"
+      },
+      "widgets_values": [],
+      "title": "Decode audio"
+    },
+    {
+      "id": 25,
+      "type": "CreateVideo",
+      "pos": [
+        3000,
+        990
+      ],
+      "size": [
+        350,
+        180
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 32
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "shape": 7,
+          "link": 33
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            34
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CreateVideo"
+      },
+      "widgets_values": [
+        24,
+        8
+      ],
+      "title": "Create 24 FPS video"
+    },
+    {
+      "id": 26,
+      "type": "SaveVideo",
+      "pos": [
+        3400,
+        990
+      ],
+      "size": [
+        430,
+        220
+      ],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 34
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null,
+          "slot_index": 0
+        }
+      ],
+      "title": "14. Save the animated keyframe target",
+      "properties": {
+        "Node name for S&R": "SaveVideo"
+      },
+      "widgets_values": [
+        "video/MiniMax_H3_Keyframe_Motion_Transfer",
+        "auto",
+        "auto"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      3,
+      0,
+      "MINIMAX_H3_PLAN_V2"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      1,
+      "IMAGE"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      0,
+      "MINIMAX_H3_PLAN_V2"
+    ],
+    [
+      4,
+      4,
+      0,
+      6,
+      0,
+      "MINIMAX_H3_PLAN_V2"
+    ],
+    [
+      5,
+      4,
+      2,
+      6,
+      1,
+      "MINIMAX_H3_SHOT_HANDLE_V2"
+    ],
+    [
+      6,
+      5,
+      0,
+      6,
+      2,
+      "IMAGE"
+    ],
+    [
+      7,
+      6,
+      0,
+      8,
+      0,
+      "MINIMAX_H3_PLAN_V2"
+    ],
+    [
+      8,
+      6,
+      1,
+      8,
+      1,
+      "MINIMAX_H3_SHOT_HANDLE_V2"
+    ],
+    [
+      9,
+      7,
+      0,
+      8,
+      2,
+      "IMAGE"
+    ],
+    [
+      10,
+      8,
+      0,
+      9,
+      0,
+      "MINIMAX_H3_PLAN_V2"
+    ],
+    [
+      11,
+      9,
+      0,
+      10,
+      0,
+      "STRING"
+    ],
+    [
+      12,
+      9,
+      0,
+      12,
+      0,
+      "STRING"
+    ],
+    [
+      13,
+      9,
+      2,
+      12,
+      1,
+      "MINIMAX_H3_PLAN_V2"
+    ],
+    [
+      14,
+      9,
+      3,
+      11,
+      0,
+      "STRING"
+    ],
+    [
+      15,
+      12,
+      0,
+      17,
+      2,
+      "STRING"
+    ],
+    [
+      16,
+      12,
+      1,
+      17,
+      3,
+      "MINIMAX_H3_PLAN_V2"
+    ],
+    [
+      17,
+      13,
+      0,
+      17,
+      0,
+      "CLIP"
+    ],
+    [
+      18,
+      14,
+      0,
+      17,
+      1,
+      "VAE"
+    ],
+    [
+      19,
+      15,
+      0,
+      17,
+      4,
+      "VAE"
+    ],
+    [
+      20,
+      16,
+      0,
+      19,
+      0,
+      "MODEL"
+    ],
+    [
+      21,
+      16,
+      0,
+      21,
+      0,
+      "MODEL"
+    ],
+    [
+      22,
+      17,
+      0,
+      21,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      23,
+      17,
+      1,
+      22,
+      4,
+      "LATENT"
+    ],
+    [
+      24,
+      18,
+      0,
+      22,
+      0,
+      "NOISE"
+    ],
+    [
+      25,
+      19,
+      0,
+      22,
+      3,
+      "SIGMAS"
+    ],
+    [
+      26,
+      20,
+      0,
+      22,
+      2,
+      "SAMPLER"
+    ],
+    [
+      27,
+      21,
+      0,
+      22,
+      1,
+      "GUIDER"
+    ],
+    [
+      28,
+      22,
+      0,
+      23,
+      0,
+      "LATENT"
+    ],
+    [
+      29,
+      22,
+      0,
+      24,
+      0,
+      "LATENT"
+    ],
+    [
+      30,
+      14,
+      0,
+      23,
+      1,
+      "VAE"
+    ],
+    [
+      31,
+      15,
+      0,
+      24,
+      1,
+      "VAE"
+    ],
+    [
+      32,
+      23,
+      0,
+      25,
+      0,
+      "IMAGE"
+    ],
+    [
+      33,
+      24,
+      0,
+      25,
+      1,
+      "AUDIO"
+    ],
+    [
+      34,
+      25,
+      0,
+      26,
+      0,
+      "VIDEO"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "A. References and motion-transfer plan",
+      "bounding": [
+        -60,
+        -360,
+        4230,
+        1260
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "B. MiniMax H3 model and native plan application",
+      "bounding": [
+        450,
+        820,
+        1240,
+        760
+      ],
+      "color": "#8f7540",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 3,
+      "title": "C. Sampling, decoding, and save",
+      "bounding": [
+        1660,
+        820,
+        2160,
+        760
+      ],
+      "color": "#4f8b62",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.72,
+      "offset": [
+        260,
+        190
+      ]
+    },
+    "workflowRendererVersion": "LG"
+  },
+  "version": 0.4
+}

@@ -1,0 +1,6 @@
+# Development-only files excluded from Comfy Registry releases.
+.github/
+tests/
+PLAN_A_WORKFLOW_MOCKUP.html
+PLAN_A_WORKFLOW_MOCKUP.png
+UX_REDESIGN_RESEARCH.md

@@ -4,6 +4,18 @@ version = "0.15.0"
 description = "A guided MiniMax H3 prompt preparation node for ComfyUI"
 requires-python = ">=3.10"
 dependencies = []
+classifiers = [
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Repository = "https://github.com/ethanfel/ComfyUI-MiniMax-H3-Guide"
+Documentation = "https://github.com/ethanfel/ComfyUI-MiniMax-H3-Guide#readme"
+"Bug Tracker" = "https://github.com/ethanfel/ComfyUI-MiniMax-H3-Guide/issues"
+
+[tool.comfy]
+PublisherId = "ethanfel"
+DisplayName = "MiniMax H3 Guide"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

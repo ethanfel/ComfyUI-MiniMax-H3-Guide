@@ -28,6 +28,7 @@ def test_phase3_workflow_templates_have_consistent_graph_links():
     workflows = _workflows()
 
     assert set(workflows) == {
+        "MiniMax H3 Plan v2 - Animate Keyframe with Motion Reference.json",
         "MiniMax H3 Plan v2 - Character Replacement.json",
         "MiniMax H3 Plan v2 - Five Shot Keyframe Composition.json",
         "MiniMax H3 Plan v2 - First and Last Frames.json",
@@ -73,6 +74,9 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
     ]
     composition = workflows[
         "MiniMax H3 Plan v2 - Five Shot Keyframe Composition.json"
+    ]
+    keyframe_motion = workflows[
+        "MiniMax H3 Plan v2 - Animate Keyframe with Motion Reference.json"
     ]
     foley = workflows["MiniMax H3 Plan v2 - Video to Audio Foley.json"]
     foley_reference = workflows[
@@ -180,6 +184,28 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
         in {"MiniMaxH3PlanV2ShotKeyframe", "MiniMaxH3PlanV2ShotMotionReference"}
     )
 
+    keyframe_motion_types = [node["type"] for node in keyframe_motion["nodes"]]
+    assert keyframe_motion_types.count("MiniMaxH3PlanV2ImageReference") == 1
+    assert keyframe_motion_types.count("MiniMaxH3PlanV2Shot") == 1
+    assert keyframe_motion_types.count("MiniMaxH3PlanV2ShotKeyframe") == 1
+    assert keyframe_motion_types.count("MiniMaxH3PlanV2ShotMotionReference") == 1
+    assert "MiniMaxH3PlanV2PromptReview" in keyframe_motion_types
+    assert "MiniMaxH3PlanV2ApplyReferencePlan" in keyframe_motion_types
+    assert "SamplerCustomAdvanced" in keyframe_motion_types
+    assert "SaveVideo" in keyframe_motion_types
+    keyframe_motion_values = [
+        value
+        for node in keyframe_motion["nodes"]
+        for value in (
+            node.get("widgets_values", {}).values()
+            if isinstance(node.get("widgets_values"), dict)
+            else node.get("widgets_values", [])
+        )
+    ]
+    assert "Compact low-token prompt" in keyframe_motion_values
+    assert "Shot opening frame" in keyframe_motion_values
+    assert not any(value == "Exact first frame" for value in keyframe_motion_values)
+
     foley_types = [node["type"] for node in foley["nodes"]]
     assert "VHS_LoadVideo" in foley_types
     assert "MiniMaxH3PlanV2FoleyTarget" in foley_types
@@ -203,6 +229,7 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
         replacement,
         continuation,
         composition,
+        keyframe_motion,
         foley,
         foley_reference,
     ):
@@ -409,6 +436,59 @@ def test_five_shot_composition_template_compiles_automatic_media_scopes():
     assert "<Video 1>" not in shot_three
     assert "<Subject 2> is the reusable pose, action, and motion from <Video 1>" in prompt
     assert "<Video 1> ([Shot 3]): attribute_transfer" not in prompt
+    assert "Plan ready: 0 errors" in report
+
+
+def test_keyframe_motion_template_compiles_distinct_identity_composition_and_motion_roles():
+    workflow = _workflows()[
+        "MiniMax H3 Plan v2 - Animate Keyframe with Motion Reference.json"
+    ]
+    nodes = {node["id"]: node for node in workflow["nodes"]}
+    plan = plan_v2.MiniMaxH3PlanV2ProjectSetup().start(
+        *nodes[1]["widgets_values"]
+    )[0]
+    plan = plan_v2.MiniMaxH3PlanV2ImageReference().add_image(
+        plan,
+        torch.zeros(1, 48, 64, 3),
+        *nodes[3]["widgets_values"],
+    )[0]
+    plan, _preview, shot_handle = plan_v2.MiniMaxH3PlanV2Shot().add_shot(
+        plan,
+        *nodes[4]["widgets_values"],
+    )
+    plan, shot_handle, _image, _preview = (
+        plan_v2.MiniMaxH3PlanV2ShotKeyframe().attach_keyframe(
+            plan,
+            shot_handle,
+            torch.zeros(1, 48, 64, 3),
+            *nodes[6]["widgets_values"],
+        )
+    )
+    plan, _shot_handle, _video, _preview = (
+        plan_v2.MiniMaxH3PlanV2ShotMotionReference().attach_motion(
+            plan,
+            shot_handle,
+            torch.zeros(144, 48, 64, 3),
+            *nodes[8]["widgets_values"],
+        )
+    )
+    prompt, _rewrite, context, report, _length = (
+        plan_v2.MiniMaxH3PlanV2PromptMerge().merge(
+            plan,
+            *nodes[9]["widgets_values"],
+        )
+    )
+
+    assert context["compiled"]["mode"] == "Ref2VA"
+    assert context["prompt_style"] == plan_v2.PROMPT_STYLE_COMPACT
+    assert [entry["route"] for entry in context["compiled"]["routes"]] == [
+        "ref_image_0",
+        "ref_image_1",
+        "ref_video_0",
+    ]
+    assert context["assets"][1]["relationship"] == plan_v2.IMAGE_KEYFRAME
+    assert context["assets"][2]["relationship"] == plan_v2.VIDEO_MOTION
+    assert "<Subject 2> is the reusable pose, action, and motion from <Video 1>" in prompt
     assert "Plan ready: 0 errors" in report
 
 

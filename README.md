@@ -382,6 +382,15 @@ action Subject is transferred to the established identity Subject only in Shot
 3. Replace the placeholder media and prose, then extend Prompt Merge into the
 enhancer/review/native generation tail when desired.
 
+`MiniMax H3 Plan v2 - Animate Keyframe with Motion Reference.json` is the
+complete one-Shot generation preset for retargeting a motion clip onto a supplied
+opening keyframe. A reusable character Picture defines stable identity, a second
+Picture anchors the Shot-opening pose and composition, and a 24-FPS Video supplies
+only pose progression, body mechanics, cadence, and action timing. The workflow
+uses Ref2VA rather than exact endpoint conditioning so all three roles can coexist
+in one native call. Prompt Merge is set to the compact low-token style and feeds
+Prompt Review, Apply Reference Plan, sampling, joint decode, and Save Video.
+
 `MiniMax H3 Plan v2 - Video Extension with Audio Continuity.json` is a complete
 one-pass character-transfer continuation example. Load a replacement-character
 image and one 2–10 second source video with audio. The image defines the
