@@ -292,7 +292,10 @@ instructions, and media routes. Approved text is bound to the connected plan
 and checked again by Apply Reference Plan. History is stored under ComfyUI user
 data and contains prompt text and hashes only—never reference media or tensors.
 `Pass through without pausing` leaves the gate in a workflow while disabling
-the interactive stop.
+the interactive stop; the current prompt is still displayed in the editor.
+`timeout_seconds` controls the blocking limit in pause mode: `0` waits
+indefinitely, while a positive value (for example, `60`) forwards the original,
+unedited prompt automatically after that many seconds.
 
 Use **Inline Prompt Override (Plan v2)** for quick A/B experiments without the
 interactive pause. Insert it between Prompt Merge (or the Structured Enhancer /

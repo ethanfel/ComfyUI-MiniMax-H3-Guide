@@ -12,15 +12,22 @@ except ImportError:
 routes = PromptServer.instance.routes
 
 
-def send_prompt_review(node_id, token, prompt, history_key, history):
+def _display_id(server, node_id):
+    return str(getattr(server, "last_node_id", None) or node_id)
+
+
+def send_prompt_review(
+    node_id, token, prompt, history_key, history, timeout_seconds=0
+):
     server = PromptServer.instance
     payload = {
         "id": str(node_id),
-        "display_id": str(getattr(server, "last_node_id", None) or node_id),
+        "display_id": _display_id(server, node_id),
         "token": token,
         "prompt": prompt,
         "history_key": history_key,
         "history": history,
+        "timeout_seconds": timeout_seconds,
     }
     if PromptReviewBus.publish(node_id, token, payload):
         server.send_sync(
@@ -28,6 +35,38 @@ def send_prompt_review(node_id, token, prompt, history_key, history):
             payload,
             getattr(server, "client_id", None),
         )
+
+
+def send_passthrough_prompt(node_id, prompt):
+    """Display a prompt without creating a review session or blocking the queue."""
+
+    server = PromptServer.instance
+    server.send_sync(
+        "minimax-h3-prompt-review",
+        {
+            "id": str(node_id),
+            "display_id": _display_id(server, node_id),
+            "prompt": prompt,
+            "passthrough": True,
+        },
+        getattr(server, "client_id", None),
+    )
+
+
+def send_prompt_review_timeout(node_id, token, timeout_seconds):
+    """Tell the editor that its unanswered review continued automatically."""
+
+    server = PromptServer.instance
+    server.send_sync(
+        "minimax-h3-prompt-review-timeout",
+        {
+            "id": str(node_id),
+            "display_id": _display_id(server, node_id),
+            "token": token,
+            "timeout_seconds": timeout_seconds,
+        },
+        getattr(server, "client_id", None),
+    )
 
 
 @routes.post("/minimax_h3/prompt_review/recover")

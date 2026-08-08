@@ -9,8 +9,10 @@ const PASS_THROUGH_MODE = "Pass through without pausing";
 const SETTINGS_PROPERTY = "minimax_h3_prompt_review_settings";
 const UI_STATE_ID_PROPERTY = "minimax_h3_prompt_review_ui_state_id";
 const DEFAULT_HISTORY_LIMIT = 20;
+const DEFAULT_TIMEOUT_SECONDS = 0;
 const MIN_HISTORY_LIMIT = 1;
 const MAX_HISTORY_LIMIT = 50;
+const MAX_TIMEOUT_SECONDS = 86400;
 const MAX_CACHED_UI_STATES = 32;
 const MIN_WIDTH = 540;
 const MIN_EDITOR_HEIGHT = 300;
@@ -31,12 +33,18 @@ function validHistoryLimit(value) {
     return Number.isInteger(value) && value >= MIN_HISTORY_LIMIT && value <= MAX_HISTORY_LIMIT;
 }
 
+function validTimeoutSeconds(value) {
+    return Number.isInteger(value) && value >= 0 && value <= MAX_TIMEOUT_SECONDS;
+}
+
 function currentSettings(node) {
     const mode = widget(node, "review_mode")?.value;
     const limit = Number(widget(node, "history_limit")?.value);
+    const timeout = Number(widget(node, "timeout_seconds")?.value);
     return {
         review_mode: validReviewMode(mode) ? mode : PAUSE_MODE,
         history_limit: validHistoryLimit(limit) ? limit : DEFAULT_HISTORY_LIMIT,
+        timeout_seconds: validTimeoutSeconds(timeout) ? timeout : DEFAULT_TIMEOUT_SECONDS,
     };
 }
 
@@ -45,7 +53,10 @@ function configuredSettings(node, info) {
     const namedSettings = info?.widgets_values_named;
     const values = Array.isArray(info?.widgets_values) ? info.widgets_values : [];
     const legacyMode = values.find((value) => validReviewMode(value));
+    const legacyModeIndex = values.findIndex((value) => validReviewMode(value));
     const legacyLimit = values.map(Number).find((value) => validHistoryLimit(value));
+    const legacyTimeout =
+        legacyModeIndex >= 0 ? Number(values[legacyModeIndex + 2]) : Number.NaN;
     const live = currentSettings(node);
     const modeCandidates = [
         namedSettings?.review_mode,
@@ -59,10 +70,19 @@ function configuredSettings(node, info) {
         legacyLimit,
         live.history_limit,
     ];
+    const timeoutCandidates = [
+        Number(namedSettings?.timeout_seconds),
+        Number(propertySettings?.timeout_seconds),
+        legacyTimeout,
+        live.timeout_seconds,
+    ];
     return {
         review_mode: modeCandidates.find((value) => validReviewMode(value)) || PAUSE_MODE,
         history_limit:
             limitCandidates.find((value) => validHistoryLimit(value)) || DEFAULT_HISTORY_LIMIT,
+        timeout_seconds:
+            timeoutCandidates.find((value) => validTimeoutSeconds(value)) ??
+            DEFAULT_TIMEOUT_SECONDS,
     };
 }
 
@@ -75,13 +95,15 @@ function persistSettings(node, settings = currentSettings(node)) {
 function applySettings(node, settings) {
     const mode = widget(node, "review_mode");
     const limit = widget(node, "history_limit");
+    const timeout = widget(node, "timeout_seconds");
     if (mode) mode.value = settings.review_mode;
     if (limit) limit.value = settings.history_limit;
+    if (timeout) timeout.value = settings.timeout_seconds;
     persistSettings(node, settings);
 }
 
 function trackSettings(node) {
-    for (const name of ["review_mode", "history_limit"]) {
+    for (const name of ["review_mode", "history_limit", "timeout_seconds"]) {
         const target = widget(node, name);
         if (!target || target.__h3PromptReviewTracked) continue;
         target.__h3PromptReviewTracked = true;
@@ -104,10 +126,15 @@ function serializeSettings(node, serialized) {
     // position but restores the remaining widgets from a compacted array. A DOM
     // editor before/between real widgets therefore shifts values on workflow-tab
     // recreation. Emit both compact legacy values and named values explicitly.
-    serialized.widgets_values = [settings.review_mode, settings.history_limit];
+    serialized.widgets_values = [
+        settings.review_mode,
+        settings.history_limit,
+        settings.timeout_seconds,
+    ];
     serialized.widgets_values_named = {
         review_mode: settings.review_mode,
         history_limit: settings.history_limit,
+        timeout_seconds: settings.timeout_seconds,
     };
 }
 
@@ -156,6 +183,7 @@ function cacheReviewState(node) {
         resolvedToken: state.resolvedToken,
         active: state.active,
         controlsDisabled: state.approve.disabled,
+        timeoutSeconds: state.timeoutSeconds,
     };
     // Refresh insertion order so recently used workflow tabs are evicted last.
     reviewStateCache.delete(stateId);
@@ -175,6 +203,7 @@ function restoreCachedReviewState(node) {
     state.token = cached.token || null;
     state.resolvedToken = cached.resolvedToken || null;
     state.active = Boolean(cached.active);
+    state.timeoutSeconds = Number(cached.timeoutSeconds || 0);
     populateHistory(node, cached.entries || []);
     const selected = String(cached.historyValue || "");
     if ([...state.history.options].some((option) => option.value === selected)) {
@@ -265,7 +294,9 @@ function updateDirtyState(node) {
         node,
         edited
             ? "Manual edits pending structural validation"
-            : "Generation is paused; review the prompt, then approve",
+            : state.timeoutSeconds > 0
+              ? `Generation is paused; the original prompt passes through after ${state.timeoutSeconds}s`
+              : "Generation is paused; review the prompt, then approve",
         edited ? "editing" : "paused"
     );
 }
@@ -286,9 +317,24 @@ function findReviewNode(displayId) {
 
 function activateReview(data) {
     const node = findReviewNode(data?.display_id);
-    if (!node || !data?.id || !data?.token) return false;
+    if (!node || !data?.id) return false;
     setupNode(node);
     const state = node.__h3PromptReview;
+    if (data.passthrough) {
+        if (state.active) return false;
+        state.runId = String(data.id);
+        state.token = null;
+        state.resolvedToken = null;
+        state.inputPrompt = String(data.prompt || "");
+        state.area.value = state.inputPrompt;
+        state.timeoutSeconds = 0;
+        populateHistory(node, []);
+        setButtonsDisabled(node, true);
+        setStatus(node, "Pass-through mode — prompt displayed; generation continued", "approved");
+        cacheReviewState(node);
+        return true;
+    }
+    if (!data?.token) return false;
     const runId = String(data.id);
     const token = String(data.token);
     if (state.resolvedToken === token) return false;
@@ -302,11 +348,31 @@ function activateReview(data) {
     state.inputPrompt = String(data.prompt || "");
     state.area.value = state.inputPrompt;
     state.active = true;
+    state.timeoutSeconds = Number(data.timeout_seconds || 0);
     populateHistory(node, data.history || []);
     setButtonsDisabled(node, false);
     updateDirtyState(node);
     cacheReviewState(node);
     state.area.focus();
+    return true;
+}
+
+function resolveTimedOutReview(data) {
+    const node = findReviewNode(data?.display_id);
+    if (!node || !data?.token) return false;
+    setupNode(node);
+    const state = node.__h3PromptReview;
+    if (!state.active || state.token !== String(data.token)) return false;
+    state.active = false;
+    state.resolvedToken = state.token;
+    setButtonsDisabled(node, true);
+    const seconds = Number(data.timeout_seconds || state.timeoutSeconds || 0);
+    setStatus(
+        node,
+        `Timed out after ${seconds}s — original prompt passed through and generation continued`,
+        "approved"
+    );
+    cacheReviewState(node);
     return true;
 }
 
@@ -380,6 +446,7 @@ function setupNode(node) {
         token: null,
         resolvedToken: null,
         active: false,
+        timeoutSeconds: 0,
     };
     node.__h3ReviewWidget = node.addDOMWidget("h3_prompt_review_editor", "div", root, {
         serialize: false,
@@ -496,6 +563,9 @@ app.registerExtension({
         injectStyles();
         api.addEventListener("minimax-h3-prompt-review", (event) => {
             activateReview(event.detail || {});
+        });
+        api.addEventListener("minimax-h3-prompt-review-timeout", (event) => {
+            resolveTimedOutReview(event.detail || {});
         });
         // Initial WebSocket status includes a session id. ComfyUI sends it
         // again after reconnect, so ask the server to re-send any active

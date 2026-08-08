@@ -656,6 +656,35 @@ class PromptReviewBus:
         return True, "rejected"
 
     @classmethod
+    def resolve_timeout(
+        cls, session: _ReviewSession, resolver: Callable[[], tuple[str, dict, str]]
+    ) -> bool:
+        """Atomically claim an unanswered review and resolve its timeout fallback."""
+
+        with cls._lock:
+            if (
+                cls._sessions.get(session.node_id) is not session
+                or session.resolving
+                or session.resolved
+            ):
+                return False
+            session.resolving = True
+        try:
+            result = resolver()
+        except Exception:
+            with cls._lock:
+                if cls._sessions.get(session.node_id) is session and not session.resolved:
+                    session.resolving = False
+            raise
+        with cls._lock:
+            if cls._sessions.get(session.node_id) is not session or session.resolved:
+                return False
+            session.resolving = False
+            session.resolved = True
+        cls._finish(session, result=result)
+        return True
+
+    @classmethod
     def publish(cls, node_id: Any, token: Any, payload: dict) -> bool:
         """Attach the text-only browser payload for reconnect recovery."""
 
@@ -685,17 +714,45 @@ class PromptReviewBus:
                 cls._sessions.pop(session.node_id, None)
 
 
-async def _await_review(session: _ReviewSession):
+async def _await_review(
+    session: _ReviewSession,
+    timeout_seconds: float = 0,
+    timeout_resolver: Callable[[], tuple[str, dict, str]] | None = None,
+):
     try:
         import comfy.model_management as model_management
     except ImportError:  # Unit-test/direct-import fallback.
         model_management = None
+    timeout = float(timeout_seconds)
+    deadline = asyncio.get_running_loop().time() + timeout if timeout > 0 else None
     while True:
-        done, _pending = await asyncio.wait({session.future}, timeout=0.25)
+        wait_seconds = 0.25
+        if deadline is not None:
+            wait_seconds = max(0.0, min(wait_seconds, deadline - asyncio.get_running_loop().time()))
+        done, _pending = await asyncio.wait({session.future}, timeout=wait_seconds)
         if done:
-            return session.future.result()
+            return session.future.result(), False
         if model_management is not None and model_management.processing_interrupted():
             raise PromptReviewCancelled("ComfyUI interrupted the paused prompt review.")
+        if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+            if timeout_resolver is None:
+                raise RuntimeError("Prompt review timeout has no pass-through resolver.")
+            if PromptReviewBus.resolve_timeout(session, timeout_resolver):
+                return await session.future, True
+
+
+def _send_passthrough_prompt(node_id: Any, prompt: str) -> None:
+    """Best-effort browser display for a gate that does not pause execution."""
+
+    try:
+        if __package__:
+            from .prompt_review_server import send_passthrough_prompt
+        else:
+            from prompt_review_server import send_passthrough_prompt
+    except ImportError:
+        # Direct imports and unit tests do not have ComfyUI's PromptServer.
+        return
+    send_passthrough_prompt(node_id, prompt)
 
 
 class MiniMaxH3PlanV2PromptOverride:
@@ -855,6 +912,19 @@ class MiniMaxH3PlanV2PromptReview:
                         "tooltip": "Maximum approved text revisions saved for this review node.",
                     },
                 ),
+                "timeout_seconds": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 86400,
+                        "step": 1,
+                        "tooltip": (
+                            "Seconds to wait for a decision before forwarding the original prompt. "
+                            "Set to 0 to wait indefinitely."
+                        ),
+                    },
+                ),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -869,20 +939,25 @@ class MiniMaxH3PlanV2PromptReview:
         plan_context,
         review_mode: str,
         history_limit: int,
+        timeout_seconds: int = 0,
         unique_id=None,
     ):
         if review_mode not in REVIEW_MODES:
             raise ValueError("Choose a supported prompt review mode.")
+        timeout_seconds = int(timeout_seconds)
+        if timeout_seconds < 0 or timeout_seconds > 86400:
+            raise ValueError("Prompt review timeout must be between 0 and 86400 seconds.")
         source = _normalized_prompt(h3_prompt)
         if review_mode == REVIEW_MODE_PASSTHROUGH:
             reviewed, approved, report = approve_reviewed_prompt(
                 plan_context, source, source
             )
+            _send_passthrough_prompt(unique_id, reviewed)
             return reviewed, approved, "Prompt review bypassed without pausing. " + report
 
         # The ComfyUI node id is already stable within a saved workflow and unique
         # after copy/paste. Keeping history identity out of widgets avoids custom DOM
-        # widgets shifting serialized review_mode/history_limit values.
+        # widgets shifting serialized review_mode/history_limit/timeout values.
         key = _node_history_key("review", unique_id)
         history = PromptReviewHistory()
 
@@ -902,6 +977,20 @@ class MiniMaxH3PlanV2PromptReview:
                 report += f" Prompt approved, but text history could not be saved: {error}."
             return reviewed, approved, report
 
+        def pass_through_after_timeout():
+            reviewed, approved, report = approve_reviewed_prompt(
+                plan_context,
+                source,
+                source,
+                approval_source="Prompt review timeout",
+            )
+            return (
+                reviewed,
+                approved,
+                f"Prompt review timed out after {timeout_seconds} seconds; "
+                f"the original prompt passed through. {report}",
+            )
+
         # Validate the source pair before opening a browser editor.
         _compiled, canonical, _length = _canonical_package(plan_context)
         if source != _normalized_prompt(canonical):
@@ -913,17 +1002,33 @@ class MiniMaxH3PlanV2PromptReview:
         try:
             try:
                 if __package__:
-                    from .prompt_review_server import send_prompt_review
+                    from .prompt_review_server import (
+                        send_prompt_review,
+                        send_prompt_review_timeout,
+                    )
                 else:
-                    from prompt_review_server import send_prompt_review
+                    from prompt_review_server import (
+                        send_prompt_review,
+                        send_prompt_review_timeout,
+                    )
                 send_prompt_review(
                     unique_id,
                     session.token,
                     source,
                     key,
                     history.load(key),
+                    timeout_seconds,
                 )
-                return await _await_review(session)
+                result, timed_out = await _await_review(
+                    session,
+                    timeout_seconds,
+                    pass_through_after_timeout,
+                )
+                if timed_out:
+                    send_prompt_review_timeout(
+                        unique_id, session.token, timeout_seconds
+                    )
+                return result
             except PromptReviewCancelled as error:
                 try:
                     import comfy.model_management as model_management

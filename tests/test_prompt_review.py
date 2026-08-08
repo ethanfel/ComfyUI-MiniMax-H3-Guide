@@ -27,6 +27,7 @@ from prompt_review import (
     PromptReviewBus,
     PromptReviewCancelled,
     PromptReviewHistory,
+    _await_review,
     _node_history_key,
     approve_reviewed_prompt,
     plan_review_signature,
@@ -545,20 +546,59 @@ def test_review_bus_keeps_a_text_only_payload_available_for_socket_recovery():
 
 def test_pass_through_mode_validates_and_approves_without_arming_a_session():
     prompt, compiled = compiled_endpoint()
-
-    result = asyncio.run(
-        MiniMaxH3PlanV2PromptReview().review_prompt(
-            prompt,
-            compiled,
-            REVIEW_MODE_PASSTHROUGH,
-            20,
-            unique_id="88",
-        )
+    displayed = []
+    original_sender = prompt_review_module._send_passthrough_prompt
+    prompt_review_module._send_passthrough_prompt = (
+        lambda node_id, reviewed: displayed.append((node_id, reviewed))
     )
 
+    try:
+        result = asyncio.run(
+            MiniMaxH3PlanV2PromptReview().review_prompt(
+                prompt,
+                compiled,
+                REVIEW_MODE_PASSTHROUGH,
+                20,
+                unique_id="88",
+            )
+        )
+    finally:
+        prompt_review_module._send_passthrough_prompt = original_sender
+
     assert result[0] == prompt
+    assert displayed == [("88", prompt)]
     verify_review_approval(result[1], prompt, prompt)
     assert "bypassed without pausing" in result[2]
+
+
+def test_positive_review_timeout_passes_through_while_zero_waits_indefinitely():
+    async def scenario():
+        timed = PromptReviewBus.arm(
+            "node-timeout", lambda prompt: (prompt, {"manual": True}, "manual")
+        )
+        unlimited = PromptReviewBus.arm(
+            "node-unlimited", lambda prompt: (prompt, {"manual": True}, "manual")
+        )
+        try:
+            timed_result = await _await_review(
+                timed,
+                0.02,
+                lambda: ("original", {"timeout": True}, "timed out"),
+            )
+            unlimited_task = asyncio.create_task(_await_review(unlimited, 0))
+            await asyncio.sleep(0.03)
+            still_waiting = not unlimited_task.done()
+            PromptReviewBus.submit("node-unlimited", unlimited.token, "approved")
+            unlimited_result = await asyncio.wait_for(unlimited_task, timeout=1.0)
+            return timed_result, still_waiting, unlimited_result
+        finally:
+            PromptReviewBus.disarm(timed)
+            PromptReviewBus.disarm(unlimited)
+
+    timed, still_waiting, unlimited = asyncio.run(scenario())
+    assert timed == (("original", {"timeout": True}, "timed out"), True)
+    assert still_waiting is True
+    assert unlimited == (("approved", {"manual": True}, "manual"), False)
 
 
 @pytest.mark.parametrize(
@@ -610,6 +650,8 @@ def test_review_node_and_frontend_contract_are_registered():
     schema = MiniMaxH3PlanV2PromptReview.INPUT_TYPES()
     assert schema["required"]["h3_prompt"][1]["forceInput"] is True
     assert schema["required"]["review_mode"][1]["default"] == REVIEW_MODE_PAUSE
+    assert schema["required"]["timeout_seconds"][1]["default"] == 0
+    assert schema["required"]["timeout_seconds"][1]["max"] == 86400
     assert "history_key" not in schema["required"]
     assert schema["hidden"] == {"unique_id": "UNIQUE_ID"}
     assert MiniMaxH3PlanV2PromptReview.RETURN_NAMES[:2] == (
@@ -626,6 +668,8 @@ def test_review_node_and_frontend_contract_are_registered():
     assert "resolvedToken" in source
     assert "prompt_review/recover" in source
     assert "recoveryAgain" in source
+    assert "minimax-h3-prompt-review-timeout" in source
+    assert "Pass-through mode — prompt displayed" in source
     assert f'const PASS_THROUGH_MODE = "{REVIEW_MODE_PASSTHROUGH}"' in source
     assert 'const SETTINGS_PROPERTY = "minimax_h3_prompt_review_settings"' in source
     assert 'const UI_STATE_ID_PROPERTY = "minimax_h3_prompt_review_ui_state_id"' in source
@@ -634,7 +678,7 @@ def test_review_node_and_frontend_contract_are_registered():
     assert "restoreCachedReviewState(node)" in source
     assert "serializeReviewState(this, serialized)" in source
     assert "node.__h3ReviewWidget.serialize = false" in source
-    assert "serialized.widgets_values = [settings.review_mode, settings.history_limit]" in source
+    assert "settings.timeout_seconds" in source
     assert "serialized.widgets_values_named = {" in source
     assert "const settings = configuredSettings(this, arguments[0])" in source
     plan_source = (ROOT / "web" / "plan_v2.js").read_text(encoding="utf-8")
