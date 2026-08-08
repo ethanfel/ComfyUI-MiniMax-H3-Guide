@@ -4,6 +4,7 @@ version = "0.15.0"
 description = "A guided MiniMax H3 prompt preparation node for ComfyUI"
 requires-python = ">=3.10"
 dependencies = []
+keywords = ["ComfyUI", "MiniMax H3", "video", "prompting"]
 classifiers = [
     "Operating System :: OS Independent",
 ]
