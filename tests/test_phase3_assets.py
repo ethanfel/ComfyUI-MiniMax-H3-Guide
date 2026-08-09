@@ -33,6 +33,7 @@ def test_phase3_workflow_templates_have_consistent_graph_links():
         "MiniMax H3 Plan v2 - Five Shot Keyframe Composition.json",
         "MiniMax H3 Plan v2 - First and Last Frames.json",
         "MiniMax H3 Plan v2 - Identity and Voice.json",
+        "MiniMax H3 Plan v2 - Keyframe Motion Composer.json",
         "MiniMax H3 Plan v2 - Prompt Builder App.json",
         "MiniMax H3 Plan v2 - Video to Audio Foley.json",
         "MiniMax H3 Plan v2 - Video to Audio Foley with Multiple Sound and Voice References.json",
@@ -78,6 +79,9 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
     ]
     keyframe_motion = workflows[
         "MiniMax H3 Plan v2 - Animate Keyframe with Motion Reference.json"
+    ]
+    keyframe_motion_composer = workflows[
+        "MiniMax H3 Plan v2 - Keyframe Motion Composer.json"
     ]
     foley = workflows["MiniMax H3 Plan v2 - Video to Audio Foley.json"]
     foley_reference = workflows[
@@ -207,6 +211,29 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
     assert "Shot opening frame" in keyframe_motion_values
     assert not any(value == "Exact first frame" for value in keyframe_motion_values)
 
+    composer_types = [node["type"] for node in keyframe_motion_composer["nodes"]]
+    assert composer_types.count("MiniMaxH3PlanV2KeyframeMotionComposer") == 1
+    assert "MiniMaxH3PlanV2ProjectSetup" not in composer_types
+    assert "MiniMaxH3PlanV2ImageReference" not in composer_types
+    assert "MiniMaxH3PlanV2AudioReference" not in composer_types
+    assert "MiniMaxH3PlanV2Shot" not in composer_types
+    assert "MiniMaxH3PlanV2ShotKeyframe" not in composer_types
+    assert "MiniMaxH3PlanV2ShotMotionReference" not in composer_types
+    assert "MiniMaxH3PlanV2PromptMerge" in composer_types
+    composer = next(
+        node
+        for node in keyframe_motion_composer["nodes"]
+        if node["type"] == "MiniMaxH3PlanV2KeyframeMotionComposer"
+    )
+    assert [input_slot["type"] for input_slot in composer["inputs"]] == [
+        "IMAGE",
+        "IMAGE",
+        "IMAGE",
+        "AUDIO",
+    ]
+    assert composer["outputs"][0]["type"] == "MINIMAX_H3_PLAN_V2"
+    assert composer["outputs"][1]["type"] == "INT"
+
     foley_types = [node["type"] for node in foley["nodes"]]
     assert "VHS_LoadVideo" in foley_types
     assert "MiniMaxH3PlanV2FoleyTarget" in foley_types
@@ -231,6 +258,7 @@ def test_templates_use_exact_roles_and_compiled_plan_v2_chain():
         continuation,
         composition,
         keyframe_motion,
+        keyframe_motion_composer,
         foley,
         foley_reference,
     ):
@@ -259,7 +287,11 @@ def test_workflow_status_and_model_layout_follow_finished_reference():
         project = next(
             node
             for node in workflow["nodes"]
-            if node["type"] == "MiniMaxH3PlanV2ProjectSetup"
+            if node["type"]
+            in {
+                "MiniMaxH3PlanV2ProjectSetup",
+                "MiniMaxH3PlanV2KeyframeMotionComposer",
+            }
         )
         assert project["title"].startswith("WIP —")
         assert workflow["groups"][0]["title"].startswith("WIP —")
@@ -320,6 +352,7 @@ def test_workflow_status_and_model_layout_follow_finished_reference():
     motion_names = {
         finished_name,
         "MiniMax H3 Plan v2 - Five Shot Keyframe Composition.json",
+        "MiniMax H3 Plan v2 - Keyframe Motion Composer.json",
     }
     for name, workflow in workflows.items():
         types = {node["type"] for node in workflow["nodes"]}

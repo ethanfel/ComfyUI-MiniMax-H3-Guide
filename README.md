@@ -102,6 +102,41 @@ Reference Sheet remains the reusable media library: connect its selected image
 or selected audio output to the matching Plan v2 reference node, where the
 workflow-specific role is declared.
 
+### Compact keyframe + motion Composer
+
+**MiniMax H3 Keyframe + Motion Composer (Plan v2)** is the compact equivalent
+of this proven one-shot planning spine:
+
+```text
+Project Setup
+  -> identity Image Reference
+  -> complete-copy Audio Reference
+  -> Shot 1
+  -> opening Keyframe attachment
+  -> motion-only Video attachment
+  -> Prompt Merge
+```
+
+Connect four real typed values to the Composer: the identity image, opening
+keyframe, decoded motion/control frames, and original soundtrack. The node
+builds the expanded graph by calling those same Plan v2 node implementations;
+it does not maintain a second prompt compiler. Its output is already in the
+timeline phase and connects directly to Prompt Merge. Advanced options expose
+the individual reference names and semantic descriptions, while the default
+view keeps those established roles summarized in one compact card.
+
+The first Composer preset deliberately reproduces the keyframe-to-motion
+workflow before the interface is generalized to arbitrary mixed-reference and
+multi-Shot plans. Real typed sockets remain serialized as ordinary ComfyUI
+connections, so the workflow remains readable through API, MCP, and headless
+execution.
+
+The compact role-summary interface and media-reference editing direction were
+inspired by
+[ComfyUI-MiniMaxH3-Easy](https://github.com/nkxx188/ComfyUI-MiniMaxH3-Easy),
+used under its MIT license. This project retains its independent Plan v2 data
+model, validation, routing, and compiler implementation.
+
 ### Video-to-audio Foley with a locked picture track
 
 Use **MiniMax H3 Foley Target (Plan v2)** immediately after Project Setup when
@@ -412,6 +447,20 @@ only pose progression, body mechanics, cadence, and action timing. The workflow
 uses Ref2VA rather than exact endpoint conditioning so all three roles can coexist
 in one native call. Prompt Merge is set to the compact low-token style and feeds
 Prompt Review, Apply Reference Plan, sampling, joint decode, and Save Video.
+
+`MiniMax H3 Plan v2 - Keyframe Motion Composer.json` reproduces that same
+planning contract with one Composer replacing Project Setup, identity, audio,
+Shot, keyframe, and motion nodes. Its four media connections remain ordinary
+typed ComfyUI links, and the remainder of the known working model, sampler,
+decode, preview, and save graph is retained. The included migration script can
+compact another workflow with that exact expanded spine:
+
+```bash
+node scripts/compact_keyframe_motion_workflow.mjs expanded.json compact.json
+```
+
+Add `--template-safe` when producing a shareable example with placeholder media
+paths and generic action prose.
 
 `MiniMax H3 Plan v2 - Video Extension with Audio Continuity.json` is a WIP
 one-pass character-transfer continuation example. Load a replacement-character
