@@ -994,3 +994,8 @@ MiniMax tokenizer are absent.
 ```bash
 pytest -q
 ```
+
+## License
+
+This project is licensed under the GNU General Public License version 3 only
+([GPL-3.0-only](LICENSE)).

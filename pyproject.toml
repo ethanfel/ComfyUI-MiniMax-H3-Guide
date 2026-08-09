@@ -3,9 +3,11 @@ name = "comfyui-minimax-h3-guide"
 version = "0.15.0"
 description = "A guided MiniMax H3 prompt preparation node for ComfyUI"
 requires-python = ">=3.10"
+license = "GPL-3.0-only"
 dependencies = []
 keywords = ["ComfyUI", "MiniMax H3", "video", "prompting"]
 classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
 ]
 
